@@ -101,3 +101,29 @@ def run(
         # pattern is still settling and will not stay alive.
         "activity_late": float(np.mean(activities[-200:])) if activities else 0.0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Oklab, matching common.wgsl. Used by the flash-safety tests to measure the
+# output in the same space the shader bounds it in.
+# ---------------------------------------------------------------------------
+
+
+def linear_srgb_to_oklab(rgb: np.ndarray) -> np.ndarray:
+    """`rgb` is (..., 3) linear sRGB; returns (..., 3) Oklab."""
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b
+    m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
+    s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
+    cbrt = lambda x: np.sign(x) * np.cbrt(np.abs(x) + 1e-12)  # noqa: E731
+    l_, m_, s_ = cbrt(l), cbrt(m), cbrt(s)
+    return np.stack([
+        0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+        1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+        0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+    ], axis=-1)
+
+
+def lightness(rgb: np.ndarray) -> np.ndarray:
+    """Oklab L only, which is what the flash-safety bound is expressed in."""
+    return linear_srgb_to_oklab(rgb)[..., 0]

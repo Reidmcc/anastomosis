@@ -138,23 +138,33 @@ fn oklab_to_oklch(lab: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(lab.x, length(lab.yz), atan2(lab.z, lab.y));
 }
 
+// The tolerance here is deliberately tiny rather than the ~1e-3 that would be
+// visually harmless. The safety stage stores its output and reads it back as
+// the next frame's history, so any component allowed through out of range gets
+// clamped on a *later* frame -- enlarging that frame's step after the limiter
+// has already bounded it. Near black, a 5e-4 absolute change in one channel
+// moves Oklab L by ~1.6e-3, which is a sixth of the entire per-frame budget.
 fn in_gamut(c: vec3<f32>) -> bool {
-    return c.r >= -0.0005 && c.g >= -0.0005 && c.b >= -0.0005
-        && c.r <= 1.0005 && c.g <= 1.0005 && c.b <= 1.0005;
+    return c.r >= -1e-6 && c.g >= -1e-6 && c.b >= -1e-6
+        && c.r <= 1.0 + 1e-6 && c.g <= 1.0 + 1e-6 && c.b <= 1.0 + 1e-6;
 }
 
 // Gamut-map by reducing chroma at constant L and hue. Clipping RGB directly
 // would change perceived lightness, which is exactly the kind of uncommanded
 // brightness change the safety stage exists to prevent.
+//
+// Chroma zero is always in gamut for any L in [0, 1] (it is a neutral grey), so
+// the bisection is guaranteed to find a solution and the final clamp is a
+// no-op rather than a correction that could move L.
 fn gamut_map_oklab(lab: vec3<f32>) -> vec3<f32> {
-    var rgb = oklab_to_linear_srgb(lab);
-    if (in_gamut(rgb)) {
-        return rgb;
+    let direct = oklab_to_linear_srgb(lab);
+    if (in_gamut(direct)) {
+        return clamp(direct, vec3<f32>(0.0), vec3<f32>(1.0));
     }
     var lo = 0.0;
     var hi = 1.0;
-    // 8 bisection steps: chroma error below ~0.4%, imperceptible.
-    for (var i = 0u; i < 8u; i = i + 1u) {
+    // 10 steps: chroma resolution ~1e-4, so the residual clamp is negligible.
+    for (var i = 0u; i < 10u; i = i + 1u) {
         let mid = (lo + hi) * 0.5;
         let trial = vec3<f32>(lab.x, lab.y * mid, lab.z * mid);
         if (in_gamut(oklab_to_linear_srgb(trial))) {
@@ -163,8 +173,8 @@ fn gamut_map_oklab(lab: vec3<f32>) -> vec3<f32> {
             hi = mid;
         }
     }
-    rgb = oklab_to_linear_srgb(vec3<f32>(lab.x, lab.y * lo, lab.z * lo));
-    return clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let mapped = oklab_to_linear_srgb(vec3<f32>(lab.x, lab.y * lo, lab.z * lo));
+    return clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {

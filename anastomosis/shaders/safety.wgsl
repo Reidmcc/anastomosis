@@ -43,6 +43,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let incoming = finite_or4(textureLoad(hdr_tex, p, 0), 0.0).rgb * exposure;
     var wanted = linear_srgb_to_oklab(incoming);
 
+    // Perceptual bounds are applied to the *target*, never to the result.
+    // Clamping the result would mean that lowering l_max mid-session forces an
+    // immediate downward jump on every pixel above the new ceiling -- an
+    // unbounded step, straight through the guarantee this pass exists to make.
+    // Applied here instead, a ceiling change is just a new target that the
+    // limiter walks toward at the permitted rate.
+    wanted.x = clamp(wanted.x, 0.0, max(render.l_max, 0.0));
+    let wanted_lch = oklab_to_oklch(wanted);
+    wanted = oklch_to_oklab(vec3<f32>(
+        wanted_lch.x, min(wanted_lch.y, max(render.c_max, 0.0)), wanted_lch.z));
+
     // --- Motion-compensated history ---------------------------------------
     // Comparing against the raw previous frame would smear anything that
     // translates across the screen, because honest motion would read to the
@@ -68,20 +79,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         clamp(step.z, -chroma_limit, chroma_limit),
     );
 
+    // The output is exactly the previous frame plus a bounded step. Nothing
+    // below may enlarge it.
     var result = previous + step;
-
-    // Final perceptual bounds. Chroma is limited in polar form so that
-    // clamping cannot rotate the hue.
-    result.x = clamp(result.x, 0.0, render.l_max);
-    let lch = oklab_to_oklch(result);
-    let limited = oklch_to_oklab(
-        vec3<f32>(lch.x, min(lch.y, max(render.c_max, 0.0)), lch.z)
-    );
+    result.x = max(result.x, 0.0);
 
     // Gamut mapping reduces chroma at constant lightness and hue; clipping RGB
     // directly would change perceived brightness, which is the very thing this
     // pass exists to bound.
-    let rgb = gamut_map_oklab(limited);
+    let rgb = gamut_map_oklab(result);
 
     textureStore(final_out, p, vec4<f32>(rgb, 1.0));
 }

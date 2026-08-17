@@ -336,7 +336,11 @@ def _palette_hue_anchor(v: float) -> float:
 
 SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
     # path: (minimum, maximum)
-    "safety.max_luma_delta": (0.0005, 0.030),
+    # 0.012 gives 1.8 flashes/s at 30 FPS in the worst case (a sustained
+    # maximum-rate oscillation), against the WCAG limit of 3. The 0.03 this
+    # was originally set to allows 4.5/s and is NOT safe -- see
+    # test_ceiling_implies_wcag_margin.
+    "safety.max_luma_delta": (0.0005, 0.012),
     "safety.max_chroma_delta": (0.0005, 0.100),
     "safety.iir_alpha": (0.02, 1.000),
     "safety.exposure_attack": (0.0, 0.050),
