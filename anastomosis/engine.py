@@ -174,9 +174,13 @@ class Layer:
             for name in ("trail", "reaction", "pigment")
         }
 
+        # COPY_SRC so the agent array can be read back for a checkpoint; the
+        # deposit accumulator needs no such thing, since the trail pass drains it
+        # every tick and it is therefore always zero between ticks.
         self.agents_buf = device.create_buffer(
             size=max(spec.agent_count, 1) * AGENT_STRIDE,
-            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+            usage=(wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST
+                   | wgpu.BufferUsage.COPY_SRC),
             label=f"agents{spec.index}",
         )
         self.deposit_buf = device.create_buffer(

@@ -19,6 +19,7 @@ Every constraint here exists to keep an event from reading as punctuation:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 import random
@@ -166,6 +167,55 @@ class EventScheduler:
                 }
             )
         return rows, len(rows)
+
+    # -- checkpointing ------------------------------------------------------
+
+    def state(self) -> dict:
+        """Serialisable scheduler state.
+
+        The RNG is deliberately absent. Inter-arrival times are exponential and
+        therefore memoryless, so a fresh stream after a restart is
+        indistinguishable from the saved one -- but the events currently
+        *in flight* are mid-envelope, and losing those would be exactly the step
+        the envelopes exist to prevent.
+        """
+        return {
+            "active": [dataclasses.asdict(event) for event in self.active],
+            "time_to_next": self._time_to_next,
+            "spawned": self.spawned,
+        }
+
+    def load_state(self, state: dict) -> None:
+        """Restore from :meth:`state`, ignoring anything unreadable.
+
+        Tolerant by design: this data comes off disk, and a partially readable
+        checkpoint should cost at most a few in-flight events.
+        """
+        active: list[ActiveEvent] = []
+        for row in state.get("active") or []:
+            if not isinstance(row, dict):
+                continue
+            row = dict(row)
+            channels = row.get("channels") or (0.0, 0.0, 0.0, 0.0)
+            try:
+                row["channels"] = tuple(float(c) for c in channels)
+                event = ActiveEvent(**row)
+            except (TypeError, ValueError) as exc:
+                log.warning("ignoring unreadable saved event (%s)", exc)
+                continue
+            if not event.finished:
+                active.append(event)
+        self.active = active
+
+        time_to_next = state.get("time_to_next")
+        try:
+            self._time_to_next = None if time_to_next is None else float(time_to_next)
+        except (TypeError, ValueError):
+            self._time_to_next = None
+        try:
+            self.spawned = int(state.get("spawned", 0))
+        except (TypeError, ValueError):
+            self.spawned = 0
 
     def describe(self) -> str:
         if not self.active:

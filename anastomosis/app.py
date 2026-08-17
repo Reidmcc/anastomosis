@@ -24,6 +24,7 @@ from pathlib import Path
 
 import wgpu
 
+from . import checkpoint as checkpoint_module
 from . import config as config_module
 from . import device as device_module
 from . import engine as engine_module
@@ -48,6 +49,13 @@ class AppOptions:
     seed: int | None = None
     ui: bool = True
     telemetry_seconds: float = 60.0
+    # Checkpointing. Resuming is the default: the whole point of a mature field
+    # is that it took hours to grow, so throwing it away on every launch would
+    # be the surprising behaviour, not the safe one.
+    checkpoint: bool = True
+    resume: bool = True
+    checkpoint_path: Path | None = None
+    checkpoint_seconds: float = checkpoint_module.DEFAULT_INTERVAL_SECONDS
 
 
 class Application:
@@ -62,6 +70,14 @@ class Application:
         self.ramp = config_module.ParamRamp(resolved)
         self.params = resolved
         self.scheduler = events_module.EventScheduler(seed=options.seed)
+
+        self.checkpoint_path = (
+            options.checkpoint_path or checkpoint_module.default_checkpoint_path()
+        )
+        self._saver = checkpoint_module.BackgroundSaver()
+        self._last_checkpoint = time.perf_counter()
+        self._checkpoint_saved_at: float | None = None
+        self.resumed_from: str | None = None
 
         self.canvas = None
         self.device = None
@@ -153,6 +169,7 @@ class Application:
         )
         self._size = (width, height)
 
+        self._resume_from_checkpoint()
         self._start_hot_reload()
         if self.options.fullscreen:
             self._try_fullscreen()
@@ -224,6 +241,102 @@ class Application:
 
     def save_config(self) -> None:
         config_module.save(self.config, self.config_path)
+
+    # -- checkpointing ------------------------------------------------------
+
+    def _resume_from_checkpoint(self) -> None:
+        """Load the saved field over the freshly seeded one, if there is one.
+
+        Every failure path here ends in "run with the seeded field": a missing,
+        stale or unreadable checkpoint is a normal thing to find, not a reason to
+        refuse to open.
+        """
+        if not (self.options.checkpoint and self.options.resume):
+            return
+        saved = checkpoint_module.load(self.checkpoint_path)
+        if saved is None:
+            log.info(
+                "no saved state at %s; starting from a fresh field",
+                self.checkpoint_path,
+            )
+            return
+        try:
+            if checkpoint_module.restore(self.engine, saved, scheduler=self.scheduler):
+                self.resumed_from = saved.describe()
+        except Exception as exc:
+            # A partially applied restore is still a live field -- every value
+            # that reaches the GPU is clamped and the sanitise pass runs every 60
+            # ticks -- so carrying on beats refusing to start.
+            log.error("could not restore the saved state: %s", exc)
+
+    def save_checkpoint(self, blocking: bool = False) -> bool:
+        """Read the simulation state back and write it to disk.
+
+        Must be called between ticks, never mid-tick: the readback assumes the
+        deposit accumulator has been drained. ``blocking`` is for shutdown, when
+        there is no next frame to hand the write off from.
+        """
+        if not self.options.checkpoint or self.engine is None:
+            return False
+        self._last_checkpoint = time.perf_counter()
+        try:
+            snapshot = checkpoint_module.capture(
+                self.engine, scheduler=self.scheduler, sim_hz=self.params.sim_hz
+            )
+            if blocking:
+                self._saver.join()
+                checkpoint_module.save(self.checkpoint_path, snapshot)
+            else:
+                self._saver.submit(self.checkpoint_path, snapshot)
+        except Exception as exc:
+            # Losing a checkpoint costs the user field maturity after a crash.
+            # Losing the session costs them the field itself.
+            log.error("could not checkpoint: %s", exc)
+            return False
+        self._checkpoint_saved_at = time.time()
+        # The readback stalls this frame. Restart the clock so the stall is not
+        # charged to the pacing accumulator, which would otherwise produce a
+        # burst of catch-up ticks, or to the governor, which would throttle the
+        # tick rate over a cost that recurs once every five minutes.
+        self._last_time = time.perf_counter()
+        return True
+
+    def checkpoint_status(self) -> str:
+        """One line for the control panel."""
+        if not self.options.checkpoint:
+            return "off"
+        if self._checkpoint_saved_at is None:
+            return "resumed, not saved yet" if self.resumed_from else "not saved yet"
+        age = max(time.time() - self._checkpoint_saved_at, 0.0)
+        return f"saved {checkpoint_module.describe_age(age)}"
+
+    def reset_simulation(self) -> None:
+        """Discard the current world and grow a new one from seeds.
+
+        Rebuilds the engine exactly as a resize does. The new field starts from
+        scattered seeds and the safety stage's history is empty, so the image
+        settles down and grows back rather than cutting -- a reset is the one
+        moment the user has explicitly asked for a change, and even then it is
+        not allowed to be a step.
+        """
+        width, height = self._size
+        # Wait for any in-flight write first, or it would land on disk after the
+        # file it describes has been deleted.
+        self._saver.join()
+        checkpoint_module.discard(self.checkpoint_path)
+
+        self.scheduler = events_module.EventScheduler(seed=self.options.seed)
+        self.engine = engine_module.Engine(
+            self.device, width, height, self.params, seed=self.options.seed
+        )
+        self._accumulator = 0.0
+        self._sim_hz_scale = 1.0
+        self._frame_times.clear()
+        self._last_time = time.perf_counter()
+        self._last_checkpoint = time.perf_counter()
+        self._checkpoint_saved_at = None
+        self.resumed_from = None
+        log.info("simulation reset; growing a new field from seeds")
 
     # -- frame --------------------------------------------------------------
 
@@ -313,6 +426,15 @@ class Application:
             self._last_telemetry = now
             self._log_telemetry()
 
+        # After the governor, so the readback stall is never charged to the
+        # frame-time window that decides the tick rate.
+        if (
+            self.options.checkpoint
+            and self.options.checkpoint_seconds > 0.0
+            and now - self._last_checkpoint >= self.options.checkpoint_seconds
+        ):
+            self.save_checkpoint()
+
     def _log_telemetry(self) -> None:
         stats = self.engine.read_stats()
         window = self._frame_times[-30:] or [0.0]
@@ -354,5 +476,10 @@ class Application:
         finally:
             if self._watcher is not None:
                 self._watcher.stop()
+            # Closing the window is the commonest way a session ends, so it has
+            # to checkpoint just like a five-minute tick would; blocking here,
+            # since there is no next frame to hand the write off from.
+            self.save_checkpoint(blocking=True)
+            self._saver.join()
             if panel is not None:
                 panel.close()

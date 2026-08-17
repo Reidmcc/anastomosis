@@ -115,6 +115,7 @@ class ControlPanel(QtWidgets.QWidget):
             ("field", "Field"),
             ("rate", "Sim / frame"),
             ("events", "Events"),
+            ("checkpoint", "Saved state"),
         ):
             widget = QtWidgets.QLabel("—")
             widget.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
@@ -128,6 +129,17 @@ class ControlPanel(QtWidgets.QWidget):
         save.setToolTip("Write the current settings to the config file")
         save.clicked.connect(self._on_save)
         row.addWidget(save)
+
+        # The counterpart to resuming: sessions continue by default, so there has
+        # to be an explicit way to say "start again", and it belongs here rather
+        # than only on the command line.
+        reset = QtWidgets.QPushButton("Reset simulation")
+        reset.setToolTip(
+            "Discard the current field and its saved state, and grow a new one "
+            "from seeds"
+        )
+        reset.clicked.connect(self._on_reset)
+        row.addWidget(reset)
 
         hide = QtWidgets.QPushButton("Minimise")
         hide.setToolTip("Tuck the panel away; reopen it from the taskbar")
@@ -192,6 +204,26 @@ class ControlPanel(QtWidgets.QWidget):
             log.error("could not save config: %s", exc)
             QtWidgets.QMessageBox.warning(self, "Could not save", str(exc))
 
+    def _on_reset(self) -> None:
+        # Hours of accumulated field state, and nothing brings it back once the
+        # checkpoint is gone, so this asks first.
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Reset simulation",
+            "Start a new simulation from seeds?\n\n"
+            "The current field and the saved state are discarded. The image "
+            "settles down and grows back over a few minutes.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            self.app.reset_simulation()
+        except Exception as exc:
+            log.error("could not reset the simulation: %s", exc)
+            QtWidgets.QMessageBox.warning(self, "Could not reset", str(exc))
+
     def _refresh_status(self) -> None:
         engine = self.app.engine
         if engine is None:
@@ -218,6 +250,7 @@ class ControlPanel(QtWidgets.QWidget):
             f"{frame_ms:.1f} ms/frame"
         )
         self.status_labels["events"].setText(self.app.scheduler.describe())
+        self.status_labels["checkpoint"].setText(self.app.checkpoint_status())
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         self._timer.stop()
