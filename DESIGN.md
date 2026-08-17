@@ -208,7 +208,61 @@ Every event is constrained to be non-punctuating:
 - applied to *climate*, never directly to pigment or luminance, so its effect
   reaches the image only through several stages of diffusion and lowpass.
 
-### 4.4 Numerical survival
+### 4.4 Staying on the live band — three findings from implementation
+
+Everything above was designed before any of it ran. Building it surfaced three
+liveness problems that the architecture as drawn did not address, all found by
+sweeping the Gray–Scott map in NumPy (`tests/reference.py`) rather than by
+watching the output. They are recorded here because each is invisible on a
+timescale of minutes and fatal on a timescale of hours.
+
+**The default regime was wrong.** The familiar `F=0.038, K=0.062` sits in a weak
+corner next to the dead zone and *settles* — measured activity decayed 45× below
+target within 30 seconds. The persistently-live ridge is at much lower values;
+`F=0.018, K=0.051` holds mean V ≈ 0.12 with variance ≈ 0.009 and does not settle.
+Those happen to be almost exactly the homeostat targets originally guessed, which
+is reassuring about the targets and damning about the regime.
+
+**Kill, not feed, is the control lever.** Mean V and activity both respond
+monotonically to `−kill`, so one control serves both objectives. Feed cannot do
+the job: its effect on activity is non-monotonic and collapses abruptly at the top
+of its range (activity falls to 2×10⁻⁶ at `F=0.030`). The homeostat therefore
+steers with kill and uses feed only for mass and structure.
+
+**The live region is a diagonal strip, not a rectangle.** This is the important
+one. Holding kill fixed while the climate varies feed walks regions clean off the
+map: an uncorrelated `−0.008` excursion in feed **kills the field outright**, and
+it does not come back. So kill now *follows* feed along the band (slope 0.55), and
+is additionally clamped relative to the band centre as well as absolutely — a
+fixed box in `(F, K)` admits dead corners at both ends, which is exactly what the
+first two attempts did. `config.clamp_reaction` mirrors the shader so the tests
+exercise the real logic.
+
+### 4.5 The absorbing state
+
+`V = 0` is absorbing: `dV/dt = 0` when `V = 0`, so Gray–Scott can never restart on
+ground where it has been fully extinguished. No amount of feed or kill correction
+helps, because the homeostat's levers all multiply through `V`.
+
+This is a genuine long-duration hazard rather than a theoretical one. Over days,
+*something* will eventually extinguish some region — a bad excursion, a sanitised
+NaN, a driver glitch — and the result would be permanent: a black screen with no
+path back.
+
+The fix is a direct injection path that the fiction wanted anyway. Agents seed `V`
+where they run, not merely fertilise it via `feed`:
+
+```wgsl
+let seed_room = clamp(1.0 - v * trail_seed_falloff, 0.0, 1.0);
+v += trail_seed_gain * (trail / (1.0 + trail)) * seed_room;
+```
+
+The falloff means established structure is untouched and only empty ground is
+reseeded, so the normal regime is undisturbed (verified: all three homeostat
+targets still converge). Hyphae colonising bare substrate is what the piece is
+about, so it is a better model as well as a safer one.
+
+### 4.6 Numerical survival
 
 Long runs fail in specific, known ways. Each gets an explicit countermeasure:
 
@@ -227,7 +281,7 @@ Long runs fail in specific, known ways. Each gets an explicit countermeasure:
 - **Checkpointing.** Field textures + climate state written to disk every ~5 min so
   a crash or a reboot resumes a mature simulation rather than restarting from noise.
   A three-hour-old field looks materially different from a fresh one; this is worth
-  the small complexity.
+  the small complexity. **Not yet implemented** — see §13.
 - **Zero per-frame allocation.** All buffers, bind groups, and pipelines are created
   at startup. A run of `10^7` frames will find any leak.
 
@@ -571,3 +625,36 @@ thing on core WebGPU and portable across Vulkan/Metal/DX12.
 10. Checkpointing, device-loss recovery, long soak.
 
 Steps 1–6 produce something already usable for its purpose.
+
+
+---
+
+## 13. Implementation status
+
+Built and verified headless against a software adapter (Mesa lavapipe), so every
+shader compiles and the full tick/render sequence runs in CI without a GPU. 80
+tests pass in about a minute.
+
+**Complete:** all 17 WGSL modules; the three-system substrate with agents, trail,
+reaction, curl-noise flow and pigment advection; the climate field and the
+GPU-resident homeostat; slow events; layered compositing with parallax, DOF and
+atmosphere; the Oklab colour pipeline; the full safety stage with blue-noise
+dither; sim/render decoupling with motion-compensated interpolation and the
+budget governor; the parameter system with macros, presets, hot reload and
+ramping; the Qt control panel; CLI.
+
+**Not implemented:**
+
+- **Checkpointing** (§4.4). Restarts begin from a fresh field rather than
+  resuming a mature one. Everything else about long-duration survival is in
+  place; this only affects what happens *after* a crash or reboot.
+- **The volumetric slab backend** (§5.1), which was always positioned as the
+  second step after the layered path is proven.
+- **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is
+  untested, since a software adapter offers no way to provoke a device loss.
+
+**Not yet possible to assess here:** how it actually looks, and whether the
+defaults sit in the right place perceptually. The software adapter renders
+correct pixels far too slowly to watch. The numbers say the simulation is alive,
+structured, and stable; whether it is *pleasant* is a judgement that needs the
+real GPU and a pair of eyes.

@@ -510,6 +510,8 @@ class Engine:
             "feed": r.feed, "kill": r.kill, "du": r.du, "dv": r.dv,
             "rdt": r.dt, "trail_feed_gain": r.trail_feed_gain,
             "kill_follows_feed": r.kill_follows_feed,
+            "trail_seed_gain": r.trail_seed_gain,
+            "trail_seed_falloff": r.trail_seed_falloff,
             "feed_min": r.feed_min, "feed_max": r.feed_max,
             "kill_band": r.kill_band,
             "kill_min": r.kill_min, "kill_max": r.kill_max,

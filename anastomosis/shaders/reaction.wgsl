@@ -91,6 +91,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     u = u + dt * (params.du * lap.x - reaction_rate + feed * (1.0 - u));
     v = v + dt * (params.dv * lap.y + reaction_rate - (feed + kill) * v);
 
+    // Hyphal seeding. V = 0 is an absorbing state for Gray-Scott, so without a
+    // direct injection path the reaction can never restart on ground where it
+    // has been extinguished -- and over a multi-day run, something will
+    // eventually extinguish some. Agents wander everywhere, so trail-driven
+    // seeding guarantees recovery without needing a separate mechanism.
+    let seed_room = clamp(1.0 - v * params.trail_seed_falloff, 0.0, 1.0);
+    v = v + params.trail_seed_gain * (trail / (1.0 + trail)) * seed_room;
+
     u = clamp(finite_or(u, 1.0), 0.0, 1.5);
     v = clamp(finite_or(v, 0.0), 0.0, 1.0);
 

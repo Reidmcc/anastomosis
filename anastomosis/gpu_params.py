@@ -54,6 +54,8 @@ SIM_FIELDS: list[Field] = [
     ("rdt", "f32"),
     ("trail_feed_gain", "f32"),
     ("kill_follows_feed", "f32"),
+    ("trail_seed_gain", "f32"),
+    ("trail_seed_falloff", "f32"),
     ("feed_min", "f32"),
     ("feed_max", "f32"),
     ("kill_band", "f32"),

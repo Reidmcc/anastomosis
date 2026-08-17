@@ -96,6 +96,17 @@ class ReactionParams:
     # this, a downward climate excursion in feed drives whole regions to zero
     # and they never recover -- verified in test_regime.py.
     kill_follows_feed: float = 0.55
+    # Agents seed V directly, not only via feed. Without this, V = 0 is an
+    # absorbing state -- dV/dt is zero when V is zero, so the reaction can
+    # never restart anywhere it has been fully extinguished, and one bad
+    # excursion or a sanitised NaN would end the run permanently with a black
+    # screen. Verified by test_recovers_from_a_corrupted_field.
+    #
+    # The falloff makes this act only where there is room: established
+    # structure is untouched, empty ground is slowly reseeded by passing
+    # filaments.
+    trail_seed_gain: float = 0.0020
+    trail_seed_falloff: float = 8.0
     # Hard bounds applied in the shader after climate deviation, trail
     # coupling and homeostat correction are all summed. These are a liveness
     # floor, not a stylistic range: below kill_min the reaction dies at low
