@@ -58,14 +58,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let trail = textureLoad(trail_tex, p, 0).r;
     let ca = textureSampleLevel(clim_a, samp, uv, 0.0);
 
-    let feed = clamp(
-        params.feed + params.range_feed * ca.x + stats.corr_feed
-            + params.trail_feed_gain * trail,
-        0.002,
-        0.14,
-    );
+    // Saturating trail coupling: a heavily trafficked texel can accumulate a
+    // trail value many times the field mean, and a linear term would drive feed
+    // clean off the usable map there.
+    let trail_boost = params.trail_feed_gain * (trail / (1.0 + trail));
+    let feed_deviation = params.range_feed * ca.x + trail_boost;
+    let feed = clamp(params.feed + feed_deviation + stats.corr_feed, 0.002, 0.14);
+
+    // Kill follows feed along the live band. Holding kill fixed while the
+    // climate varies feed walks regions off the edge of the map, where the
+    // reaction dies and cannot restart -- the single most dangerous failure
+    // mode for a run measured in days.
     let kill = clamp(
-        params.kill + params.range_kill * ca.y + stats.corr_kill,
+        params.kill
+            + params.range_kill * ca.y
+            + params.kill_follows_feed * feed_deviation
+            + stats.corr_kill,
         0.020,
         0.085,
     );

@@ -91,13 +91,14 @@ fn reduce_final(@builtin(local_invocation_index) lid: u32) {
     let ctrl_var = err_var * params.gain_p + stats.int_var;
     let ctrl_activity = err_activity * params.gain_p + stats.int_activity;
 
-    // Direction of each correction in Gray-Scott terms: more feed and less
-    // kill both raise the amount of V, so mass is pushed with feed and pulled
-    // with kill. Activity is easier to reach through the agent layer -- more
-    // deposit and slower decay give the reaction more moving structure to work
-    // with than nudging the reaction constants directly.
-    let want_feed = ctrl_mass * 0.010 - ctrl_var * 0.004;
-    let want_kill = -ctrl_mass * 0.006 + ctrl_var * 0.003;
+    // Kill is the primary lever. Mean V and activity both respond
+    // monotonically to -kill, so a single control serves both objectives.
+    // Feed cannot: its effect on activity is non-monotonic and collapses
+    // abruptly at the top of its range, so it is used only for mass and
+    // structure, and gently. The agent layer trims activity from the other
+    // side. All of this was measured, not assumed -- see test_regime.py.
+    let want_kill = -(ctrl_mass * 0.008 + ctrl_activity * 0.006) + ctrl_var * 0.002;
+    let want_feed = ctrl_mass * 0.004 - ctrl_var * 0.003;
     let want_deposit = ctrl_activity * 0.006;
     let want_decay = -ctrl_activity * 0.004;
 
@@ -105,9 +106,9 @@ fn reduce_final(@builtin(local_invocation_index) lid: u32) {
     // must not be a step either.
     let rate = clamp(params.homeo_rate, 0.0, 1.0);
     stats.corr_feed = clamp(
-        mix(stats.corr_feed, want_feed, rate), -0.020, 0.020);
+        mix(stats.corr_feed, want_feed, rate), -0.006, 0.006);
     stats.corr_kill = clamp(
-        mix(stats.corr_kill, want_kill, rate), -0.014, 0.014);
+        mix(stats.corr_kill, want_kill, rate), -0.006, 0.006);
     stats.corr_deposit = clamp(
         mix(stats.corr_deposit, want_deposit, rate), -0.012, 0.012);
     stats.corr_decay = clamp(

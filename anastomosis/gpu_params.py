@@ -53,11 +53,13 @@ SIM_FIELDS: list[Field] = [
     ("dv", "f32"),
     ("rdt", "f32"),
     ("trail_feed_gain", "f32"),
+    ("kill_follows_feed", "f32"),
     # Flow
     ("psi_gain", "f32"),
     ("field_gain", "f32"),
     ("psi_theta", "f32"),
     ("psi_sigma", "f32"),
+    ("psi_noise_scale", "f32"),
     ("advect_dt", "f32"),
     # Climate
     ("clim_theta", "f32"),

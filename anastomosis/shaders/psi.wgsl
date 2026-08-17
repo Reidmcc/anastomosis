@@ -14,7 +14,6 @@
 @group(0) @binding(0) var<storage, read> params: SimParams;
 @group(0) @binding(1) var psi_in: texture_2d<f32>;
 @group(0) @binding(2) var psi_out: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(3) var samp: sampler;
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -40,7 +39,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Spatially smooth increment: sampled from coarse value noise so that psi
     // gains large-scale structure rather than per-texel hash.
     let uv = (vec2<f32>(gid.xy) + 0.5) / vec2<f32>(dims);
-    let increment = value_noise_octaves(uv * 3.0, params.tick ^ params.seed ^ 0x5bf03635u);
+    let increment = value_noise_octaves(uv * params.psi_noise_scale, params.tick ^ params.seed ^ 0x5bf03635u);
 
     var value = smoothed * (1.0 - params.psi_theta) + increment * params.psi_sigma;
     value = clamp(finite_or(value, 0.0), -8.0, 8.0);

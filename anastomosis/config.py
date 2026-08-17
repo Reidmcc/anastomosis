@@ -77,13 +77,25 @@ class AgentParams:
 class ReactionParams:
     """Gray-Scott, coupled to the trail field."""
 
-    feed: float = 0.0380
-    kill: float = 0.0620
+    # Chosen by sweeping the Gray-Scott map (see tests/reference.py and
+    # test_regime.py). This point sits on the persistently-live ridge: it holds
+    # mean V ~0.12 with variance ~0.009 and, critically, does not settle. The
+    # more familiar F=0.038/K=0.062 looks similar for a few minutes and then
+    # goes static, which is useless here.
+    feed: float = 0.0180
+    kill: float = 0.0510
     du: float = 0.2097
     dv: float = 0.1050
     dt: float = 0.85
     substeps: int = 2
-    trail_feed_gain: float = 0.022  # trail density boosts local feed
+    # Trail raises local feed through a saturating curve, so a heavily
+    # trafficked texel cannot drive feed off the map. This is the coupling that
+    # makes filaments nucleate reaction structure.
+    trail_feed_gain: float = 0.012
+    # Kill tracks feed along the live band rather than staying fixed. Without
+    # this, a downward climate excursion in feed drives whole regions to zero
+    # and they never recover -- verified in test_regime.py.
+    kill_follows_feed: float = 0.55
 
 
 @dataclass
@@ -99,8 +111,30 @@ class FlowParams:
     field_gain: float = 0.85  # weight of the structure-following component
     psi_theta: float = 0.0022  # OU mean reversion per tick
     psi_sigma: float = 0.085  # OU noise amplitude per tick
-    psi_scale: int = 4  # psi resolution divisor vs sim resolution
+    # Structural: psi texture size divisor. Fixed at startup, since changing
+    # it would mean reallocating textures mid-session.
+    psi_scale: int = 4
+    # The `scale` macro drives this instead -- same perceptual effect on
+    # feature size, no reallocation.
+    psi_noise_scale: float = 3.0
     advect_dt: float = 1.0
+
+
+@dataclass
+class PigmentParams:
+    """The advected field that is actually shaded. DESIGN.md §2."""
+
+    inject_rate: float = 0.055  # how fast pigment adopts local structure
+    density_from_v: float = 2.9
+    density_from_trail: float = 0.85
+    activity_rate: float = 0.020  # lowpass on |dV/dt|; deliberately very slow
+    activity_gain: float = 26.0
+    # Material keeps the hue it was born with and carries it along the flow.
+    # Low values make structures of different ages chromatically distinct, so
+    # the field marbles instead of shifting as one; high values make the whole
+    # field track the drifting anchor together.
+    hue_inject_mix: float = 0.010
+    hue_from_orientation: float = 0.55
 
 
 @dataclass
@@ -114,8 +148,8 @@ class ClimateParams:
     advect_gain: float = 0.22  # how fast regimes migrate
     diffuse: float = 0.30
     # Deviation amplitudes, applied as base + range * climate_texel.
-    range_feed: float = 0.0075
-    range_kill: float = 0.0060
+    range_feed: float = 0.0080
+    range_kill: float = 0.0035
     range_sensor_angle: float = 0.22
     range_sensor_distance: float = 3.0
     range_deposit: float = 0.008
@@ -133,9 +167,9 @@ class HomeostatParams:
     coordinated global change (i.e. punctuation).
     """
 
-    target_mass: float = 0.115  # mean V
-    target_variance: float = 0.0085  # var V, proxy for "has structure"
-    target_activity: float = 0.0042  # mean |dV/dt|
+    target_mass: float = 0.118  # mean V
+    target_variance: float = 0.0090  # var V, proxy for "has structure"
+    target_activity: float = 0.0012  # mean |dV/dt|, measured not guessed
     deadband: float = 0.30  # fractional, +-30%
     gain_p: float = 0.010
     gain_i: float = 0.0009
@@ -168,8 +202,14 @@ class RenderParams:
     layers: int = 3
     base_scale: float = 1.0  # front layer, fraction of display resolution
     scale_falloff: float = 0.5  # each layer back is this much smaller
-    feature_falloff: float = 1.55  # back layers have larger features
-    tempo_falloff: float = 0.70  # back layers move slower
+    # Back layers get larger on-screen features for free by being simulated at
+    # lower resolution, so this is a fine-tuning knob rather than the main
+    # mechanism; >1 exaggerates the difference.
+    feature_falloff: float = 1.0
+    # Screen-relative speed of each layer back. Combined with scale_falloff in
+    # the engine, since a cell on a half-resolution layer covers twice the
+    # screen distance.
+    tempo_falloff: float = 0.70
 
     parallax: float = 0.020
     parallax_drift: float = 0.00035
@@ -193,8 +233,6 @@ class RenderParams:
     hue_turns_per_hour: float = 1.33  # ~45 min per full rotation
     hue_anchor: float = 0.0  # radians; set by the palette macro
     hue_spread: float = 0.85  # spatial hue variation, radians
-    hue_from_orientation: float = 0.55
-    hue_inject_mix: float = 0.06  # how fast injected material adopts new hue
 
 
 @dataclass
@@ -206,6 +244,7 @@ class Params:
     agents: AgentParams = field(default_factory=AgentParams)
     reaction: ReactionParams = field(default_factory=ReactionParams)
     flow: FlowParams = field(default_factory=FlowParams)
+    pigment: PigmentParams = field(default_factory=PigmentParams)
     climate: ClimateParams = field(default_factory=ClimateParams)
     homeostat: HomeostatParams = field(default_factory=HomeostatParams)
     events: EventParams = field(default_factory=EventParams)
@@ -240,6 +279,7 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("reaction.trail_feed_gain", 0.012, 0.034, 1.0),
         ("events.rate_per_hour", 2.5, 14.0, 1.3),
         ("render.chroma_activity_gain", 3.5, 8.0, 1.0),
+        ("pigment.inject_rate", 0.032, 0.085, 1.0),
     ],
     "scale": [
         # Larger scale == coarser features: slower agents, longer sensors,
@@ -248,7 +288,7 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("agents.trail_diffuse", 0.85, 1.90, 1.0),
         ("reaction.du", 0.16, 0.26, 1.0),
         ("reaction.dv", 0.080, 0.130, 1.0),
-        ("flow.psi_scale", 3.0, 6.0, 1.0),
+        ("flow.psi_noise_scale", 2.0, 5.0, 1.0),
     ],
     "tempo": [
         ("sim_hz", 12.0, 26.0, 1.0),
