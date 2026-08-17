@@ -510,6 +510,18 @@ card, so the depth-backend decision can be made on aesthetics rather than cost.
   jitter is not visible.
 - Survive the display sleeping, waking, or being unplugged: reconfigure the surface
   rather than treating it as fatal.
+- **A window resize rebuilds the presentation chain only.** Simulation resolution is
+  fixed when the session starts, for the same reason the governor never touches it:
+  re-resolving a running field is a visible discontinuity, and rebuilding the layers
+  would additionally discard every field, every agent and the tick count — a hard
+  restart in the middle of a session meant to run for days. Only the HDR target, the
+  final ping-pong and the exposure partials follow the window; the compositor samples
+  layers in normalised coordinates, so they need not match it. Two details make the
+  seam invisible: the frame on screen is resampled into the new history buffer (the
+  slew limiter emits `history + bounded step`, so an empty history would fade up from
+  black over about a second), and a shape change is absorbed by sampling *more* of the
+  toroidal field along the axis that grew, rather than by stretching it. Sizes are
+  applied once they have held for ~150 ms, so dragging an edge reallocates once.
 - Optionally drop to a lower sim rate when the window is not visible.
 
 ---

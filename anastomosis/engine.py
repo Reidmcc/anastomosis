@@ -50,6 +50,24 @@ def round_up(value: int, multiple: int) -> int:
     return max(multiple, ((value + multiple - 1) // multiple) * multiple)
 
 
+def aspect_correction(
+    out_w: int, out_h: int, sim_w: int, sim_h: int
+) -> tuple[float, float]:
+    """UV scale factors that keep features square when the shapes differ.
+
+    The simulation keeps the resolution -- and so the aspect ratio -- it was
+    built with, but the window can be reshaped at any time. Stretching the
+    field to fit would squash every feature in the image, so instead the axis
+    that gained relative to the simulation samples *more* of the field. The
+    domain is toroidal and the sampler wraps, so the extra area is seamless.
+
+    Returns 1.0 on both axes when the shapes agree, so the common case costs
+    nothing.
+    """
+    ratio = (out_w / max(out_h, 1)) / (sim_w / max(sim_h, 1))
+    return max(ratio, 1.0), max(1.0 / ratio, 1.0)
+
+
 class PingPong:
     """A pair of textures with an alternating current/next index."""
 
@@ -273,6 +291,10 @@ class Engine:
         self.device = device
         self.width = width
         self.height = height
+        # The size the simulation layers were built for. The window may end up
+        # a different size or shape later; the layers never change.
+        self.sim_width = width
+        self.sim_height = height
         self.tick_count = 0
         self.frame_count = 0
         self.seed = seed if seed is not None else int(time.time_ns() & 0xFFFFFFFF)
@@ -289,17 +311,9 @@ class Engine:
         ]
 
         # --- Render targets ------------------------------------------------
-        self.hdr = device.create_texture(
-            size=(width, height, 1), format=TEX_FORMAT, usage=FIELD_USAGE, label="hdr")
-        self.hdr_view = self.hdr.create_view()
-        self.final = PingPong(device, width, height, "final")
-
-        img_tiles_x = math.ceil(width / 16)
-        img_tiles_y = math.ceil(height / 16)
-        self.img_partials = device.create_buffer(
-            size=img_tiles_x * img_tiles_y * 16,
-            usage=wgpu.BufferUsage.STORAGE, label="img_partials")
-        self.img_tiles = (img_tiles_x, img_tiles_y)
+        self._make_output_targets(width, height)
+        # Written only when a resize has to carry the on-screen frame across.
+        self.resample_buf: wgpu.GPUBuffer | None = None
 
         # --- Shared buffers ------------------------------------------------
         self.render_buf = device.create_buffer(
@@ -333,6 +347,124 @@ class Engine:
             ", ".join(f"{l.spec.width}x{l.spec.height}" for l in self.layers),
             sum(l.spec.agent_count for l in self.layers),
         )
+
+    # -- output targets -----------------------------------------------------
+
+    def _make_output_targets(self, width: int, height: int) -> None:
+        """(Re)allocate everything whose size follows the window.
+
+        This is the complete list of window-sized resources: the HDR
+        composite target, the final ping-pong -- which is also the slew
+        limiter's history -- and the buffer the exposure reduction writes its
+        per-tile partials into. Nothing here holds simulation state.
+        """
+        device = self.device
+        self.width = width
+        self.height = height
+
+        self.hdr = device.create_texture(
+            size=(width, height, 1), format=TEX_FORMAT, usage=FIELD_USAGE, label="hdr")
+        self.hdr_view = self.hdr.create_view()
+        self.final = PingPong(device, width, height, "final")
+
+        img_tiles_x = math.ceil(width / 16)
+        img_tiles_y = math.ceil(height / 16)
+        self.img_partials = device.create_buffer(
+            size=img_tiles_x * img_tiles_y * 16,
+            usage=wgpu.BufferUsage.STORAGE, label="img_partials")
+        self.img_tiles = (img_tiles_x, img_tiles_y)
+
+    def resize(self, width: int, height: int) -> None:
+        """Follow a window resize *without* disturbing the simulation.
+
+        Only the presentation chain depends on the window size, so only the
+        presentation chain is rebuilt. The simulation layers keep the
+        resolution they were created with and, with it, every bit of their
+        state -- fields, agents, climate, the tick counter. The compositor
+        samples layers in normalised coordinates, so it does not care that
+        they no longer match the window; the aspect difference is corrected in
+        `_write_render_params`.
+
+        Rebuilding the layers instead would restart the world, and re-resolving
+        a running simulation is itself the kind of visible discontinuity this
+        application exists to avoid (DESIGN.md §8).
+        """
+        if width <= 0 or height <= 0 or (width, height) == (self.width, self.height):
+            return
+
+        # Everything retired here may be freed once the caches let go of it.
+        # `self.final.cur` is the frame currently on screen, so it is read one
+        # last time before it goes.
+        on_screen = self.final.cur
+        retired = [
+            self.hdr, self.hdr_view,
+            *self.final.textures, *self.final.views,
+            self.img_partials, self._buffer_binding(self.img_partials),
+        ]
+
+        self._make_output_targets(width, height)
+        self._carry_history(on_screen)
+        self._retire(retired)
+
+        log.info(
+            "output now %dx%d; simulation continues at %dx%d, tick %d",
+            width, height, self.sim_width, self.sim_height, self.tick_count,
+        )
+
+    def _carry_history(self, on_screen: wgpu.GPUTextureView) -> None:
+        """Rescale the frame that is on screen into the new history buffer.
+
+        The slew limiter emits `history + bounded step` every frame, so a
+        history buffer that started black would make the image climb back out
+        of black at the limiter's rate -- roughly a second of fade, which is
+        precisely the interruption a resize must not cause. Seeding it with the
+        old frame leaves the limiter starting where the eye left off, and the
+        exposure governor with a sane frame to measure.
+
+        The blur pipeline is reused with a zero radius, which reduces to one
+        bilinear tap per destination pixel -- a resampling copy, no new shader.
+        """
+        if self.resample_buf is None:
+            self.resample_buf = self.device.create_buffer(
+                size=gpu_params.SIM_DTYPE.itemsize,
+                usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+                label="resample_params")
+
+        self.device.queue.write_buffer(
+            self.resample_buf, 0,
+            gpu_params.pack(gpu_params.SIM_DTYPE, {
+                "dims_x": self.width, "dims_y": self.height,
+                "blur_radius": 0.0, "blur_dir_x": 0.0, "blur_dir_y": 0.0,
+            }).tobytes())
+
+        encoder = self.device.create_command_encoder(label="resize_carry")
+        cpass = encoder.begin_compute_pass()
+        cpass.set_pipeline(self.p_blur)
+        cpass.set_bind_group(0, self._bind(self.p_blur, [
+            self._buffer_binding(self.resample_buf), on_screen,
+            self.final.cur, self.sampler,
+        ]))
+        cpass.dispatch_workgroups(*self._groups(self.width, self.height))
+        cpass.end()
+        self.device.queue.submit([encoder.finish()])
+
+    def _retire(self, resources: list) -> None:
+        """Forget cached bind groups that refer to replaced resources.
+
+        The caches are keyed by `id()`, which CPython recycles as soon as an
+        object is freed. A stale entry would therefore not merely waste memory:
+        a later, unrelated object landing on the same address would hit it and
+        silently bind a destroyed texture.
+        """
+        dead = {id(resource) for resource in resources}
+        self._bind_cache = {
+            key: group for key, group in self._bind_cache.items()
+            if dead.isdisjoint(key)
+        }
+        bindings = getattr(self, "_buf_bindings", None)
+        if bindings:
+            for key in [k for k in bindings if k in dead]:
+                del bindings[key]
 
     # -- setup --------------------------------------------------------------
 
@@ -832,14 +964,17 @@ class Engine:
             self.render_buf, 0,
             gpu_params.pack(gpu_params.RENDER_DTYPE, values).tobytes())
 
+        aspect_x, aspect_y = aspect_correction(
+            self.width, self.height, self.sim_width, self.sim_height)
+
         rows = []
         for i, layer in enumerate(self.layers):
             depth = layer.spec.depth
             offset = self._parallax[i] if self._parallax else [0.0, 0.0]
             rows.append({
                 # >1 samples a wider area, so the layer reads as further away.
-                "scale_x": 1.0 + 0.06 * depth,
-                "scale_y": 1.0 + 0.06 * depth,
+                "scale_x": (1.0 + 0.06 * depth) * aspect_x,
+                "scale_y": (1.0 + 0.06 * depth) * aspect_y,
                 "parallax_x": offset[0] * render.parallax * (1.0 - depth * 0.5),
                 "parallax_y": offset[1] * render.parallax * (1.0 - depth * 0.5),
                 "depth_dim": 1.0 + (render.depth_dim - 1.0) * depth,
