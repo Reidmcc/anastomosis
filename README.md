@@ -57,6 +57,37 @@ anastomosis --list-presets
 anastomosis --write-config           # write a config file and exit
 ```
 
+## Picking up where you left off
+
+Closing the window doesn't throw the field away. The simulation state is saved
+every five minutes and again on exit, and **the next launch continues from it**
+— you come back to the network you left rather than to fresh noise. A field
+that has been running for hours looks materially different from one that
+started a minute ago, and growing that back takes a while.
+
+To start over, press **Reset simulation** in the control panel (it asks first —
+the old field is gone once the saved state is), or:
+
+```bash
+anastomosis --reset                  # ignore the saved state this launch
+anastomosis --no-checkpoint          # don't save or resume at all
+anastomosis --checkpoint-interval 60 # save more often than every 5 minutes
+```
+
+The state lives in `~/.local/state/anastomosis/checkpoint.npz` — about 150 MB at
+1440p, rewritten in place, with the fields the engine recomputes every tick left
+out. It records the window size and layer geometry it was taken at: resize the
+window or change the layer count in the config and it no longer fits, so that
+launch quietly starts from seeds instead. Same if the file is missing or
+damaged — anything unreadable there costs you the field, never the session.
+
+The save itself is a GPU readback on the render thread followed by a disk write
+on a worker, so a frame is held rather than dropped, and nothing about the image
+changes while it happens.
+
+A new field, whether from a reset or a first run, comes up through the same
+slew limiter as everything else, so it grows in rather than cutting.
+
 ## Adjusting it
 
 Seven knobs, all 0–1:
@@ -156,6 +187,9 @@ unrecoverable:
 - `test_soak.py` — non-repetition, NaN recovery, and no per-frame allocation.
 - `test_parity.py` — the WGSL reaction against a numpy reference, so shader bugs
   surface as failures rather than as "it looks a bit wrong".
+- `test_checkpoint.py` — that a resumed engine evolves *bit-identically* to the
+  one it was captured from, which is the only way to catch a piece of state
+  quietly left out of the snapshot.
 
 ## Layout
 
@@ -166,6 +200,7 @@ anastomosis/
   config.py       parameters, macros, safety ceilings, ramping
   gpu_params.py   GPU struct layout (generates the WGSL, drives the packing)
   events.py       Poisson-arrival slow events
+  checkpoint.py   periodic save and restore of the simulation state
   bluenoise.py    void-and-cluster dither mask
   shaders/        17 WGSL modules
   ui/             Qt control panel

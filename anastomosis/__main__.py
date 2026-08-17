@@ -47,6 +47,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--write-config", action="store_true",
         help="write a default config file and exit",
     )
+    parser.add_argument(
+        "--reset", action="store_true",
+        help=(
+            "start from a fresh field instead of resuming the saved state "
+            "(the control panel has a button for this too)"
+        ),
+    )
+    parser.add_argument(
+        "--no-checkpoint", action="store_true",
+        help="neither save nor resume simulation state",
+    )
+    parser.add_argument(
+        "--checkpoint", type=Path, default=None, metavar="PATH",
+        help=(
+            "checkpoint file "
+            "(default: ~/.local/state/anastomosis/checkpoint.npz)"
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-interval", type=float, default=None, metavar="SECONDS",
+        help="how often to save simulation state (default: 300)",
+    )
     parser.add_argument("--list-presets", action="store_true")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
@@ -101,7 +123,13 @@ def main(argv: list[str] | None = None) -> int:
         config_path=config_path,
         seed=args.seed,
         ui=not args.no_ui,
+        checkpoint=not args.no_checkpoint,
+        resume=not args.reset,
+        checkpoint_path=args.checkpoint,
     )
+    # Left unset unless asked for, so the default interval has one home.
+    if args.checkpoint_interval is not None:
+        options.checkpoint_seconds = args.checkpoint_interval
 
     try:
         Application(options).run()
