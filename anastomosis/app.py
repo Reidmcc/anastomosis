@@ -69,6 +69,21 @@ class Application:
 
     # -- setup --------------------------------------------------------------
 
+    @staticmethod
+    def _import_qt_backend():
+        """Import the Qt render backend, bound to PySide6.
+
+        Deliberately ``rendercanvas.pyside6`` and not ``rendercanvas.qt``:
+        the latter binds to whichever Qt library is *already* in
+        ``sys.modules`` and raises ImportError when none is, which -- since we
+        import it before anything has touched PySide6 -- happens every single
+        run. ``rendercanvas.pyside6`` names the binding explicitly, so the only
+        ImportError left is the one that genuinely means "PySide6 is missing".
+        """
+        from rendercanvas.pyside6 import RenderCanvas, loop
+
+        return RenderCanvas, loop
+
     def _make_canvas(self):
         title = "anastomosis"
         kwargs = dict(
@@ -81,17 +96,26 @@ class Application:
 
         if self.options.ui:
             try:
-                from rendercanvas.qt import RenderCanvas, loop  # noqa: F401
-
-                canvas = RenderCanvas(**kwargs)
-                log.info("using the Qt backend (control panel available)")
-                return canvas, loop, True
+                RenderCanvas, loop = self._import_qt_backend()
             except ImportError:
                 log.warning(
                     "PySide6 not installed, falling back to the default backend; "
                     "the control panel will be unavailable. Install with "
                     "'pip install anastomosis[ui]'."
                 )
+            except Exception as exc:
+                # Any other import-time failure -- a broken Qt install, an ABI
+                # mismatch. Worth saying out loud with the real reason, because
+                # the fallback silently costs the control panel.
+                log.warning(
+                    "the Qt backend is unavailable (%s), falling back to the "
+                    "default backend; the control panel will be unavailable.",
+                    exc,
+                )
+            else:
+                canvas = RenderCanvas(**kwargs)
+                log.info("using the Qt backend (control panel available)")
+                return canvas, loop, True
 
         from rendercanvas.auto import RenderCanvas, loop
 
@@ -285,7 +309,13 @@ class Application:
                 panel = ControlPanel(self)
                 panel.show()
             except Exception as exc:
-                log.warning("could not open the control panel: %s", exc)
+                log.warning(
+                    "could not open the control panel: %s", exc, exc_info=True
+                )
+        elif self.options.ui:
+            log.warning(
+                "the control panel needs the Qt backend, which is not in use"
+            )
 
         self.canvas.request_draw(self.draw_frame)
         try:
