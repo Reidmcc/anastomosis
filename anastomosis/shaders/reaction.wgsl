@@ -1,0 +1,84 @@
+// Gray-Scott reaction-diffusion, coupled to the trail field.
+//
+// The coupling is the point: agent trails raise the local feed rate, so the
+// filaments the agents lay down become the places where reaction structure
+// nucleates. That gives filaments internal texture that neither system
+// produces alone -- Physarum trails are otherwise smooth ridges, and free
+// Gray-Scott has no reason to organise into a network.
+//
+// Feed and kill also carry a per-region offset from the climate field, so
+// different parts of the screen sit in different Gray-Scott regimes
+// simultaneously, and those regions migrate.
+
+//!include common.wgsl
+
+//!struct SimParams
+//!struct Stats
+
+@group(0) @binding(0) var<storage, read> params: SimParams;
+@group(0) @binding(1) var reaction_in: texture_2d<f32>;
+@group(0) @binding(2) var reaction_out: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(3) var trail_tex: texture_2d<f32>;
+@group(0) @binding(4) var clim_a: texture_2d<f32>;
+@group(0) @binding(5) var samp: sampler;
+@group(0) @binding(6) var<storage, read> stats: Stats;
+
+// Nine-point Laplacian: more isotropic than the five-point stencil, which
+// leaves a visible square bias in the growth of large structures.
+fn laplacian(p: vec2<i32>, idims: vec2<i32>) -> vec2<f32> {
+    let c = textureLoad(reaction_in, p, 0).rg;
+    var ortho = vec2<f32>(0.0);
+    ortho = ortho + textureLoad(reaction_in, wrap_texel(p + vec2<i32>(1, 0), idims), 0).rg;
+    ortho = ortho + textureLoad(reaction_in, wrap_texel(p + vec2<i32>(-1, 0), idims), 0).rg;
+    ortho = ortho + textureLoad(reaction_in, wrap_texel(p + vec2<i32>(0, 1), idims), 0).rg;
+    ortho = ortho + textureLoad(reaction_in, wrap_texel(p + vec2<i32>(0, -1), idims), 0).rg;
+    var diag = vec2<f32>(0.0);
+    diag = diag + textureLoad(reaction_in, wrap_texel(p + vec2<i32>(1, 1), idims), 0).rg;
+    diag = diag + textureLoad(reaction_in, wrap_texel(p + vec2<i32>(1, -1), idims), 0).rg;
+    diag = diag + textureLoad(reaction_in, wrap_texel(p + vec2<i32>(-1, 1), idims), 0).rg;
+    diag = diag + textureLoad(reaction_in, wrap_texel(p + vec2<i32>(-1, -1), idims), 0).rg;
+    return ortho * 0.2 + diag * 0.05 - c;
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = vec2<u32>(params.dims_x, params.dims_y);
+    if (gid.x >= dims.x || gid.y >= dims.y) {
+        return;
+    }
+
+    let p = vec2<i32>(gid.xy);
+    let idims = vec2<i32>(dims);
+    let uv = (vec2<f32>(gid.xy) + 0.5) / vec2<f32>(dims);
+
+    let uv_pair = textureLoad(reaction_in, p, 0).rg;
+    var u = finite_or(uv_pair.x, 1.0);
+    var v = finite_or(uv_pair.y, 0.0);
+
+    let trail = textureLoad(trail_tex, p, 0).r;
+    let ca = textureSampleLevel(clim_a, samp, uv, 0.0);
+
+    let feed = clamp(
+        params.feed + params.range_feed * ca.x + stats.corr_feed
+            + params.trail_feed_gain * trail,
+        0.002,
+        0.14,
+    );
+    let kill = clamp(
+        params.kill + params.range_kill * ca.y + stats.corr_kill,
+        0.020,
+        0.085,
+    );
+
+    let lap = laplacian(p, idims);
+    let reaction_rate = u * v * v;
+    let dt = params.rdt;
+
+    u = u + dt * (params.du * lap.x - reaction_rate + feed * (1.0 - u));
+    v = v + dt * (params.dv * lap.y + reaction_rate - (feed + kill) * v);
+
+    u = clamp(finite_or(u, 1.0), 0.0, 1.5);
+    v = clamp(finite_or(v, 0.0), 0.0, 1.0);
+
+    textureStore(reaction_out, p, vec4<f32>(u, v, 0.0, 1.0));
+}

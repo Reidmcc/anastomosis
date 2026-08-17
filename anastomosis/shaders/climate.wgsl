@@ -1,0 +1,115 @@
+// Climate field update -- DESIGN.md §4.1.
+//
+// A small texture holding *deviations* (in [-1, 1]) of each governing parameter
+// from its global base. Consumers combine base + homeostat correction + range *
+// deviation; this pass only maintains the deviation field.
+//
+// Each tick the field is advected by the same weather that moves the pigment,
+// diffused slightly, and given an Ornstein-Uhlenbeck increment. That makes it a
+// stateful PDE rather than a function of time: it cannot repeat, and it cannot
+// quantise as an f32 clock would after a day of running.
+//
+// Channel layout:
+//   climate_a = (feed, kill, sensor_angle, sensor_distance)
+//   climate_b = (deposit, decay, flow, hue)
+
+//!include common.wgsl
+
+//!struct SimParams
+//!struct Event
+
+@group(0) @binding(0) var<storage, read> params: SimParams;
+@group(0) @binding(1) var clim_a_in: texture_2d<f32>;
+@group(0) @binding(2) var clim_b_in: texture_2d<f32>;
+@group(0) @binding(3) var clim_a_out: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(4) var clim_b_out: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(5) var psi_tex: texture_2d<f32>;
+@group(0) @binding(6) var samp: sampler;
+@group(0) @binding(7) var<storage, read> events: array<Event>;
+
+// Velocity from the vector potential: v = curl(psi), divergence-free by
+// construction, so regimes migrate without piling up or draining anywhere.
+fn psi_velocity(uv: vec2<f32>) -> vec2<f32> {
+    let step = vec2<f32>(1.0 / f32(params.psi_w), 1.0 / f32(params.psi_h));
+    let px = textureSampleLevel(psi_tex, samp, wrap_uv(uv + vec2<f32>(step.x, 0.0)), 0.0).r;
+    let mx = textureSampleLevel(psi_tex, samp, wrap_uv(uv - vec2<f32>(step.x, 0.0)), 0.0).r;
+    let py = textureSampleLevel(psi_tex, samp, wrap_uv(uv + vec2<f32>(0.0, step.y)), 0.0).r;
+    let my = textureSampleLevel(psi_tex, samp, wrap_uv(uv - vec2<f32>(0.0, step.y)), 0.0).r;
+    return vec2<f32>(py - my, -(px - mx)) * 0.5;
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = vec2<u32>(params.clim_w, params.clim_h);
+    if (gid.x >= dims.x || gid.y >= dims.y) {
+        return;
+    }
+
+    let uv = (vec2<f32>(gid.xy) + 0.5) / vec2<f32>(dims);
+    let texel = vec2<f32>(1.0 / f32(dims.x), 1.0 / f32(dims.y));
+
+    // 1. Advect. Regimes arrive from elsewhere and move on, so no region of the
+    //    screen keeps a stable character.
+    let vel = psi_velocity(uv) * params.clim_advect;
+    let src = wrap_uv(uv - vel * texel);
+
+    var a = textureSampleLevel(clim_a_in, samp, src, 0.0);
+    var b = textureSampleLevel(clim_b_in, samp, src, 0.0);
+
+    // 2. Diffuse, so the field can never develop a hard edge (it is sampled
+    //    bilinearly at 40x lower resolution than the sim, which already makes
+    //    it smooth; this keeps it smooth under repeated advection).
+    if (params.clim_diffuse > 0.0) {
+        var acc_a = vec4<f32>(0.0);
+        var acc_b = vec4<f32>(0.0);
+        let offsets = array<vec2<f32>, 4>(
+            vec2<f32>(texel.x, 0.0), vec2<f32>(-texel.x, 0.0),
+            vec2<f32>(0.0, texel.y), vec2<f32>(0.0, -texel.y),
+        );
+        for (var i = 0u; i < 4u; i = i + 1u) {
+            let s = wrap_uv(src + offsets[i]);
+            acc_a = acc_a + textureSampleLevel(clim_a_in, samp, s, 0.0);
+            acc_b = acc_b + textureSampleLevel(clim_b_in, samp, s, 0.0);
+        }
+        a = mix(a, acc_a * 0.25, params.clim_diffuse);
+        b = mix(b, acc_b * 0.25, params.clim_diffuse);
+    }
+
+    // 3. Ornstein-Uhlenbeck step: mean-reverting so it stays in a sane band,
+    //    aperiodic so it never recurs.
+    var seed = pcg3(gid.x, gid.y, params.tick ^ params.seed);
+    let theta = params.clim_theta;
+    let sigma = params.clim_sigma;
+    a = a * (1.0 - theta) + vec4<f32>(
+        gauss(&seed), gauss(&seed), gauss(&seed), gauss(&seed)) * sigma;
+    b = b * (1.0 - theta) + vec4<f32>(
+        gauss(&seed), gauss(&seed), gauss(&seed), gauss(&seed)) * sigma;
+
+    // 4. Slow events (DESIGN.md §4.3). Applied here, to climate, rather than to
+    //    pigment or luminance: their effect reaches the image only after
+    //    several stages of diffusion and temporal lowpass, so nothing an event
+    //    does can arrive as a step.
+    let n_events = min(params.event_count, arrayLength(&events));
+    for (var i = 0u; i < n_events; i = i + 1u) {
+        let ev = events[i];
+        // Toroidal distance, matching the wrapped simulation domain.
+        var d = abs(uv - vec2<f32>(ev.pos_x, ev.pos_y));
+        d = min(d, 1.0 - d);
+        let r = length(d) / max(ev.radius, 1e-4);
+        if (r < 1.0) {
+            // Raised cosine in space as well as time: no edge anywhere.
+            let falloff = 0.5 + 0.5 * cos(PI * r);
+            let amp = ev.strength * falloff;
+            a.x = a.x + amp * ev.chan_feed;
+            a.y = a.y + amp * ev.chan_kill;
+            b.z = b.z + amp * ev.chan_flow;
+            b.w = b.w + amp * ev.chan_hue;
+        }
+    }
+
+    a = clamp(finite_or4(a, 0.0), vec4<f32>(-1.0), vec4<f32>(1.0));
+    b = clamp(finite_or4(b, 0.0), vec4<f32>(-1.0), vec4<f32>(1.0));
+
+    textureStore(clim_a_out, vec2<i32>(gid.xy), a);
+    textureStore(clim_b_out, vec2<i32>(gid.xy), b);
+}

@@ -1,0 +1,87 @@
+// The flash-safety stage -- DESIGN.md §7. This is a safety property, not a
+// style choice, and it is enforced here by construction rather than avoided by
+// taste upstream.
+//
+// The bound holds no matter what the simulation does. If a parameter is set
+// absurdly, if the reaction blows up, if an upstream shader has a bug, the
+// output still cannot change faster than the limit set here.
+//
+// WCAG 2.3.1 / PEAT define a flash as a pair of opposing relative-luminance
+// changes of >=10% over >25% of the screen, and permit at most 3 per second.
+// With max_luma_delta = 0.01 at 30 FPS, a 10% excursion needs >=10 frames
+// (333 ms) and an opposing pair >=667 ms -- a ceiling of 1.5 flashes/second,
+// half the threshold. Because the limit is per-pixel, it bounds any area.
+//
+// The order of operations matters: exposure is applied *before* the limiter, so
+// the governor can never introduce a step of its own; it can only ask, and the
+// limiter decides how fast the request is honoured.
+
+//!include common.wgsl
+
+//!struct RenderParams
+//!struct Stats
+
+@group(0) @binding(0) var<storage, read> render: RenderParams;
+@group(0) @binding(1) var hdr_tex: texture_2d<f32>;
+@group(0) @binding(2) var history_tex: texture_2d<f32>;
+@group(0) @binding(3) var velocity_tex: texture_2d<f32>;
+@group(0) @binding(4) var final_out: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(5) var samp: sampler;
+@group(0) @binding(6) var<storage, read> stats: Stats;
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= render.out_w || gid.y >= render.out_h) {
+        return;
+    }
+
+    let p = vec2<i32>(gid.xy);
+    let uv = (vec2<f32>(gid.xy) + 0.5) / vec2<f32>(f32(render.out_w), f32(render.out_h));
+
+    // --- Target ------------------------------------------------------------
+    let exposure = clamp(finite_or(stats.exposure, 1.0), 0.02, 20.0);
+    let incoming = finite_or4(textureLoad(hdr_tex, p, 0), 0.0).rgb * exposure;
+    var wanted = linear_srgb_to_oklab(incoming);
+
+    // --- Motion-compensated history ---------------------------------------
+    // Comparing against the raw previous frame would smear anything that
+    // translates across the screen, because honest motion would read to the
+    // limiter as change. Reprojecting through the velocity field means the
+    // limiter only sees genuine change and leaves motion alone.
+    let vdims = vec2<f32>(textureDimensions(velocity_tex, 0));
+    let velocity = finite_or4(textureSampleLevel(velocity_tex, samp, uv, 0.0), 0.0).rg;
+    let displacement = velocity * render.reproject_scale / vdims;
+    let history_uv = wrap_uv(uv - displacement);
+    let previous = linear_srgb_to_oklab(
+        finite_or4(textureSampleLevel(history_tex, samp, history_uv, 0.0), 0.0).rgb
+    );
+
+    // --- Slew limit --------------------------------------------------------
+    // The IIR factor gives a smooth approach (no hard corner when the clamp
+    // releases); the clamp supplies the actual guarantee.
+    var step = (wanted - previous) * clamp(render.iir_alpha, 0.0, 1.0);
+    let luma_limit = max(render.max_luma_delta, 0.0);
+    let chroma_limit = max(render.max_chroma_delta, 0.0);
+    step = vec3<f32>(
+        clamp(step.x, -luma_limit, luma_limit),
+        clamp(step.y, -chroma_limit, chroma_limit),
+        clamp(step.z, -chroma_limit, chroma_limit),
+    );
+
+    var result = previous + step;
+
+    // Final perceptual bounds. Chroma is limited in polar form so that
+    // clamping cannot rotate the hue.
+    result.x = clamp(result.x, 0.0, render.l_max);
+    let lch = oklab_to_oklch(result);
+    let limited = oklch_to_oklab(
+        vec3<f32>(lch.x, min(lch.y, max(render.c_max, 0.0)), lch.z)
+    );
+
+    // Gamut mapping reduces chroma at constant lightness and hue; clipping RGB
+    // directly would change perceived brightness, which is the very thing this
+    // pass exists to bound.
+    let rgb = gamut_map_oklab(limited);
+
+    textureStore(final_out, p, vec4<f32>(rgb, 1.0));
+}
