@@ -22,6 +22,9 @@ inside a slowly breathing medium.
 | Leave GPU headroom | Sim decoupled from render (sim ~15 Hz, render 30 Hz, motion-compensated interpolation); sim at fraction of display resolution; explicit frame budget governor |
 | Adjustable parameters | TOML config as source of truth, hot-reloaded; ~6 macro knobs over ~40 primitives; presets |
 
+**Target hardware:** RTX 3080, 2560×1440. Sized in §8.1; 4K is explicitly not a
+requirement, which is what makes a native-resolution front layer affordable.
+
 Two requirements dominate everything else and deserve to be called out before the
 architecture, because they are the ones that are *hard*:
 
@@ -232,12 +235,26 @@ Long runs fail in specific, known ways. Each gets an explicit countermeasure:
 
 ## 5. Depth
 
-Full volumetric raymarching would meet the brief visually but not the GPU-budget
-requirement (a 1440p 32-step march is ~3.5 Gsamples/s). Default is **layered 2.5D**,
-which gets most of the perceptual depth for a fraction of the cost:
+On the target hardware (§8.1) the GPU budget does *not* rule out true volumetric
+raymarching — a 1440p 48-step march is ~5 Gsamples/s, which is a few percent of an
+RTX 3080's texture throughput. The reasons to start with **layered 2.5D** are
+implementation risk and lateral resolution, not cost:
+
+- a 2D grid at 1440p has far finer filament detail than any affordable 3D grid;
+- 3D Physarum needs different sensing and steering, and is much harder to tune;
+- the layered path validates the colour, safety, and pacing stages, which are
+  identical under either depth backend.
+
+So: layered 2.5D first, volumetric slab as a **planned alternate depth backend**
+once the rest is proven (§5.1), not as a speculative stretch goal.
 
 - 3 independent simulation layers at different spatial scales and tempos (back layer
   large/slow, front layer fine/quicker).
+- **Resolution follows depth of field.** Back layers are blurred by DOF, so
+  simulating them at full resolution computes detail that is then discarded. Front
+  layer at native 1440p, mid at 1/2 linear, back at 1/4 — total ~4.9 M cells instead
+  of 11.1 M, with no visible loss. Agent counts scale with layer resolution the same
+  way.
 - Composited back-to-front with Beer–Lambert transmittance, so nearer material
   genuinely occludes and tints what is behind it, rather than just alpha-blending.
 - **Parallax** offset per layer driven by an extremely slow drift (and optionally by
@@ -253,8 +270,26 @@ which gets most of the perceptual depth for a fraction of the cost:
   stacked — structures loosely echo through depth, which reads as a single volume
   rather than three sheets.
 
-A true thin-slab volumetric mode (e.g. 256×256×48 with a half-res march and temporal
-upsample) is a plausible later addition for high-end GPUs, behind a config flag.
+### 5.1 Volumetric slab (alternate backend)
+
+A thin slab — `512 × 288 × 48` ≈ 7.1 M voxels — keeps usable lateral resolution while
+giving genuine volume. 48 depth slices is ample for parallax and occlusion given that
+DOF blurs the far field anyway.
+
+- Sim: 7.1 M voxels × 6 passes × 20 Hz ≈ 850 M voxel-ops/s ≈ **20 GB/s** — ~3% of a
+  3080's bandwidth.
+- Render: 3.7 M px × 48 steps × 30 Hz ≈ **5.3 Gsamples/s** of 3D trilinear. Ray
+  coherence is excellent (near-orthographic camera, no secondary rays), so this sits
+  around 2% of texture throughput.
+
+What it buys over layers: real Beer–Lambert attenuation through a continuous medium,
+self-shadowing from a single soft light, and structures that pass smoothly in front
+of and behind each other rather than living in three discrete sheets. For "fluid
+continuous motion with depth" it is materially better — but only once the 2D system
+is tuned and proven, since it makes every parameter harder to reason about.
+
+The output stages (§6, §7) are unchanged between backends, so this is a clean swap
+rather than a fork.
 
 ---
 
@@ -343,15 +378,39 @@ artefacts: if a frame exceeds `gpu_budget_ms`, the governor lowers the **sim tic
 rate**, which the interpolator hides completely. It never changes resolution at
 runtime — that would be a visible discontinuity.
 
-**Cost model** (2560×1440 display, 3 layers, sim at 1024×576 = 1/2.5 scale):
+### 8.1 Target profile — RTX 3080, 2560×1440
 
-- Sim: ~590k cells × 3 layers × ~6 passes × 15 Hz ≈ **160 M cell-ops/s**
-- Agents: 250k × 2 layers × 15 Hz ≈ 7.5 M agent-steps/s
-- Render: 3.7 M px × ~30 taps × 30 Hz ≈ **340 M taps/s**
+Reference numbers: ~760 GB/s memory bandwidth, ~465 Gtexel/s bilinear fill, 5 MB L2.
+These passes are bandwidth-bound stencil and gather work, so bandwidth is the
+binding constraint, not FLOPs.
 
-That should land around 5–15% of a mid-range discrete GPU — comfortably inside the
-"leave the machine usable" requirement. Levers if not: sim scale, layer count, agent
-count, sim rate.
+| Stage | Work | Cost |
+|---|---|---|
+| Sim | 4.9 M cells (1440p + 1/2 + 1/4) × 6 passes × 20 Hz = 588 M cell-updates/s, ~24 B effective each | **~14 GB/s** (1.9% of bandwidth) |
+| Agents | 1.55 M agents × 20 Hz = 31 M steps/s → ~93 M sensor samples, ~124 M atomic adds/s | negligible |
+| Render | 3.7 M px × ~30 taps × 30 Hz = 3.3 G taps/s bilinear `rgba16f` | ~0.7% of texture fill |
+
+Total steady state lands **under 10% of the card**, including present and driver
+overhead. That is comfortably inside "leave the machine usable" — normal desktop
+work, video, and an IDE will not notice it. It is *not* sized to coexist with a
+game, which matches the stated requirement.
+
+Because the headroom is large, it is spent on quality rather than banked:
+
+- front layer simulated at **native 1440p** (no upscale) for fine filament detail;
+- sim tick at **20 Hz** rather than 15, so the interpolator extrapolates less;
+- ~1.5 M agents total, enough for dense network structure without individual
+  deposits ever being visible;
+- wider, higher-quality separable diffusion kernels rather than minimal 5-tap
+  stencils — smoother fields, which directly serves the no-punctuation goal;
+- multiple RD substeps per tick for finer temporal resolution in the reaction term.
+
+The budget governor is still worth building: the user may be running other GPU work,
+and a 3080 driving a second display through the compositor has variable overhead. It
+throttles the **sim tick rate** only, which the interpolator hides completely.
+
+**Headroom check:** even the volumetric slab backend (§5.1) fits inside ~10% on this
+card, so the depth-backend decision can be made on aesthetics rather than cost.
 
 **Secondary-display specifics:**
 
