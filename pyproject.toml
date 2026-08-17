@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anastomosis"
+version = "0.1.0"
+description = "A long-running generative visual field for self-regulation and stimming"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+    "wgpu>=0.32",
+    "rendercanvas>=2.7",
+    "numpy>=1.26",
+    "tomlkit>=0.12",
+    "watchdog>=4.0",
+]
+
+[project.optional-dependencies]
+# The control panel and the render window share one Qt event loop.
+ui = ["PySide6>=6.6"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+anastomosis = "anastomosis.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["anastomosis*"]
+
+[tool.setuptools.package-data]
+anastomosis = ["shaders/*.wgsl", "presets/*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: long-running soak tests, deselect with -m 'not slow'"]
