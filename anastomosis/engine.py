@@ -510,6 +510,9 @@ class Engine:
             "feed": r.feed, "kill": r.kill, "du": r.du, "dv": r.dv,
             "rdt": r.dt, "trail_feed_gain": r.trail_feed_gain,
             "kill_follows_feed": r.kill_follows_feed,
+            "feed_min": r.feed_min, "feed_max": r.feed_max,
+            "kill_band": r.kill_band,
+            "kill_min": r.kill_min, "kill_max": r.kill_max,
 
             "psi_gain": f.psi_gain * tempo,
             "field_gain": f.field_gain * tempo,

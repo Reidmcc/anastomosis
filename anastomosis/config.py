@@ -96,6 +96,21 @@ class ReactionParams:
     # this, a downward climate excursion in feed drives whole regions to zero
     # and they never recover -- verified in test_regime.py.
     kill_follows_feed: float = 0.55
+    # Hard bounds applied in the shader after climate deviation, trail
+    # coupling and homeostat correction are all summed. These are a liveness
+    # floor, not a stylistic range: below kill_min the reaction dies at low
+    # feed and cannot restart, and a dead region would then be advected around
+    # by the climate flow rather than recovering. Verified by
+    # test_climate_range_stays_on_the_live_band.
+    # The live region of the Gray-Scott map is a diagonal strip, not a
+    # rectangle, so kill is bounded *relative to the band centre* (which
+    # follows feed) as well as absolutely. A fixed box either admits dead
+    # corners at both ends or needlessly restricts the middle.
+    feed_min: float = 0.0100
+    feed_max: float = 0.0300
+    kill_band: float = 0.0050  # permitted excursion off the band centre
+    kill_min: float = 0.0470  # absolute floor, protects the low-feed end
+    kill_max: float = 0.0630  # absolute ceiling, protects the high-feed end
 
 
 @dataclass
@@ -359,6 +374,24 @@ SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
 # --------------------------------------------------------------------------
 # Dataclass path helpers
 # --------------------------------------------------------------------------
+
+
+def clamp_reaction(
+    feed_raw: float, kill_raw: float, reaction: "ReactionParams"
+) -> tuple[float, float]:
+    """Constrain (feed, kill) to the live band.
+
+    This mirrors the clamping in ``reaction.wgsl`` exactly and exists so the
+    regime tests exercise the same logic the shader does rather than an
+    approximation of it. If one changes, the other must.
+    """
+    feed = min(max(feed_raw, reaction.feed_min), reaction.feed_max)
+    centre = reaction.kill + reaction.kill_follows_feed * (feed - reaction.feed)
+    lo = max(centre - reaction.kill_band, reaction.kill_min)
+    hi = min(centre + reaction.kill_band, reaction.kill_max)
+    if lo > hi:  # bands crossed; the absolute bounds win
+        lo = hi = min(max(centre, reaction.kill_min), reaction.kill_max)
+    return feed, min(max(kill_raw, lo), hi)
 
 
 def get_path(obj: Any, path: str) -> Any:

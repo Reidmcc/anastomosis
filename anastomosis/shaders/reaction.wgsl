@@ -63,20 +63,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // clean off the usable map there.
     let trail_boost = params.trail_feed_gain * (trail / (1.0 + trail));
     let feed_deviation = params.range_feed * ca.x + trail_boost;
-    let feed = clamp(params.feed + feed_deviation + stats.corr_feed, 0.002, 0.14);
+    let feed = clamp(
+        params.feed + feed_deviation + stats.corr_feed,
+        params.feed_min, params.feed_max);
 
     // Kill follows feed along the live band. Holding kill fixed while the
     // climate varies feed walks regions off the edge of the map, where the
     // reaction dies and cannot restart -- the single most dangerous failure
     // mode for a run measured in days.
-    let kill = clamp(
-        params.kill
-            + params.range_kill * ca.y
-            + params.kill_follows_feed * feed_deviation
-            + stats.corr_kill,
-        0.020,
-        0.085,
-    );
+    // Bounded relative to the band centre as well as absolutely. The live
+    // region is a diagonal strip: a fixed box in (feed, kill) admits dead
+    // corners at both ends. Must stay in step with config.clamp_reaction.
+    let band_centre = params.kill
+        + params.kill_follows_feed * (feed - params.feed);
+    let band_lo = max(band_centre - params.kill_band, params.kill_min);
+    let band_hi = min(band_centre + params.kill_band, params.kill_max);
+    let kill_raw = params.kill
+        + params.range_kill * ca.y
+        + params.kill_follows_feed * feed_deviation
+        + stats.corr_kill;
+    let kill = clamp(kill_raw, min(band_lo, band_hi), max(band_lo, band_hi));
 
     let lap = laplacian(p, idims);
     let reaction_rate = u * v * v;
