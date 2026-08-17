@@ -7,6 +7,12 @@ between the last two sim states. This is what makes the frame budget adaptive
 without visible artefacts -- when a frame runs long the governor lowers the
 tick rate, which the interpolator hides completely. It never changes
 resolution at runtime, because that would be a visible discontinuity.
+
+The same reasoning governs window resizes. A resize is a change to the
+presentation, not to the world: the engine's output targets follow the window
+and the simulation is left running exactly as it was. Rebuilding it would
+reseed every field and every agent, which is a hard cut in the middle of a
+session intended to last for days.
 """
 
 from __future__ import annotations
@@ -24,6 +30,11 @@ from . import engine as engine_module
 from . import events as events_module
 
 log = logging.getLogger(__name__)
+
+# How long a new window size must hold before the output targets follow it.
+# Dragging a window edge reports a new size every frame; coalescing them keeps
+# the drag from reallocating render targets dozens of times.
+RESIZE_SETTLE = 0.15
 
 
 @dataclass
@@ -66,6 +77,9 @@ class Application:
         self._sim_hz_scale = 1.0
         self._last_telemetry = time.perf_counter()
         self._watcher = None
+        self._size = (0, 0)
+        self._pending_size: tuple[int, int] | None = None
+        self._pending_since = 0.0
 
     # -- setup --------------------------------------------------------------
 
@@ -208,21 +222,38 @@ class Application:
         elif median < budget * 0.55:
             self._sim_hz_scale = min(1.0, self._sim_hz_scale * 1.01)
 
+    def _follow_canvas_size(self, now: float) -> None:
+        """Track the window size without ever restarting the simulation.
+
+        A resize -- including maximising, or a monitor's scale factor changing
+        -- only rebuilds the engine's presentation chain. The world keeps
+        running: same fields, same agents, same tick counter. Until a new size
+        settles the previous output is simply presented into the new window,
+        which is a scale, not a discontinuity.
+        """
+        width, height = self.canvas.get_physical_size()
+        if width <= 0 or height <= 0 or (width, height) == self._size:
+            self._pending_size = None
+            return
+
+        if (width, height) != self._pending_size:
+            self._pending_size = (width, height)
+            self._pending_since = now
+            return
+        if now - self._pending_since < RESIZE_SETTLE:
+            return
+
+        self.engine.resize(width, height)
+        self._size = (width, height)
+        self._pending_size = None
+
     def draw_frame(self) -> None:
         now = time.perf_counter()
         frame_dt = min(now - self._last_time, 0.25)  # clamp after a stall
         self._last_time = now
 
         self.params = self.ramp.update(frame_dt)
-
-        # Resize: rebuild the engine only when the size actually changed.
-        width, height = self.canvas.get_physical_size()
-        if (width, height) != self._size and width > 0 and height > 0:
-            log.info("resizing to %dx%d", width, height)
-            self.engine = engine_module.Engine(
-                self.device, width, height, self.params, seed=self.options.seed
-            )
-            self._size = (width, height)
+        self._follow_canvas_size(now)
 
         sim_hz = max(self.params.sim_hz * self._sim_hz_scale, 2.0)
         tick_interval = 1.0 / sim_hz

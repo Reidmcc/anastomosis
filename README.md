@@ -47,6 +47,13 @@ borderless windowed fullscreen rather than exclusive, deliberately: exclusive
 fullscreen can stall the compositor on your *other* monitor and steal focus,
 which would defeat the point.
 
+Resizing the window — dragging an edge, maximising, going fullscreen — does not
+interrupt the simulation. The field keeps running with everything it has grown,
+and only the presentation follows the new size. It also keeps the resolution it
+started with, so if you want the extra detail at a much larger window, pass
+`--width`/`--height` at launch (or set `render.base_scale` higher) rather than
+resizing into it.
+
 The control panel opens as a separate, ordinary window on your main display. It
 is not always-on-top and minimises freely — tuck it away and bring it back from
 the taskbar when you want it.
