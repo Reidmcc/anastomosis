@@ -9,6 +9,14 @@
 // Feed and kill also carry a per-region offset from the climate field, so
 // different parts of the screen sit in different Gray-Scott regimes
 // simultaneously, and those regions migrate.
+//
+// So does the diffusion rate, and that one is load-bearing for a different
+// reason (DESIGN.md §4.7). At fixed diffusion a Gray-Scott regime has one
+// characteristic wavelength, so every feature on screen ends up the same size
+// -- a monodisperse spot field, which is monotonous over long viewing and is
+// also a trypophobia trigger. Varying `du` per region makes the feature size
+// polydisperse and migratory: coarse zones drift through fine ones, structures
+// merge as their neighbourhood coarsens and split as it refines.
 
 //!include common.wgsl
 
@@ -20,11 +28,15 @@
 @group(0) @binding(2) var reaction_out: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(3) var trail_tex: texture_2d<f32>;
 @group(0) @binding(4) var clim_a: texture_2d<f32>;
-@group(0) @binding(5) var samp: sampler;
-@group(0) @binding(6) var<storage, read> stats: Stats;
+@group(0) @binding(5) var clim_c: texture_2d<f32>;
+@group(0) @binding(6) var samp: sampler;
+@group(0) @binding(7) var<storage, read> stats: Stats;
 
 // Nine-point Laplacian: more isotropic than the five-point stencil, which
 // leaves a visible square bias in the growth of large structures.
+//
+// Note that the diffusion *rates* are applied by the caller, per texel, not
+// here: this is the plain averaging-form Laplacian of both species.
 fn laplacian(p: vec2<i32>, idims: vec2<i32>) -> vec2<f32> {
     let c = textureLoad(reaction_in, p, 0).rg;
     var ortho = vec2<f32>(0.0);
@@ -57,6 +69,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let trail = textureLoad(trail_tex, p, 0).r;
     let ca = textureSampleLevel(clim_a, samp, uv, 0.0);
+    let cc = textureSampleLevel(clim_c, samp, uv, 0.0);
 
     // Saturating trail coupling: a heavily trafficked texel can accumulate a
     // trail value many times the field mean, and a linear term would drive feed
@@ -84,12 +97,38 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         + stats.corr_kill;
     let kill = clamp(kill_raw, min(band_lo, band_hi), max(band_lo, band_hi));
 
+    // Local feature size. The deviation is geometric, not additive, for two
+    // reasons. `du` is driven by the `scale` macro, so a fixed offset would
+    // mean a different spread at each end of that knob. And the band is not
+    // symmetric around the base -- there is a factor of two of headroom above
+    // and only 0.57 below -- so an additive deviation spends its downside
+    // against the floor long before it has used its upside. Geometric, the
+    // same deviation costs 1% of texels at the clamp where additive costs 5%,
+    // for the same spread of feature size. `params.du` already carries the
+    // global walk, and both terms being geometric means they compose.
+    //
+    // The bounds are a survival floor and a stability ceiling, not a stylistic
+    // range: under du_min the reaction thins toward collapse (mean V 0.015 at
+    // du = 0.06) and its activity drops below the homeostat's deadband, so the
+    // controller starts fighting the drift with kill -- which moves mass, and
+    // so moves the exposure governor. Over du_max the explicit diffusion runs
+    // out of headroom. Must stay in step with config.clamp_du.
+    //
+    // dv is scaled by the same factor rather than varied on its own: the
+    // dv/du *ratio* moves mass hard (0.36 -> 0.64 takes mean V from 0.144 to
+    // 0.084), while the pair scaled together barely moves it at all. That is
+    // the whole reason this lever was chosen over kill.
+    let du_local = clamp(
+        params.du * exp(params.range_du * cc.x),
+        params.du_min, params.du_max);
+    let dv_local = params.dv * (du_local / max(params.du, 1e-6));
+
     let lap = laplacian(p, idims);
     let reaction_rate = u * v * v;
     let dt = params.rdt;
 
-    u = u + dt * (params.du * lap.x - reaction_rate + feed * (1.0 - u));
-    v = v + dt * (params.dv * lap.y + reaction_rate - (feed + kill) * v);
+    u = u + dt * (du_local * lap.x - reaction_rate + feed * (1.0 - u));
+    v = v + dt * (dv_local * lap.y + reaction_rate - (feed + kill) * v);
 
     // Hyphal seeding. V = 0 is an absorbing state for Gray-Scott, so without a
     // direct injection path the reaction can never restart on ground where it

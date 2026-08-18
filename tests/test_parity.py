@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 import wgpu
 
+import morphology as M
 import reference as R
 from anastomosis import config, gpu_params, shaders
 
@@ -24,8 +25,17 @@ SIZE = 64
 F16_ATOL = 2e-3
 
 
-def _run_reaction_on_gpu(device, u, v, feed, kill, params, substeps=1):
-    """Run reaction.wgsl for `substeps` steps and read back (U, V)."""
+def _run_reaction_on_gpu(
+    device, u, v, feed, kill, params, substeps=1, scale=None, range_du=0.0
+):
+    """Run reaction.wgsl for `substeps` steps and read back (U, V).
+
+    `scale` is the climate `scale` channel (climate_c.x, in [-1, 1]) that sets
+    the local diffusion rate. It is uploaded at the simulation's own resolution,
+    so the shader's bilinear sample lands exactly on texel centres and the
+    comparison stays a comparison of the arithmetic rather than of two
+    interpolators.
+    """
     size = u.shape[0]
 
     module = device.create_shader_module(code=shaders.load("reaction.wgsl"))
@@ -58,14 +68,20 @@ def _run_reaction_on_gpu(device, u, v, feed, kill, params, substeps=1):
     field[..., 0] = u
     field[..., 1] = v
     textures = [make_texture(field), make_texture(np.zeros_like(field))]
-    # Zero trail and zero climate isolate the pure Gray-Scott step.
+    # Zero trail and zero climate_a isolate the pure Gray-Scott step.
     trail = make_texture(np.zeros_like(field))
     climate = make_texture(np.zeros_like(field))
+    climate_c = np.zeros_like(field)
+    if scale is not None:
+        climate_c[..., 0] = scale
+    climate_c_tex = make_texture(climate_c)
 
     values = {
         "dims_x": size, "dims_y": size,
         "feed": feed, "kill": kill,
         "du": params.du, "dv": params.dv, "rdt": params.dt,
+        "du_min": params.du_min, "du_max": params.du_max,
+        "range_du": range_du,
         "trail_feed_gain": 0.0,
         "kill_follows_feed": params.kill_follows_feed,
         "feed_min": params.feed_min, "feed_max": params.feed_max,
@@ -97,8 +113,9 @@ def _run_reaction_on_gpu(device, u, v, feed, kill, params, substeps=1):
                 {"binding": 2, "resource": textures[1 - index].create_view()},
                 {"binding": 3, "resource": trail.create_view()},
                 {"binding": 4, "resource": climate.create_view()},
-                {"binding": 5, "resource": sampler},
-                {"binding": 6, "resource": {"buffer": stats_buf, "offset": 0,
+                {"binding": 5, "resource": climate_c_tex.create_view()},
+                {"binding": 6, "resource": sampler},
+                {"binding": 7, "resource": {"buffer": stats_buf, "offset": 0,
                                             "size": stats_buf.size}},
             ],
         )
@@ -145,6 +162,241 @@ def test_reaction_matches_numpy(gpu_device, substeps):
     )
 
 
+@pytest.mark.parametrize("substeps", [1, 3])
+def test_reaction_matches_numpy_with_a_varying_du(gpu_device, substeps):
+    """Parity must survive the climate-driven diffusion rate of DESIGN.md 4.7.
+
+    The morphology fix makes `du` a field rather than a scalar, and geometric
+    rather than additive, which changes the innermost line of the reaction. A
+    scalar-only parity test still passes with the whole mechanism silently
+    disconnected, so the varying case gets its own check -- across the full
+    range the climate is clamped to, which reaches both `du` bounds.
+    """
+    device, _ = gpu_device
+    resolved = config.Config().resolve()
+    params = resolved.reaction
+    range_du = resolved.climate.range_du
+
+    # Rounded through f16 first: the climate field is an rgba16float texture,
+    # so that is the value the shader actually sees.
+    ramp = np.linspace(-1.0, 1.0, SIZE, dtype=np.float32)
+    scale = np.broadcast_to(ramp, (SIZE, SIZE)).astype(np.float16).astype(np.float32)
+
+    u0, v0 = R.seed_field(SIZE, blobs=6, seed=3)
+    gpu_u, gpu_v = _run_reaction_on_gpu(
+        device, u0, v0, params.feed, params.kill, params,
+        substeps=substeps, scale=scale, range_du=range_du,
+    )
+
+    du = np.clip(
+        params.du * np.exp(range_du * scale), params.du_min, params.du_max)
+    dv = params.dv * (du / params.du)
+    assert du.min() == params.du_min and du.max() == params.du_max, (
+        "the ramp no longer reaches both clamps, so the clamp in "
+        "reaction.wgsl is untested"
+    )
+    # ...but a typical region must not be sitting on one. The climate does not
+    # reach its own clamp: it settles around s.d. 0.11 (morphology.CLIMATE_SD),
+    # and at that amplitude the deviation has to be free to act.
+    typical = params.du * np.exp(range_du * np.array([-M.CLIMATE_SD, M.CLIMATE_SD]))
+    assert (typical > params.du_min).all() and (typical < params.du_max).all(), (
+        f"a one-sigma climate excursion now reaches a du clamp "
+        f"({typical[0]:.3f}, {typical[1]:.3f}); most of the field would be "
+        f"pinned to a single feature size again"
+    )
+
+    ref_u, ref_v = u0.astype(np.float32), v0.astype(np.float32)
+    for _ in range(substeps):
+        ref_u, ref_v = R.gray_scott_step(
+            ref_u, ref_v, params.feed, params.kill, du=du, dv=dv, dt=params.dt,
+        )
+
+    assert np.abs(gpu_u - ref_u).max() < F16_ATOL, (
+        f"U diverged: max |delta| = {np.abs(gpu_u - ref_u).max():.5f}"
+    )
+    assert np.abs(gpu_v - ref_v).max() < F16_ATOL, (
+        f"V diverged: max |delta| = {np.abs(gpu_v - ref_v).max():.5f}"
+    )
+
+
+def _run_trail_on_gpu(device, trail, income, deposited, params, prune_gain, prune_climate):
+    """Run trail.wgsl once and read back (trail, income, prune_relative)."""
+    size = trail.shape[0]
+    module = device.create_shader_module(code=shaders.load("trail.wgsl"))
+    pipeline = device.create_compute_pipeline(
+        layout=wgpu.enums.AutoLayoutMode.auto,
+        compute={"module": module, "entry_point": "main"},
+    )
+    usage = (
+        wgpu.TextureUsage.TEXTURE_BINDING
+        | wgpu.TextureUsage.STORAGE_BINDING
+        | wgpu.TextureUsage.COPY_SRC
+        | wgpu.TextureUsage.COPY_DST
+    )
+
+    def make_texture(array):
+        texture = device.create_texture(
+            size=(size, size, 1), format=wgpu.TextureFormat.rgba16float, usage=usage
+        )
+        device.queue.write_texture(
+            {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
+            np.ascontiguousarray(array.astype(np.float16)),
+            {"offset": 0, "bytes_per_row": size * 8, "rows_per_image": size},
+            (size, size, 1),
+        )
+        return texture
+
+    field = np.zeros((size, size, 4), dtype=np.float32)
+    field[..., 0] = trail
+    field[..., 1] = income
+    src = make_texture(field)
+    dst = make_texture(np.zeros_like(field))
+    # Zero climate_b leaves decay at its base; climate_c.y carries the regional
+    # pruning strength.
+    climate_b = make_texture(np.zeros_like(field))
+    climate_c_field = np.zeros_like(field)
+    climate_c_field[..., 1] = prune_climate
+    climate_c = make_texture(climate_c_field)
+
+    # The deposit accumulator is fixed point, matching agents.wgsl.
+    quanta = np.round(deposited * 1048576.0).astype(np.uint32)
+    deposit_buf = device.create_buffer_with_data(
+        data=np.ascontiguousarray(quanta).tobytes(),
+        usage=wgpu.BufferUsage.STORAGE,
+    )
+    values = {
+        "dims_x": size, "dims_y": size,
+        "trail_decay": params.trail_decay,
+        "income_rate": params.income_rate,
+        "prune_gain": prune_gain,
+        "range_decay": 0.0,
+        "range_prune": config.Config().resolve().climate.range_prune,
+    }
+    params_buf = device.create_buffer_with_data(
+        data=gpu_params.pack(gpu_params.SIM_DTYPE, values).tobytes(),
+        usage=wgpu.BufferUsage.STORAGE,
+    )
+    stats_buf = device.create_buffer_with_data(
+        data=np.zeros(1, dtype=gpu_params.STATS_DTYPE).tobytes(),
+        usage=wgpu.BufferUsage.STORAGE,
+    )
+    sampler = device.create_sampler(
+        address_mode_u="repeat", address_mode_v="repeat",
+        mag_filter="linear", min_filter="linear",
+    )
+    bind_group = device.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": params_buf, "offset": 0,
+                                        "size": params_buf.size}},
+            {"binding": 1, "resource": src.create_view()},
+            {"binding": 2, "resource": dst.create_view()},
+            {"binding": 3, "resource": {"buffer": deposit_buf, "offset": 0,
+                                        "size": deposit_buf.size}},
+            {"binding": 4, "resource": climate_b.create_view()},
+            {"binding": 5, "resource": climate_c.create_view()},
+            {"binding": 6, "resource": sampler},
+            {"binding": 7, "resource": {"buffer": stats_buf, "offset": 0,
+                                        "size": stats_buf.size}},
+        ],
+    )
+    encoder = device.create_command_encoder()
+    cpass = encoder.begin_compute_pass()
+    cpass.set_pipeline(pipeline)
+    cpass.set_bind_group(0, bind_group)
+    cpass.dispatch_workgroups((size + 7) // 8, (size + 7) // 8, 1)
+    cpass.end()
+    device.queue.submit([encoder.finish()])
+
+    raw = device.queue.read_texture(
+        {"texture": dst, "mip_level": 0, "origin": (0, 0, 0)},
+        {"offset": 0, "bytes_per_row": size * 8, "rows_per_image": size},
+        (size, size, 1),
+    )
+    out = np.frombuffer(raw, dtype=np.float16).reshape(size, size, 4).astype(np.float32)
+    return out[..., 0], out[..., 1], out[..., 2]
+
+
+@pytest.mark.parametrize("prune_gain", [0.0, 3.0])
+def test_trail_matches_numpy(gpu_device, prune_gain):
+    """Flux pruning is arithmetic in a shader with no assertions in it.
+
+    Run with pruning off and on: off must reproduce the plain decay-plus-deposit
+    the trail pass has always done, on must reproduce the pruned version. The
+    inputs deliberately span the interesting cases -- texels with traffic and no
+    trail, trail and no traffic, and every ratio between.
+    """
+    device, _ = gpu_device
+    agents = config.Config().resolve().agents
+    rng = np.random.default_rng(11)
+
+    trail = (rng.random((SIZE, SIZE)) ** 2 * 2.0).astype(np.float32)
+    income = (rng.random((SIZE, SIZE)) ** 2 * 0.06).astype(np.float32)
+    # Poisson-spiky, like real agent arrivals, including plenty of empty texels.
+    deposited = (rng.random((SIZE, SIZE)) < 0.3) * rng.random((SIZE, SIZE)) * 0.05
+    deposited = deposited.astype(np.float32)
+    prune_climate = np.linspace(-1.0, 1.0, SIZE, dtype=np.float32)
+    prune_climate = np.broadcast_to(prune_climate[:, None], (SIZE, SIZE))
+    prune_climate = prune_climate.astype(np.float16).astype(np.float32)
+
+    gpu_trail, gpu_income, gpu_prune = _run_trail_on_gpu(
+        device, trail, income, deposited, agents, prune_gain, prune_climate)
+
+    # The shader reads the deposit accumulator back as fixed point, so the
+    # reference has to see the same quantised value.
+    quantised = np.round(deposited * 1048576.0) / 1048576.0
+    range_prune = config.Config().resolve().climate.range_prune
+    local_gain = prune_gain * np.exp(range_prune * prune_climate)
+    ref_trail, ref_income, ref_prune = R.trail_step(
+        trail.astype(np.float64), income.astype(np.float64),
+        quantised.astype(np.float64), agents.trail_decay,
+        agents.income_rate, local_gain.astype(np.float64),
+    )
+
+    assert np.abs(gpu_trail - ref_trail).max() < F16_ATOL, (
+        f"trail diverged: max |delta| = {np.abs(gpu_trail - ref_trail).max():.5f}"
+    )
+    assert np.abs(gpu_income - ref_income).max() < F16_ATOL, (
+        f"income diverged: max |delta| = {np.abs(gpu_income - ref_income).max():.5f}"
+    )
+    assert np.abs(gpu_prune - ref_prune).max() < 2e-2, (
+        f"prune channel diverged: max |delta| = "
+        f"{np.abs(gpu_prune - ref_prune).max():.5f}"
+    )
+
+
+def test_pruning_only_ever_raises_decay(gpu_device):
+    """One-sidedness is the property that keeps the field from freezing.
+
+    Centring the term so that well-fed strands decay *slower* is mass-neutral
+    and was the obvious implementation; it also tripled the trail field's
+    autocorrelation at a 1050-tick lag, because established structure got
+    several times the memory of everything else. The mass is returned through
+    the agent deposit instead. If someone reintroduces the centring here, every
+    well-fed texel starts retaining more than the control, and this fails.
+    """
+    device, _ = gpu_device
+    agents = config.Config().resolve().agents
+    rng = np.random.default_rng(12)
+
+    trail = (rng.random((SIZE, SIZE)) * 2.0).astype(np.float32)
+    income = (rng.random((SIZE, SIZE)) * 0.06).astype(np.float32)
+    deposited = (rng.random((SIZE, SIZE)) * 0.02).astype(np.float32)
+    flat = np.zeros((SIZE, SIZE), dtype=np.float32)
+
+    kept_off, _, prune_off = _run_trail_on_gpu(
+        device, trail, income, deposited, agents, 0.0, flat)
+    kept_on, _, prune_on = _run_trail_on_gpu(
+        device, trail, income, deposited, agents, 6.0, flat)
+
+    assert (prune_off == 0.0).all(), "the prune channel is not inert at zero gain"
+    assert (prune_on > 0.0).any(), "pruning at gain 6 removed nothing anywhere"
+    assert (kept_on <= kept_off + F16_ATOL).all(), (
+        "pruning left some texel with more trail than the unpruned control, so "
+        "it is handing decay back locally rather than through the agent layer"
+    )
+
+
 def test_reaction_conserves_nothing_but_stays_bounded(gpu_device):
     """The shader's clamps must hold even from a hostile initial state."""
     device, _ = gpu_device
@@ -175,6 +427,21 @@ def test_oklab_roundtrip_matches_reference():
         assert back[0] == pytest.approx(lightness, abs=1e-4)
         assert back[1] == pytest.approx(a, abs=1e-4)
         assert back[2] == pytest.approx(b, abs=1e-4)
+
+
+def test_partial_struct_size_matches_the_buffer_stride():
+    """The reduce pass writes two vec4s per tile; the engine sizes for that.
+
+    A mismatch here is silent: the shader writes past its tile or reads a
+    neighbour's, and the homeostat's statistics come out subtly wrong rather
+    than obviously broken.
+    """
+    source = gpu_params.PARTIAL_WGSL
+    members = [line for line in source.splitlines() if "vec4<f32>" in line]
+    assert len(members) * 16 == gpu_params.PARTIAL_SIZE, (
+        f"Partial declares {len(members)} vec4 members but PARTIAL_SIZE is "
+        f"{gpu_params.PARTIAL_SIZE}"
+    )
 
 
 def test_generated_struct_matches_dtype():

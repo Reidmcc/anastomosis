@@ -25,6 +25,9 @@ _STRUCTS = {
     "Stats": gpu_params.STATS_FIELDS,
 }
 
+# Structs that are not host-packed and so are not derived from a field list.
+_RAW_STRUCTS = {"Partial": gpu_params.PARTIAL_WGSL}
+
 
 def _expand(name: str, seen: set[str]) -> str:
     path = SHADER_DIR / name
@@ -44,11 +47,14 @@ def _expand(name: str, seen: set[str]) -> str:
             out.append(f"// ---- end {target} ----")
         elif stripped.startswith("//!struct"):
             struct_name = stripped.split(maxsplit=1)[1].strip()
-            if struct_name not in _STRUCTS:
+            if struct_name in _RAW_STRUCTS:
+                out.append(_RAW_STRUCTS[struct_name])
+            elif struct_name in _STRUCTS:
+                out.append(gpu_params.wgsl_struct(struct_name, _STRUCTS[struct_name]))
+            else:
                 raise KeyError(
                     f"{name}:{lineno}: unknown generated struct {struct_name!r}"
                 )
-            out.append(gpu_params.wgsl_struct(struct_name, _STRUCTS[struct_name]))
         else:
             out.append(line)
     return "\n".join(out)
