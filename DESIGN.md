@@ -290,10 +290,45 @@ Long runs fail in specific, known ways. Each gets an explicit countermeasure:
   mantissa would visibly quantise the drift.
 - **Device loss** (driver reset, GPU hang, external monitor unplug, sleep/wake).
   Detect, tear down, rebuild all resources, resume from the last checkpoint.
-- **Checkpointing.** Field textures + climate state written to disk every ~5 min so
-  a crash or a reboot resumes a mature simulation rather than restarting from noise.
-  A three-hour-old field looks materially different from a fresh one; this is worth
-  the small complexity. **Not yet implemented** — see §13.
+- **Checkpointing.** Field textures + climate state written to disk every ~5 min, and
+  again when the window closes, so a crash, a reboot or an ordinary quit resumes a
+  mature simulation rather than restarting from noise. A three-hour-old field looks
+  materially different from a fresh one; this is worth the small complexity.
+
+  What is *not* in the snapshot is not there on purpose — at 1440p the fields add
+  up to ~230 MB and this is written every five minutes for days. `velocity` and
+  `reaction_prev` are rewritten unconditionally at the start of every tick, before
+  anything reads them, so they carry nothing between ticks; skipping them takes the
+  file to ~150 MB. The deposit accumulator is drained by `atomicExchange` every
+  tick, so between ticks it is already empty. The
+  output history the safety stage slew-limits against is left cold, so a resumed
+  session grows up from black over a couple of seconds instead of cutting — the one
+  way resuming could produce punctuation. And the event scheduler's RNG stream is
+  not saved, because exponential arrivals are memoryless and a fresh stream is
+  statistically identical; the *in-flight* events are saved, since those are
+  mid-envelope.
+
+  Geometry is saved, not required. Resolution, layer count, agent counts and
+  climate size all follow from the window size and the config, so treating them as
+  a compatibility key meant that opening the window at a different size — or
+  editing any config value that touched them — silently discarded a field that had
+  taken hours to grow, over a mismatch that only ever concerned the presentation.
+  The snapshot therefore records the geometry it was captured at, and the launch
+  builds its engine in *that* shape before loading the field into it. This costs
+  nothing visually, because the simulation's resolution is already independent of
+  the window's: a resize only rebuilds the presentation chain (§8), and the
+  compositor corrects the aspect difference. The consequence is that a resumed
+  field keeps the geometry it was grown at, so the structural config values land on
+  the next *new* field — which is what the reset is for.
+
+  What is still refused is a file this build cannot use at all: a foreign format
+  version, missing or wrongly-shaped arrays, or a geometry no engine could be built
+  at — bounds-checked before allocation, since that number comes off disk and
+  decides how much memory the launch asks for. Every failure path here degrades to
+  "start fresh"; nothing on disk can stop the application opening. Verified by
+  resuming into a second engine and asserting it evolves bit-identically for
+  further ticks — the only check that catches a piece of state quietly left out,
+  and the one that keeps `velocity` and `reaction_prev` honest about being derived.
 - **Zero per-frame allocation.** All buffers, bind groups, and pipelines are created
   at startup. A run of `10^7` frames will find any leak.
 
@@ -1166,13 +1201,14 @@ anastomosis/
     climate.wgsl  agents.wgsl  reaction.wgsl  advect.wgsl  curl.wgsl
     blur.wgsl  couple.wgsl  reduce.wgsl  sanitize.wgsl
     interpolate.wgsl  composite.wgsl  grade.wgsl  safety.wgsl
-  state/checkpoint.py   periodic save/restore
+  checkpoint.py         periodic save/restore of simulation state
   ui/                   control surface (TBD)
 tests/
   test_flash_safety.py  test_soak.py  test_parity.py  test_config.py
   test_regime.py  test_morphology.py  test_agents.py  test_resize.py
   test_ui_backend.py
   reference.py  morphology.py        numpy reference + measurement, not tests
+  test_checkpoint.py
 ```
 
 **Dependencies:** `wgpu>=0.32`, `rendercanvas>=2.7`, `glfw`, `numpy`, `tomlkit`,
@@ -1218,7 +1254,10 @@ GPU-resident homeostat; slow events; layered compositing with parallax, DOF and
 atmosphere; the Oklab colour pipeline; the full safety stage with blue-noise
 dither; sim/render decoupling with motion-compensated interpolation and the
 budget governor; the parameter system with macros, presets, hot reload and
-ramping; the Qt control panel; CLI.
+ramping; the Qt control panel; CLI; checkpointing on a five-minute interval and
+on close, resuming by default, with an explicit reset in the control panel;
+shutdown as a single idempotent path reached from the window closing, a signal,
+or the loop ending, so closing the window saves the field and ends the process.
 
 **Not implemented:**
 
