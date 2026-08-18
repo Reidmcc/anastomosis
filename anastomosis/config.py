@@ -69,6 +69,26 @@ class AgentParams:
     fusion_bias: float = 0.55  # commitment to sensed junctions, 0..1
     trail_decay: float = 0.055
     trail_diffuse: float = 1.15  # gaussian sigma in cells
+    # Flux pruning -- the autolysis half of anastomosis (DESIGN.md 4.7).
+    # Without it the trail field can only gain edges: agents fuse and reinforce,
+    # decay is uniform and traffic-blind, so nothing can ever remove a strand.
+    #
+    # `income_rate` is the EMA on arriving traffic, and must be meaningfully
+    # *faster* than the trail's own decay or the average simply reproduces the
+    # trail and the deficit carries no information at all: at 0.05 against a
+    # decay of 0.055 the measured deficit is 0.02 everywhere and the term is
+    # inert. At 0.15 it spreads across the full range.
+    income_rate: float = 0.15
+    # Off by default, and that is a measured decision rather than caution.
+    # Enabled, the mechanism does what it says -- it removes strands traffic has
+    # abandoned, and the network carries the same mass in a third less area --
+    # but the field it leaves behind is the *persistent* part of itself, so the
+    # trail's autocorrelation at a 1050-tick lag rises from 0.11 to 0.27. It
+    # buys concentration at the cost of exactly the monotony 4.7 exists to fix,
+    # and one run in four at gain 1.5 fell into a sparse state it never left.
+    # The mechanism is built, plumbed and tested; see DESIGN.md 4.7 for what
+    # would have to change for it to earn being switched on.
+    prune_gain: float = 0.0
     starve_threshold: float = 0.004
     max_age: float = 2400.0  # ticks before forced respawn
 
@@ -242,6 +262,11 @@ class ClimateParams:
     # 5% of texels sit at the du_min clamp; that is intended, and it is why the
     # floor is a measured survival bound rather than a guess.
     range_du: float = 3.2
+    # Pruning strength, per region -- geometric, like range_du and for the same
+    # reasons. Zones where the network visibly comes apart, migrating past zones
+    # where it holds together. Inert while agents.prune_gain is zero, which it
+    # is by default.
+    range_prune: float = 1.5
 
 
 @dataclass

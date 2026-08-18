@@ -192,7 +192,7 @@ class Layer:
         tiles_x = math.ceil(w / 16)
         tiles_y = math.ceil(h / 16)
         self.partials_buf = device.create_buffer(
-            size=tiles_x * tiles_y * 16,
+            size=tiles_x * tiles_y * gpu_params.PARTIAL_SIZE,
             usage=wgpu.BufferUsage.STORAGE,
             label=f"partials{spec.index}",
         )
@@ -344,6 +344,10 @@ class Engine:
 
         stats = np.zeros(1, dtype=gpu_params.STATS_DTYPE)
         stats["exposure"] = 1.0
+        # Zero is the correct starting value: the field starts empty, so there
+        # is nothing being pruned and nothing to hand back. The reduction
+        # overwrites it every tick.
+        stats["prune_return"] = 0.0
         device.queue.write_buffer(self.stats_buf, 0, stats.tobytes())
 
         self._make_noise_texture()
@@ -656,6 +660,8 @@ class Engine:
             "fusion_bias": a.fusion_bias,
             "trail_decay": a.trail_decay,
             "trail_diffuse": a.trail_diffuse * feature,
+            "income_rate": a.income_rate,
+            "prune_gain": a.prune_gain,
             "starve_threshold": a.starve_threshold,
             "max_age": a.max_age,
 
@@ -683,7 +689,7 @@ class Engine:
             "range_sensor_distance": c.range_sensor_distance,
             "range_deposit": c.range_deposit, "range_decay": c.range_decay,
             "range_flow": c.range_flow, "range_hue": c.range_hue,
-            "range_du": c.range_du,
+            "range_du": c.range_du, "range_prune": c.range_prune,
 
             # Only the autonomous drift is baked into pigment; the palette macro
             # is applied at render time so turning the knob responds at once
@@ -832,7 +838,7 @@ class Engine:
             cpass.set_pipeline(self.p_trail)
             cpass.set_bind_group(0, self._bind(self.p_trail, [
                 pbind, layer.trail.cur, layer.trail.nxt, deposit_bind,
-                layer.climate_b.cur, sampler, stats_bind,
+                layer.climate_b.cur, layer.climate_c.cur, sampler, stats_bind,
             ]))
             cpass.dispatch_workgroups(gx, gy)
             layer.trail.flip()
@@ -899,7 +905,7 @@ class Engine:
             cpass.set_pipeline(self.p_reduce)
             cpass.set_bind_group(0, self._bind(self.p_reduce, [
                 pbind, layer.reaction.cur, layer.reaction_prev_view,
-                self._buffer_binding(layer.partials_buf),
+                layer.trail.cur, self._buffer_binding(layer.partials_buf),
             ]))
             cpass.dispatch_workgroups(*layer.tiles)
 

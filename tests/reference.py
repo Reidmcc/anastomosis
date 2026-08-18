@@ -7,7 +7,8 @@ Two jobs:
 * fast offline exploration of the Gray-Scott parameter map, which is how the
   defaults in :mod:`anastomosis.config` were chosen rather than guessed.
 
-These must stay in step with ``reaction.wgsl`` and ``advect.wgsl``.
+These must stay in step with ``reaction.wgsl``, ``trail.wgsl`` and
+``advect.wgsl``.
 """
 
 from __future__ import annotations
@@ -55,6 +56,35 @@ def gray_scott_step(
     u_next = u + dt * (du * laplacian9(u) - rate + feed * (1.0 - u))
     v_next = v + dt * (dv * laplacian9(v) + rate - (feed + kill) * v)
     return np.clip(u_next, 0.0, 1.5), np.clip(v_next, 0.0, 1.0)
+
+
+def trail_step(
+    trail: np.ndarray,
+    income: np.ndarray,
+    deposited: np.ndarray,
+    decay: float | np.ndarray,
+    income_rate: float,
+    prune_gain: float | np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """One trail update, matching ``trail.wgsl`` including its clamps.
+
+    Returns ``(trail, income, prune_relative)`` -- the three channels the shader
+    writes. ``prune_relative`` is the extra decay the flux-pruning term applied,
+    as a fraction of the base rate; the reduce pass sums it weighted by trail to
+    work out how much mass the agent layer has to hand back.
+
+    The pruning is deliberately one-sided: ``decay_eff >= decay`` everywhere, so
+    no texel is ever given a longer memory than the base rate. See DESIGN.md
+    §4.7 for why the obvious mass-neutral alternative -- centring the term so
+    that well-fed strands decay *slower* -- freezes the field.
+    """
+    expenditure = decay * trail
+    income_next = income + (deposited - income) * income_rate
+    deficit = np.clip(1.0 - income_next / (expenditure + 1e-6), 0.0, 1.0)
+    prune_relative = prune_gain * deficit
+    decay_eff = np.clip(decay * (1.0 + prune_relative), 0.001, 0.5)
+    value = np.clip(trail * (1.0 - decay_eff) + deposited, 0.0, 8.0)
+    return value, np.clip(income_next, 0.0, 8.0), np.clip(prune_relative, 0.0, 8.0)
 
 
 def seed_field(

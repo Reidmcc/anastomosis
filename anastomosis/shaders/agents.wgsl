@@ -94,7 +94,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let sensor_angle = max(0.02, params.sensor_angle + params.range_sensor_angle * ca.z);
     let sensor_dist = max(1.0, params.sensor_distance + params.range_sensor_distance * ca.w);
-    let deposit_amt = max(0.0, params.deposit + params.range_deposit * cb.x + stats.corr_deposit);
+    // Flux pruning removes a fraction of the trail field's throughput from
+    // strands that traffic has abandoned (trail.wgsl). It is handed back here,
+    // scaled onto the deposit, so pruning redistributes rather than drains: the
+    // mass reappears wherever agents currently are instead of wherever mass
+    // already is. Returning it through decay instead -- the obvious centring --
+    // reinforces established structure and freezes the field; see trail.wgsl.
+    let deposit_amt = max(0.0, params.deposit + params.range_deposit * cb.x + stats.corr_deposit)
+        * (1.0 + clamp(stats.prune_return, 0.0, 2.0));
 
     // Sense: three points ahead, bilinear so there is no texel-grid bias.
     let heading = agent.heading;

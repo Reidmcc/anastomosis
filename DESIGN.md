@@ -478,13 +478,16 @@ climate-varying `du` stays covered by `test_parity.py`.
    rather than thrown away; see below.
 2. ~~The third climate pair, with `du` deviation per region.~~ **Built.** *This
    is the step that addresses the texture itself.*
-3. Flux pruning in `trail.g`, centred.
+3. ~~Flux pruning in `trail.g`, centred.~~ **Built, and off by default** — it
+   does not do what this section predicted. See below.
 4. Rift events and anti-fusion, both riding the channels from (2).
 5. ℓ in the reduce pass, with a drifting setpoint.
 6. Trail advection, behind a knob, once the rest is tuned.
 
-Steps 1–3 should carry most of the value: polydisperse, migrating feature sizes
-plus genuine edge severance.
+~~Steps 1–3 should carry most of the value: polydisperse, migrating feature
+sizes plus genuine edge severance.~~ Step 2 carries the value. Step 3 works
+mechanically and delivers no visible benefit; the reasons are worth keeping and
+are recorded below.
 
 **What steps 1 and 2 turned out to be.** They are not two mechanisms but one
 split the way feed and kill already are — a global mean and a per-region
@@ -579,8 +582,95 @@ feed/kill machinery, so this lever is one contributor among several and the
 effect is not cleanly separable there. That is why the measurements above are
 made on the reaction alone, as §4.7's original analysis was.
 
-The `prune` and `fusion` channels of the new pair are allocated and maintained
-but not yet read; they belong to steps 3 and 4.
+The `fusion` channel of the new pair is allocated and maintained but not yet
+read; it belongs to step 4.
+
+### What step 3 actually did
+
+The flux pruning above is built: an income EMA in `trail.g`, decay raised where
+income falls short of expenditure, the whole thing measurable from `trail.b` and
+gated per region by the `prune` climate channel. It is off by default
+(`agents.prune_gain = 0`), because measuring it changed the conclusion three
+times. All three corrections are worth recording, because the reasoning that
+produced the original prescription looks sound and is wrong in specific ways.
+
+**The income EMA has to be faster than the trail's own decay, not slower.** The
+first implementation used `income_rate = 0.05` against a trail decay of 0.055
+and the deficit came out at **0.02 across the entire field** — the term was
+inert and would have shipped looking like it worked. The reason is structural:
+the trail *is* a decaying integral of deposits, so an EMA with the same time
+constant reproduces it exactly and `income / (decay · trail)` is 1 by
+construction. The deficit only carries information when income is measured over
+a window shorter than the trail's memory, so that a strand's *recent* traffic
+can be compared against its *accumulated* size. At 0.15 the deficit spreads
+across the full range, median 0.51.
+
+**The centring must not be local, and 0.5 is not the reference.** The
+mass-weighted mean deficit is 0.21 at the default intensity — but 0.07 at the
+top of the intensity macro, where the network concentrates two thirds of its
+mass into 2.6% of texels. So the reference is not a constant and cannot be one;
+it is now measured in the reduce pass, which is why the per-tile partials went
+from one `vec4` to two (the stride change §4.7 anticipated for step 5's ℓ term —
+that half of the plumbing is done).
+
+That fixed the accounting and broke something worse. Centring the term locally —
+raising decay on starved strands and lowering it on well-fed ones, exactly as
+prescribed above — **froze the field solid**. Well-fed strands have a deficit
+near zero, so centring hands them several times the memory of everything else,
+and the network locks into whatever shape it happened to hold. Measured, the
+trail's autocorrelation at a 1050-tick lag went from 0.11 unpruned to **0.72**
+centred. That is a far worse failure than the monotony this section exists to
+fix, and it is not a tuning problem: any mass-neutral multiplicative scheme has
+to give back what it takes, and giving it back through decay means giving it to
+whatever is already strongest.
+
+The fix is to return the mass somewhere else. Pruning is now one-sided — decay
+is only ever raised — and the removed fraction of the field's throughput is
+measured and handed back through the *agent deposit*, so it reappears wherever
+traffic currently is rather than wherever mass already is. That is also the
+better model: fungi translocate what they resorb to the growing tips. Persistence
+at a 1050-tick lag comes back to 0.27.
+
+**And with all of that right, it still does not deliver churn.** Measured at
+256², against a `prune_gain = 0` control:
+
+| | trail mass | mass / area | trail autocorr, lag 1050 | reaction autocorr, lag 600 |
+|---|---|---|---|---|
+| off | 0.097 | 1.12 | 0.11 | 0.03 |
+| gain 3 | 0.098 | 1.44 | 0.27 | 0.02 |
+
+Mass is preserved and `corr_decay` does not move at all between the two, so the
+accounting works and the homeostat genuinely does not fight it. The network
+concentrates — the same mass in a third less area, which is a real coarsening.
+But the trail gets *more* persistent, not less, and the reaction field, which is
+what the texture complaint was actually about, does not change at all: mean V,
+feature count, ℓ and the local-ℓ spread are all within noise of the control.
+
+The reason is a selection effect rather than a mechanism failure. Pruning
+removes the parts of the field that were changing, so what survives is by
+definition the persistent part. The prediction above — "with fusion still
+running the result is stationary churn rather than monotone refinement" —
+assumed a cellular network where severing an edge merges two cells and fusion
+creates new ones. The trail field is not cellular: measured across thresholds
+and at 160², 256² and 384², the web has essentially no closed loops (holes 0–2),
+so there are no cells to merge and severance just deletes a wisp.
+
+There is also a stability cost. One run in four at `prune_gain = 1.5` fell into
+a sparse state — trail mass around 0.045 against a normal 0.095 — and stayed
+there for the rest of the run. Gains of 3 and 5 were stable across four seeds
+each, but a rare one-way transition is precisely what §4.5 and §4.6 exist to
+prevent over a multi-day run.
+
+**What would make it earn its place.** The returned mass currently goes through
+the agent deposit, and agents live on the network, so the mass cycles within the
+structure that is already there. The accretion bias identified as a lesser
+contributor above — "respawn is uniform and solitary, so a respawned agent can
+never found anything" — is what closes that loop. If a founding respawn let the
+returned mass start new structure on bare ground, pruning would become genuine
+turnover rather than concentration: material resorbed here, reinvested there.
+That makes step 4 the interesting one, and it makes step 3 a component of step 4
+rather than a step in its own right. The mechanism stays in the tree, tested and
+inert, waiting for that.
 
 ---
 
@@ -951,8 +1041,8 @@ Steps 1–6 produce something already usable for its purpose.
 ## 13. Implementation status
 
 Built and verified headless against a software adapter (Mesa lavapipe), so every
-shader compiles and the full tick/render sequence runs in CI without a GPU. 99
-tests pass in under two minutes.
+shader compiles and the full tick/render sequence runs in CI without a GPU. 104
+tests pass in about two minutes.
 
 **Complete:** all 17 WGSL modules; the three-system substrate with agents, trail,
 reaction, curl-noise flow and pigment advection; the climate field and the
@@ -967,14 +1057,15 @@ ramping; the Qt control panel; CLI.
 - **Checkpointing** (§4.4). Restarts begin from a fresh field rather than
   resuming a mature one. Everything else about long-duration survival is in
   place; this only affects what happens *after* a crash or reboot.
-- **The morphology work in §4.7**, steps 3–6. Feature size is now polydisperse
+- **The morphology work in §4.7**, steps 4–6. Feature size is now polydisperse
   and migrating — the third climate pair drives the reaction's diffusion rate
   per region, over a global mean that walks — which addresses the texture
-  itself. What is still missing is the *topology*: the trail field can still
-  only gain edges, so flux pruning (step 3), rift events and anti-fusion (step
-  4), the ℓ term in the reduce pass (step 5) and trail advection (step 6) are
-  all outstanding. The `prune` and `fusion` climate channels steps 3 and 4 need
-  are allocated and maintained already.
+  itself. Flux pruning (step 3) is built but switched off: measured, it
+  concentrates the network without adding any turnover, and it needs the
+  founding respawn from step 4 before the mass it resorbs can start anything
+  new. Outstanding: rift events and anti-fusion (step 4), the ℓ setpoint (step
+  5, though the reduce pass already carries the wider partials it needs) and
+  trail advection (step 6).
 - **The volumetric slab backend** (§5.1), which was always positioned as the
   second step after the layered path is proven.
 - **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is

@@ -16,7 +16,7 @@ import pytest
 import wgpu
 
 import morphology
-from anastomosis import config, engine as engine_module, events, shaders
+from anastomosis import config, engine as engine_module, events, gpu_params, shaders
 
 MASK32 = 0xFFFFFFFF
 
@@ -209,6 +209,78 @@ def test_the_feature_size_band_is_used_but_not_camped_on():
         f"{clamped:.1%} of the field sits at a du clamp; the band is either "
         f"unreachable (so the survival floor is untested) or so easily "
         f"reached that much of the screen is pinned to one feature size"
+    )
+
+
+@pytest.mark.slow
+def test_flux_pruning_returns_the_mass_it_removes(gpu_device):
+    """The property that decides whether pruning survives the homeostat.
+
+    Raising decay on abandoned strands is a mass sink, and the controller has a
+    lever pointed straight at it: corr_decay. Left uncompensated, the homeostat
+    lowers decay globally until the trail mass comes back -- a weaker network
+    everywhere and no severance anywhere, which is the opposite of the point.
+    The removed mass is measured in the reduce pass and handed back through the
+    agent deposit, so the field ends up the same weight and the controller has
+    nothing to correct.
+
+    Asserted against a prune_gain = 0 control run rather than against absolute
+    numbers, since what matters is the difference the term makes.
+    """
+    device, _ = gpu_device
+    width, height, ticks = 128, 128, 700
+
+    def run(prune_gain: float) -> dict:
+        params = config.Config().resolve()
+        params.render.layers = 1
+        params.agents.prune_gain = prune_gain
+        engine = engine_module.Engine(device, width, height, params, seed=23)
+        for _ in range(ticks):
+            engine.tick(params, [])
+        layer = engine.layers[0]
+        texture = layer.trail.textures[layer.trail.index]
+        raw = device.queue.read_texture(
+            {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
+            {"offset": 0, "bytes_per_row": width * 8, "rows_per_image": height},
+            (width, height, 1),
+        )
+        trail = np.frombuffer(raw, dtype=np.float16).reshape(height, width, 4)
+        stats = np.frombuffer(
+            device.queue.read_buffer(engine.stats_buf), dtype=gpu_params.STATS_DTYPE
+        )[0]
+        return {
+            "mass": float(trail[..., 0].astype(np.float32).mean()),
+            "prune_return": float(stats["prune_return"]),
+            "corr_decay": float(stats["corr_decay"]),
+            "mean_v": float(stats["mean_v"]),
+        }
+
+    control = run(0.0)
+    pruned = run(3.0)
+
+    assert control["prune_return"] == 0.0, (
+        "the prune term is not inert at zero gain, so it is not off by default"
+    )
+    assert pruned["prune_return"] > 0.05, (
+        f"pruning at gain 3 removed almost nothing "
+        f"({pruned['prune_return']:.4f} of throughput); the deficit measure has "
+        f"stopped discriminating -- check income_rate against trail_decay"
+    )
+
+    drift = abs(pruned["mass"] - control["mass"]) / max(control["mass"], 1e-9)
+    assert drift < 0.25, (
+        f"trail mass moved {drift:.1%} against the unpruned control "
+        f"({pruned['mass']:.4f} against {control['mass']:.4f}); the return "
+        f"accounting is not putting back what the prune term takes"
+    )
+
+    # The controller is the thing that must not notice. corr_decay is clamped to
+    # +-0.010, so a term it was fighting would show up as a large fraction of
+    # that, not as a rounding difference.
+    fight = abs(pruned["corr_decay"] - control["corr_decay"])
+    assert fight < 0.001, (
+        f"corr_decay moved by {fight:.5f} when pruning was switched on; the "
+        f"homeostat is compensating for it, which is what cancels the effect"
     )
 
 

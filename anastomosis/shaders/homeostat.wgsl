@@ -19,11 +19,22 @@
 //!struct SimParams
 //!struct Stats
 
+//!struct Partial
+
 @group(0) @binding(0) var<storage, read> params: SimParams;
-@group(0) @binding(1) var<storage, read> partials_in: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> partials_in: array<Partial>;
 @group(0) @binding(2) var<storage, read_write> stats: Stats;
 
 var<workgroup> totals: array<vec4<f32>, 256>;
+var<workgroup> flux_totals: array<vec4<f32>, 256>;
+
+// Slew on the measured prune return. It is already an average over the whole
+// field and so barely moves, but it scales every agent's deposit and a tick of
+// jitter there would be a tick of jitter in the whole trail field. Fast enough
+// to follow a regime change well inside the homeostat's own time constant --
+// this is an accounting measurement, not a control output, and lagging it would
+// reintroduce exactly the mass bias it exists to remove.
+const PRUNE_RETURN_RATE: f32 = 0.05;
 
 // Relative error with a deadband: zero inside the band, and continuous at the
 // edges so the controller never switches on abruptly.
@@ -41,18 +52,22 @@ fn reduce_final(@builtin(local_invocation_index) lid: u32) {
     let n = arrayLength(&partials_in);
 
     var acc = vec4<f32>(0.0);
+    var acc_flux = vec4<f32>(0.0);
     var i = lid;
     loop {
         if (i >= n) { break; }
-        acc = acc + partials_in[i];
+        acc = acc + partials_in[i].field;
+        acc_flux = acc_flux + partials_in[i].flux;
         i = i + 256u;
     }
     totals[lid] = acc;
+    flux_totals[lid] = acc_flux;
     workgroupBarrier();
 
     for (var stride = 128u; stride > 0u; stride = stride >> 1u) {
         if (lid < stride) {
             totals[lid] = totals[lid] + totals[lid + stride];
+            flux_totals[lid] = flux_totals[lid] + flux_totals[lid + stride];
         }
         workgroupBarrier();
     }
@@ -74,6 +89,17 @@ fn reduce_final(@builtin(local_invocation_index) lid: u32) {
     stats.mean_v = mean_v;
     stats.var_v = var_v;
     stats.mean_activity = mean_activity;
+
+    // What flux pruning is taking out of the trail field, as a fraction of its
+    // throughput. agents.wgsl multiplies the deposit by 1 + this, so the mass
+    // goes back where traffic currently is. Without the return the term is a
+    // straight sink and corr_decay below would undo it within a couple of time
+    // constants -- a globally weaker network and no severance, the opposite of
+    // the intent. Bounded because it multiplies the deposit: a transient in the
+    // measurement must not be able to flood the field.
+    let flux = flux_totals[0];
+    let measured_return = clamp(flux.y / max(flux.x, 1e-6), 0.0, 2.0);
+    stats.prune_return = mix(stats.prune_return, measured_return, PRUNE_RETURN_RATE);
 
     let err_mass = banded_error(params.target_mass, mean_v, params.deadband);
     let err_var = banded_error(params.target_variance, var_v, params.deadband);
