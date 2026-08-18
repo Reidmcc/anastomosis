@@ -690,7 +690,9 @@ atmosphere; the Oklab colour pipeline; the full safety stage with blue-noise
 dither; sim/render decoupling with motion-compensated interpolation and the
 budget governor; the parameter system with macros, presets, hot reload and
 ramping; the Qt control panel; CLI; checkpointing on a five-minute interval and
-on close, resuming by default, with an explicit reset in the control panel.
+on close, resuming by default, with an explicit reset in the control panel;
+shutdown as a single idempotent path reached from the window closing, a signal,
+or the loop ending, so closing the window saves the field and ends the process.
 
 **Not implemented:**
 

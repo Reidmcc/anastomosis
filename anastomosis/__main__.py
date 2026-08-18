@@ -4,8 +4,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+import threading
+import time
 from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+# How long interpreter teardown gets after the application has shut down.
+EXIT_GRACE_SECONDS = 10.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,6 +82,38 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def arm_exit_guard(seconds: float = EXIT_GRACE_SECONDS) -> threading.Thread:
+    """Guarantee the process really ends once the application has shut down.
+
+    Armed only after ``Application.run`` has returned, so by this point the
+    checkpoint is on disk and the writer thread has been joined -- there is
+    nothing left worth waiting for. What remains is interpreter teardown of Qt
+    and wgpu, two C libraries holding windowing and driver resources, neither
+    of which promises to let go promptly; a graphics driver that wedges on
+    teardown would otherwise leave the user with a live process and a closed
+    window, which is the exact thing this is here to prevent.
+
+    A daemon thread cannot itself keep the interpreter alive, so on a healthy
+    exit this never fires and costs nothing.
+    """
+    def guard() -> None:
+        time.sleep(seconds)
+        log.warning(
+            "still shutting down after %.0fs; exiting the hard way", seconds
+        )
+        logging.shutdown()
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except Exception:
+                pass
+        os._exit(0)
+
+    thread = threading.Thread(target=guard, name="anastomosis-exit", daemon=True)
+    thread.start()
+    return thread
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -134,8 +174,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         Application(options).run()
     except KeyboardInterrupt:
+        # The application installs its own handler, so reaching here means the
+        # interrupt arrived before or after the loop; either way it has already
+        # saved whatever there was to save.
         print()
-        return 0
+    finally:
+        arm_exit_guard()
     return 0
 
 

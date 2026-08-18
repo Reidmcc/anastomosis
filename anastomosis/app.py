@@ -20,11 +20,19 @@ saved field builds its engine in *that field's* shape and presents it into
 whatever window it was given -- see ``_start_engine``. The alternative, asking
 whether the saved field fits the window, threw away hours of maturity every
 time a window opened at a different size.
+Closing the window, by contrast, *is* the end of the world, and ``shutdown``
+is the one path out: checkpoint, stop the watcher, close the panel, stop the
+loop. It is idempotent and hooked from every direction the close can arrive
+from -- the canvas's close event, Qt's ``aboutToQuit``, a signal, or simply
+``loop.run()`` returning -- because the window is the only thing the user
+thinks of as "the application", and anything of it left running afterwards is
+a process they have to go and kill by hand.
 """
 
 from __future__ import annotations
 
 import logging
+import signal
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +51,12 @@ log = logging.getLogger(__name__)
 # Dragging a window edge reports a new size every frame; coalescing them keeps
 # the drag from reallocating render targets dozens of times.
 RESIZE_SETTLE = 0.15
+
+# Signals that mean "stop", handled so that a `kill` or a session logout ends
+# the same way closing the window does -- with the field on disk. SIGINT is in
+# the list for symmetry; the render loop installs its own handler for that one
+# while it runs, which reaches the same shutdown by closing the canvas.
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 
 
 @dataclass
@@ -91,6 +105,16 @@ class Application:
         self.engine = None
         self.present_context = None
         self.target_format = None
+        self.panel = None
+        self.loop = None
+        self.have_qt = False
+
+        # Shutdown state. Once ``_stopped`` is set the world has been saved and
+        # taken down; nothing may tick, draw or checkpoint again.
+        self._stopped = False
+        self._stop_requested = False
+        self._previous_signal_handlers: dict[int, object] = {}
+        self._close_filter = None
 
         # Pacing state.
         self._accumulator = 0.0
@@ -175,6 +199,7 @@ class Application:
         self._size = (width, height)
 
         self._start_hot_reload()
+        self._watch_for_close()
         if self.options.fullscreen:
             self._try_fullscreen()
 
@@ -221,6 +246,22 @@ class Application:
         observer.start()
         self._watcher = observer
         log.info("watching %s for changes", path)
+
+    def _stop_hot_reload(self) -> None:
+        """Stop watching the config file, and wait for the thread to notice.
+
+        Joined rather than just stopped: the handler holds a reference back to
+        this application, and a shutdown that has already saved the field must
+        not have a thread behind it that can still call ``reload_config``.
+        """
+        watcher, self._watcher = self._watcher, None
+        if watcher is None:
+            return
+        try:
+            watcher.stop()
+            watcher.join(timeout=2.0)
+        except Exception as exc:  # pragma: no cover - platform watcher quirks
+            log.debug("could not stop the config watcher: %s", exc)
 
     def reload_config(self) -> None:
         try:
@@ -409,6 +450,160 @@ class Application:
         self.resumed_from = None
         log.info("simulation reset; growing a new field from seeds")
 
+    # -- shutdown -----------------------------------------------------------
+
+    def _watch_for_close(self) -> None:
+        """Hook every route the window has out of existence.
+
+        All three hooks land on the same idempotent ``shutdown``, because which
+        one fires first depends on the backend and on how the window was closed,
+        and none of them covers the others:
+
+        * the canvas's own close event is the ordinary case, and fires while
+          the loop is still turning and the device is still healthy, which is
+          exactly when the checkpoint readback is safe;
+        * the Qt close event is the same moment seen one layer lower, and does
+          not depend on the render loop still being in a state to notice;
+        * Qt's ``aboutToQuit`` covers being told to quit without the render
+          window being closed first -- a session logout, say.
+        """
+        self.canvas.add_event_handler(self._on_canvas_close, "close")
+
+        if not self.have_qt:
+            return
+        try:
+            from PySide6 import QtCore, QtWidgets
+        except Exception as exc:  # pragma: no cover - Qt was importable a moment ago
+            log.debug("could not hook the Qt close signals: %s", exc)
+            return
+
+        app = self
+
+        class CloseFilter(QtCore.QObject):
+            """Sees the window close as Qt delivers it, before the backend does."""
+
+            def eventFilter(self, obj, event):  # noqa: N802 - Qt naming
+                if event.type() == QtCore.QEvent.Type.Close:
+                    app.request_stop()
+                return False
+
+        # Held on the application, or Python would collect the filter and Qt
+        # would be left with a dangling one.
+        self._close_filter = CloseFilter()
+        self.canvas.installEventFilter(self._close_filter)
+
+        qapp = QtWidgets.QApplication.instance()
+        if qapp is not None:
+            qapp.aboutToQuit.connect(self.shutdown)
+
+    def _on_canvas_close(self, event=None) -> None:
+        self.shutdown()
+
+    def _install_signal_handlers(self) -> None:
+        """Turn a SIGINT or SIGTERM into the same orderly close.
+
+        Without this, ``kill`` -- which is what a session logout sends -- ends
+        the process where it stands and costs the user however much field
+        maturity accumulated since the last periodic save.
+        """
+        def handler(signum, _frame):
+            log.info("received %s; closing", signal.Signals(signum).name)
+            self.request_stop()
+
+        for sig in STOP_SIGNALS:
+            try:
+                self._previous_signal_handlers[sig] = signal.signal(sig, handler)
+            except ValueError:
+                # Not the main thread (embedded, or a test): the loop and the
+                # window close still reach shutdown, so this is not fatal.
+                log.debug("could not install a handler for %s", sig)
+
+    def _restore_signal_handlers(self) -> None:
+        while self._previous_signal_handlers:
+            sig, previous = self._previous_signal_handlers.popitem()
+            try:
+                signal.signal(sig, previous)
+            except (ValueError, TypeError):  # pragma: no cover - as above
+                pass
+
+    def request_stop(self) -> None:
+        """Ask for shutdown at the next safe point.
+
+        A signal arrives between two bytecodes, which can be in the middle of
+        building a tick's command buffer, and the checkpoint readback is only
+        valid between ticks. So the request is handed to the loop rather than
+        acted on where it lands.
+        """
+        if self._stopped or self._stop_requested:
+            return
+        self._stop_requested = True
+        try:
+            self.loop.call_soon(self.shutdown)
+        except Exception as exc:
+            # No loop to defer to. A slightly-off checkpoint beats none.
+            log.debug("could not defer shutdown to the loop: %s", exc)
+            self.shutdown()
+
+    def shutdown(self) -> None:
+        """Save the world, take the application down, and let the loop end.
+
+        Idempotent, and safe to call from a close event, a signal handler, Qt's
+        quit signal, or the end of ``run``. The checkpoint goes first and
+        blocks: everything after it can only make the state harder to read
+        back, and there is no next frame to hand the write off from.
+        """
+        if self._stopped:
+            return
+        self._stopped = True
+        log.info("shutting down")
+
+        self.save_checkpoint(blocking=True)
+        self._saver.join()
+        self._stop_hot_reload()
+        self._close_panel()
+        self._stop_loop()
+
+    def _close_panel(self) -> None:
+        panel, self.panel = self.panel, None
+        if panel is None:
+            return
+        try:
+            panel.close()
+        except Exception as exc:  # pragma: no cover - Qt teardown ordering
+            log.debug("could not close the control panel: %s", exc)
+
+    def _stop_loop(self) -> None:
+        """Ask the event loop to end, and make sure Qt agrees.
+
+        The loop stops itself once no canvases are left, but the control panel
+        is a second top-level window, and a Qt application with a window still
+        open has no reason of its own to quit. Saying it explicitly is what
+        keeps a closed window from leaving a live process behind.
+        """
+        for label, action in (
+            ("close the canvas", getattr(self.canvas, "close", None)),
+            ("stop the loop", getattr(self.loop, "stop", None)),
+            ("quit the Qt application", self._quit_qt),
+        ):
+            if action is None:
+                continue
+            try:
+                action()
+            except Exception as exc:
+                # Any of these can be gone already, or never have existed --
+                # which of the close routes got here first decides. None of it
+                # is worth raising over once the field is on disk.
+                log.debug("could not %s: %s", label, exc)
+
+    def _quit_qt(self) -> None:
+        if not self.have_qt:
+            return
+        from PySide6 import QtWidgets
+
+        qapp = QtWidgets.QApplication.instance()
+        if qapp is not None:
+            qapp.quit()
+
     # -- frame --------------------------------------------------------------
 
     def _governor(self, frame_time: float) -> None:
@@ -456,6 +651,15 @@ class Application:
         self._pending_size = None
 
     def draw_frame(self) -> None:
+        # A paint request can still be in flight when the window goes away, and
+        # the state it would tick has already been read back and written out.
+        if self._stopped:
+            return
+        # A frame boundary is a safe point, so a stop asked for mid-tick by a
+        # signal is honoured here at the latest.
+        if self._stop_requested:
+            self.shutdown()
+            return
         now = time.perf_counter()
         frame_dt = min(now - self._last_time, 0.25)  # clamp after a stall
         self._last_time = now
@@ -522,35 +726,34 @@ class Application:
 
     # -- run ----------------------------------------------------------------
 
-    def run(self) -> None:
-        self.setup()
-
-        panel = None
-        if self.have_qt and self.options.ui:
-            try:
-                from .ui.control_panel import ControlPanel
-
-                panel = ControlPanel(self)
-                panel.show()
-            except Exception as exc:
-                log.warning(
-                    "could not open the control panel: %s", exc, exc_info=True
-                )
-        elif self.options.ui:
+    def _open_control_panel(self) -> None:
+        if not self.options.ui:
+            return
+        if not self.have_qt:
             log.warning(
                 "the control panel needs the Qt backend, which is not in use"
             )
+            return
+        try:
+            from .ui.control_panel import ControlPanel
+
+            self.panel = ControlPanel(self)
+            self.panel.show()
+        except Exception as exc:
+            log.warning("could not open the control panel: %s", exc, exc_info=True)
+
+    def run(self) -> None:
+        self.setup()
+        self._open_control_panel()
 
         self.canvas.request_draw(self.draw_frame)
+        self._install_signal_handlers()
         try:
             self.loop.run()
         finally:
-            if self._watcher is not None:
-                self._watcher.stop()
             # Closing the window is the commonest way a session ends, so it has
-            # to checkpoint just like a five-minute tick would; blocking here,
-            # since there is no next frame to hand the write off from.
-            self.save_checkpoint(blocking=True)
-            self._saver.join()
-            if panel is not None:
-                panel.close()
+            # to checkpoint just like a five-minute tick would. By this point
+            # that has usually already happened, from the close event; this is
+            # the backstop for the loop ending some other way.
+            self.shutdown()
+            self._restore_signal_handlers()
