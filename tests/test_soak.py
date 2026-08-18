@@ -559,9 +559,20 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
 
     The seed is fixed because the *magnitude* of the severance depends on what
     the disc lands on, and legitimately so: the feedback runs furthest where
-    the network is thinnest. Measured, the trail inside falls to 0.32 of the
-    control on this seed and to 0.77 on one where the disc sits on a dense hub.
-    The material and healing claims held on both.
+    the network is thinnest. What the seed must guarantee is that there is a
+    network under the disc at all, which is why the control's own level is
+    asserted before the ratio is: on bare ground both runs measure a few
+    thousandths and their ratio is noise over noise. Surveyed across seven
+    seeds, the ones that land on material (control trail 0.16 to 0.27) give a
+    severance of 0.73 to 0.83, and the ones that land on a void (0.001 to 0.015)
+    give anything between 0.30 and 1.30 with no signal in it.
+
+    This test was previously anchored to a seed whose disc turned out to sit on
+    a void, at a threshold only reachable there. Fixing the flow's wrap seam
+    (DESIGN.md §4.8) re-rolled the field and moved that disc onto different
+    ground, which is what exposed it. The effect size itself did not move: the
+    dense-hub figure recorded before that fix was 0.77, and it measures 0.73 and
+    0.83 on the two grounded seeds after it.
     """
     device, _ = gpu_device
     size, radius = 128, 0.24
@@ -574,7 +585,7 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     def run(with_event: bool) -> dict[str, tuple[float, float]]:
         params = config.Config().resolve()
         params.render.layers = 1
-        engine = engine_module.Engine(device, size, size, params, seed=31)
+        engine = engine_module.Engine(device, size, size, params, seed=3)
         event = events.ActiveEvent(
             x=0.5, y=0.5, radius=radius, peak=params.events.strength,
             channels=events.EVENT_KINDS["rift"],
@@ -615,8 +626,16 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     control = run(False)
     rifted = run(True)
 
+    # Precondition, not a claim about rifts: a severance measured on ground
+    # with nothing on it is a ratio of two roundings.
+    assert control["during"][0] > 0.05, (
+        f"the control run has almost no network inside the disc "
+        f"({control['during'][0]:.4f}), so the ratio below would measure "
+        f"nothing -- the seed needs to land the disc on material"
+    )
+
     trail_during = rifted["during"][0] / max(control["during"][0], 1e-9)
-    assert trail_during < 0.6, (
+    assert trail_during < 0.9, (
         f"the network inside the rift is at {trail_during:.2f} of the control "
         f"run's, so the severance channels barely reached it"
     )
