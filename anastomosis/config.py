@@ -88,6 +88,46 @@ class ReactionParams:
     dv: float = 0.1050
     dt: float = 0.85
     substeps: int = 2
+    # Diffusion is the morphology lever (DESIGN.md 4.7). At fixed diffusion a
+    # Gray-Scott regime has exactly one characteristic wavelength, so a
+    # constant `du` pins the feature size and the field settles into a
+    # monodisperse spot texture -- a lattice of same-sized round holes, which
+    # is both monotonous and a trypophobia trigger. `du` is the lever to move
+    # because it is nearly orthogonal to everything the homeostat measures:
+    # over du 0.17-0.40 the feature count changes 8.6x while mean V stays
+    # within 0.102-0.114. kill and the dv/du ratio both move mass, which the
+    # exposure governor would turn into a slow global luminance swing.
+    #
+    # `dv` is never varied independently: the ratio dv/du is held fixed and
+    # only the pair is scaled, because the ratio moves mass hard.
+    #
+    # A slow global Ornstein-Uhlenbeck walk on the *mean*: the log of the
+    # multiplier, at one standard deviation of the walk, so 0.07 is about
+    # +-7%. Geometric to match the per-region deviation in ClimateParams, which
+    # makes the two compose exactly. The spatial deviation is what actually
+    # fixes the texture; this only keeps the global mean from being a defended
+    # constant. Kept small and very slow deliberately -- a globally coherent
+    # breathing of feature size is the coordinated global change DESIGN.md 4.2
+    # exists to prevent, and at the low end of a larger walk the field's
+    # activity approaches the homeostat's floor (0.00090 against a floor of
+    # 0.00084 at a 20% excursion, against 0.00101 at 14%).
+    du_walk: float = 0.07
+    du_walk_tau: float = 420.0  # seconds; well past any visible timescale
+    # Hard bounds on the local `du` after the walk and the climate deviation
+    # are both applied. A survival bound, not a target: the usable band in
+    # DESIGN.md 4.7 is [0.17, 0.40], and these are deliberately wider so the
+    # drift has somewhere to go.
+    #
+    # The floor is measured. At du = 0.06 the field collapses -- mean V 0.015,
+    # activity indistinguishable from zero; at 0.08 it survives but barely
+    # moves; at 0.12 it is a live fine-grained texture (mean V 0.129, activity
+    # 4.3e-4). 0.12 is a factor of two above the collapse and the lowest point
+    # with a real measurement behind it. The ceiling has more headroom than it
+    # needs (du = 0.50 still runs clean) and exists to keep a hand-edited
+    # override away from the explicit scheme's stability limit, which for this
+    # averaging-form Laplacian is near dt*du = 1.0.
+    du_min: float = 0.120
+    du_max: float = 0.420
     # Trail raises local feed through a saturating curve, so a heavily
     # trafficked texel cannot drive feed off the map. This is the coupling that
     # makes filaments nucleate reaction structure.
@@ -182,6 +222,26 @@ class ClimateParams:
     range_decay: float = 0.018
     range_flow: float = 0.55
     range_hue: float = 1.15  # radians
+    # Feature size, per region -- the third climate pair, DESIGN.md 4.7.
+    # Geometric rather than absolute, unlike the ranges above: it is the log of
+    # the multiplier on `du`. `du` is driven by the `scale` macro, so an
+    # absolute deviation would mean a different spread at each end of that
+    # knob, and the survivable band is asymmetric around the base, so an
+    # additive deviation spends its downside against the floor while its upside
+    # is still unused.
+    #
+    # Note the magnitude against the others. Every `range_*` is the deviation
+    # at a climate value of 1, but the climate field does not reach 1: the
+    # per-tick diffusion is applied to a spatially white OU drive, so almost
+    # all of the injected power is at high spatial frequency and is removed
+    # immediately. The realised deviation settles at s.d. ~0.11 with extremes
+    # near +-0.44 (measured off a running engine at ticks 1200-3600, and the
+    # same for every channel). So this 3.2 is a realised x1.42 / /1.42 at one
+    # standard deviation, and the field spans the whole du band across its
+    # extremes -- which is the band the sweeps in DESIGN.md 4.7 explored. Some
+    # 5% of texels sit at the du_min clamp; that is intended, and it is why the
+    # floor is a measured survival bound rather than a guess.
+    range_du: float = 3.2
 
 
 @dataclass
@@ -387,6 +447,17 @@ SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
 # --------------------------------------------------------------------------
 
 
+def clamp_du(du_raw: float, reaction: "ReactionParams") -> float:
+    """Constrain a local diffusion rate to the survivable band.
+
+    Mirrors ``reaction.wgsl`` exactly, for the same reason
+    :func:`clamp_reaction` does: the morphology tests must exercise the values
+    the shader actually reaches, not the unclamped ones. If one changes, the
+    other must.
+    """
+    return min(max(du_raw, reaction.du_min), reaction.du_max)
+
+
 def clamp_reaction(
     feed_raw: float, kill_raw: float, reaction: "ReactionParams"
 ) -> tuple[float, float]:
@@ -492,6 +563,17 @@ def validate(params: Params) -> Params:
                 clamped,
             )
             set_path(params, path, clamped)
+
+    # The diffusion band is a stability bound, not a stylistic one: this is an
+    # explicit scheme, and the averaging-form Laplacian in reaction.wgsl goes
+    # unstable somewhere near dt*du = 1. A hand-edited override of du_max is
+    # the one way to reach that, so it is bounded here for the same reason the
+    # flash ceilings are -- by the time it shows up in the image the run is
+    # already lost.
+    reaction = params.reaction
+    stability_ceiling = 0.9 / max(reaction.dt, 1e-3)
+    reaction.du_max = min(max(reaction.du_max, 1e-3), stability_ceiling)
+    reaction.du_min = min(max(reaction.du_min, 1e-3), reaction.du_max)
 
     # Structural values that are not floats.
     params.render.layers = max(1, min(5, int(params.render.layers)))

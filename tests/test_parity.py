@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 import wgpu
 
+import morphology as M
 import reference as R
 from anastomosis import config, gpu_params, shaders
 
@@ -24,8 +25,17 @@ SIZE = 64
 F16_ATOL = 2e-3
 
 
-def _run_reaction_on_gpu(device, u, v, feed, kill, params, substeps=1):
-    """Run reaction.wgsl for `substeps` steps and read back (U, V)."""
+def _run_reaction_on_gpu(
+    device, u, v, feed, kill, params, substeps=1, scale=None, range_du=0.0
+):
+    """Run reaction.wgsl for `substeps` steps and read back (U, V).
+
+    `scale` is the climate `scale` channel (climate_c.x, in [-1, 1]) that sets
+    the local diffusion rate. It is uploaded at the simulation's own resolution,
+    so the shader's bilinear sample lands exactly on texel centres and the
+    comparison stays a comparison of the arithmetic rather than of two
+    interpolators.
+    """
     size = u.shape[0]
 
     module = device.create_shader_module(code=shaders.load("reaction.wgsl"))
@@ -58,14 +68,20 @@ def _run_reaction_on_gpu(device, u, v, feed, kill, params, substeps=1):
     field[..., 0] = u
     field[..., 1] = v
     textures = [make_texture(field), make_texture(np.zeros_like(field))]
-    # Zero trail and zero climate isolate the pure Gray-Scott step.
+    # Zero trail and zero climate_a isolate the pure Gray-Scott step.
     trail = make_texture(np.zeros_like(field))
     climate = make_texture(np.zeros_like(field))
+    climate_c = np.zeros_like(field)
+    if scale is not None:
+        climate_c[..., 0] = scale
+    climate_c_tex = make_texture(climate_c)
 
     values = {
         "dims_x": size, "dims_y": size,
         "feed": feed, "kill": kill,
         "du": params.du, "dv": params.dv, "rdt": params.dt,
+        "du_min": params.du_min, "du_max": params.du_max,
+        "range_du": range_du,
         "trail_feed_gain": 0.0,
         "kill_follows_feed": params.kill_follows_feed,
         "feed_min": params.feed_min, "feed_max": params.feed_max,
@@ -97,8 +113,9 @@ def _run_reaction_on_gpu(device, u, v, feed, kill, params, substeps=1):
                 {"binding": 2, "resource": textures[1 - index].create_view()},
                 {"binding": 3, "resource": trail.create_view()},
                 {"binding": 4, "resource": climate.create_view()},
-                {"binding": 5, "resource": sampler},
-                {"binding": 6, "resource": {"buffer": stats_buf, "offset": 0,
+                {"binding": 5, "resource": climate_c_tex.create_view()},
+                {"binding": 6, "resource": sampler},
+                {"binding": 7, "resource": {"buffer": stats_buf, "offset": 0,
                                             "size": stats_buf.size}},
             ],
         )
@@ -135,6 +152,63 @@ def test_reaction_matches_numpy(gpu_device, substeps):
         ref_u, ref_v = R.gray_scott_step(
             ref_u, ref_v, params.feed, params.kill,
             du=params.du, dv=params.dv, dt=params.dt,
+        )
+
+    assert np.abs(gpu_u - ref_u).max() < F16_ATOL, (
+        f"U diverged: max |delta| = {np.abs(gpu_u - ref_u).max():.5f}"
+    )
+    assert np.abs(gpu_v - ref_v).max() < F16_ATOL, (
+        f"V diverged: max |delta| = {np.abs(gpu_v - ref_v).max():.5f}"
+    )
+
+
+@pytest.mark.parametrize("substeps", [1, 3])
+def test_reaction_matches_numpy_with_a_varying_du(gpu_device, substeps):
+    """Parity must survive the climate-driven diffusion rate of DESIGN.md 4.7.
+
+    The morphology fix makes `du` a field rather than a scalar, and geometric
+    rather than additive, which changes the innermost line of the reaction. A
+    scalar-only parity test still passes with the whole mechanism silently
+    disconnected, so the varying case gets its own check -- across the full
+    range the climate is clamped to, which reaches both `du` bounds.
+    """
+    device, _ = gpu_device
+    resolved = config.Config().resolve()
+    params = resolved.reaction
+    range_du = resolved.climate.range_du
+
+    # Rounded through f16 first: the climate field is an rgba16float texture,
+    # so that is the value the shader actually sees.
+    ramp = np.linspace(-1.0, 1.0, SIZE, dtype=np.float32)
+    scale = np.broadcast_to(ramp, (SIZE, SIZE)).astype(np.float16).astype(np.float32)
+
+    u0, v0 = R.seed_field(SIZE, blobs=6, seed=3)
+    gpu_u, gpu_v = _run_reaction_on_gpu(
+        device, u0, v0, params.feed, params.kill, params,
+        substeps=substeps, scale=scale, range_du=range_du,
+    )
+
+    du = np.clip(
+        params.du * np.exp(range_du * scale), params.du_min, params.du_max)
+    dv = params.dv * (du / params.du)
+    assert du.min() == params.du_min and du.max() == params.du_max, (
+        "the ramp no longer reaches both clamps, so the clamp in "
+        "reaction.wgsl is untested"
+    )
+    # ...but a typical region must not be sitting on one. The climate does not
+    # reach its own clamp: it settles around s.d. 0.11 (morphology.CLIMATE_SD),
+    # and at that amplitude the deviation has to be free to act.
+    typical = params.du * np.exp(range_du * np.array([-M.CLIMATE_SD, M.CLIMATE_SD]))
+    assert (typical > params.du_min).all() and (typical < params.du_max).all(), (
+        f"a one-sigma climate excursion now reaches a du clamp "
+        f"({typical[0]:.3f}, {typical[1]:.3f}); most of the field would be "
+        f"pinned to a single feature size again"
+    )
+
+    ref_u, ref_v = u0.astype(np.float32), v0.astype(np.float32)
+    for _ in range(substeps):
+        ref_u, ref_v = R.gray_scott_step(
+            ref_u, ref_v, params.feed, params.kill, du=du, dv=dv, dt=params.dt,
         )
 
     assert np.abs(gpu_u - ref_u).max() < F16_ATOL, (

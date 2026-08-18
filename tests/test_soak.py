@@ -8,12 +8,14 @@ interactive check.
 
 from __future__ import annotations
 
+import math
 import re
 
 import numpy as np
 import pytest
 import wgpu
 
+import morphology
 from anastomosis import config, engine as engine_module, events, shaders
 
 MASK32 = 0xFFFFFFFF
@@ -111,6 +113,102 @@ def test_ou_process_is_stationary_and_aperiodic():
     peak = spectrum.max()
     assert peak < spectrum.sum() * 0.02, (
         "the drift has a dominant frequency component, i.e. it oscillates"
+    )
+
+
+def test_the_feature_size_walk_is_bounded_and_tempo_independent():
+    """The global half of the morphology drift, DESIGN.md §4.7.
+
+    Three properties, all load-bearing. The walk must be bounded, because it
+    scales the diffusion rate and an unbounded excursion would park the whole
+    field against a clamp -- a frozen texture again, just a different one. It
+    must be unit-variance, because that is where the amplitude comes from: the
+    parameter is expressed as a fraction of `du`, and a walk whose spread was
+    not one would silently mean something else. And neither property may depend
+    on the tick rate: the tempo macro moves ``sim_hz`` by more than 2x, and if
+    the spread widened with it, turning up the tempo would quietly change how
+    far feature size roams.
+
+    Run against a short time constant so the sample covers a few hundred
+    correlation times without a few hundred thousand iterations; the
+    normalisation under test is a function of dt/tau, not of either alone.
+    """
+    tau = 30.0
+    duration = 12_000.0  # seconds, i.e. 400 time constants
+    spreads = {}
+    for sim_hz in (12.0, 26.0):
+        engine = engine_module.Engine.__new__(engine_module.Engine)
+        engine._du_walk = 0.0
+        engine._walk_rng = np.random.default_rng(4)
+        dt = 1.0 / sim_hz
+        series = np.empty(int(duration * sim_hz))
+        for i in range(series.size):
+            engine._advance_du_walk(dt, tau)
+            series[i] = engine._du_walk
+
+        assert np.isfinite(series).all()
+        assert abs(series.mean()) < 0.2, (
+            f"the walk drifted off its mean ({series.mean():.2f} at {sim_hz} Hz)"
+        )
+        assert np.abs(series).max() <= 2.0, "the walk left its bound"
+        spreads[sim_hz] = float(series.std())
+
+    for sim_hz, spread in spreads.items():
+        assert 0.85 < spread < 1.15, (
+            f"the walk is not unit-variance at {sim_hz} Hz (s.d. {spread:.2f}); "
+            f"its amplitude no longer means a fraction of du"
+        )
+
+    # Whatever the walk does, the diffusion rate it produces stays in the band.
+    reaction = config.Config().resolve().reaction
+    for extreme in (-2.0, 2.0):
+        du = reaction.du * (1.0 + reaction.du_walk * extreme)
+        assert reaction.du_min <= config.clamp_du(du, reaction) <= reaction.du_max
+
+
+def test_the_feature_size_band_is_used_but_not_camped_on():
+    """The drift must span the du band without spending its time at the clamp.
+
+    Both failure directions matter. A drift too small for the band leaves the
+    feature size effectively fixed, which is the texture this whole mechanism
+    exists to break up. A drift too large for it parks a large fraction of the
+    field against a bound, where the deviation can no longer act -- uniform
+    again, just at a different size.
+
+    The climate does not reach the +-1 it is clamped to; it settles around
+    ``morphology.CLIMATE_SD``. So the fraction is computed from that, treating
+    the deviation as normal -- which understates it slightly, since the field
+    is spatially smoothed and its tails are thinner than a Gaussian's.
+    """
+    params = config.Config().resolve()
+    reaction, climate = params.reaction, params.climate
+    sigma = morphology.CLIMATE_SD
+
+    # A one-sigma region must vary, and vary enough to matter: the length scale
+    # moves roughly 1.7 -> 3.5 across the whole du band, so a deviation of a
+    # few percent would be invisible.
+    typical = math.exp(climate.range_du * sigma)
+    assert 1.2 < typical < 1.8, (
+        f"a one-sigma region's diffusion rate differs from the mean by "
+        f"x{typical:.2f}; feature size is either barely varying or swinging "
+        f"across the whole band at every excursion"
+    )
+    assert (
+        reaction.du_min < reaction.du / typical
+        and reaction.du * typical < reaction.du_max
+    ), "a one-sigma region is already at a du clamp"
+
+    # And the band must be reachable, but only in the tails.
+    def tail(bound: float) -> float:
+        """Fraction of a normal climate whose deviation clamps at `bound`."""
+        z = abs(math.log(bound / reaction.du)) / (climate.range_du * sigma)
+        return 0.5 * math.erfc(z / math.sqrt(2.0))
+
+    clamped = tail(reaction.du_min) + tail(reaction.du_max)
+    assert 0.01 < clamped < 0.15, (
+        f"{clamped:.1%} of the field sits at a du clamp; the band is either "
+        f"unreachable (so the survival floor is untested) or so easily "
+        f"reached that much of the screen is pinned to one feature size"
     )
 
 

@@ -12,6 +12,20 @@
 // Channel layout:
 //   climate_a = (feed, kill, sensor_angle, sensor_distance)
 //   climate_b = (deposit, decay, flow, hue)
+//   climate_c = (scale, prune, fusion, spare)
+//
+// The third pair carries morphology (DESIGN.md §4.7). `scale` is a deviation
+// on the reaction's diffusion rate, and so on the characteristic feature size;
+// driving it from here rather than globally is the whole point of the
+// mechanism. A global breathing of feature size would be coordinated global
+// change of exactly the kind §4.2 forbids, and it would leave every feature on
+// screen the same size as every other -- and *uniformity* of size, not density,
+// is what makes the texture a trypophobia trigger. Carried spatially, coarse
+// and fine regions coexist and migrate past each other.
+//
+// `prune` and `fusion` are allocated but not yet consumed; they belong to
+// steps 3 and 4 of the §4.7 build order. A 64x36 rgba16f pair is ~9 KB, so
+// reserving them costs nothing measurable and saves a second re-plumbing.
 
 //!include common.wgsl
 
@@ -21,11 +35,13 @@
 @group(0) @binding(0) var<storage, read> params: SimParams;
 @group(0) @binding(1) var clim_a_in: texture_2d<f32>;
 @group(0) @binding(2) var clim_b_in: texture_2d<f32>;
-@group(0) @binding(3) var clim_a_out: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(4) var clim_b_out: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(5) var psi_tex: texture_2d<f32>;
-@group(0) @binding(6) var samp: sampler;
-@group(0) @binding(7) var<storage, read> events: array<Event>;
+@group(0) @binding(3) var clim_c_in: texture_2d<f32>;
+@group(0) @binding(4) var clim_a_out: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(5) var clim_b_out: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(6) var clim_c_out: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(7) var psi_tex: texture_2d<f32>;
+@group(0) @binding(8) var samp: sampler;
+@group(0) @binding(9) var<storage, read> events: array<Event>;
 
 // Velocity from the vector potential: v = curl(psi), divergence-free by
 // construction, so regimes migrate without piling up or draining anywhere.
@@ -55,6 +71,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var a = textureSampleLevel(clim_a_in, samp, src, 0.0);
     var b = textureSampleLevel(clim_b_in, samp, src, 0.0);
+    var c = textureSampleLevel(clim_c_in, samp, src, 0.0);
 
     // 2. Diffuse, so the field can never develop a hard edge (it is sampled
     //    bilinearly at 40x lower resolution than the sim, which already makes
@@ -62,6 +79,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (params.clim_diffuse > 0.0) {
         var acc_a = vec4<f32>(0.0);
         var acc_b = vec4<f32>(0.0);
+        var acc_c = vec4<f32>(0.0);
         let offsets = array<vec2<f32>, 4>(
             vec2<f32>(texel.x, 0.0), vec2<f32>(-texel.x, 0.0),
             vec2<f32>(0.0, texel.y), vec2<f32>(0.0, -texel.y),
@@ -70,9 +88,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let s = wrap_uv(src + offsets[i]);
             acc_a = acc_a + textureSampleLevel(clim_a_in, samp, s, 0.0);
             acc_b = acc_b + textureSampleLevel(clim_b_in, samp, s, 0.0);
+            acc_c = acc_c + textureSampleLevel(clim_c_in, samp, s, 0.0);
         }
         a = mix(a, acc_a * 0.25, params.clim_diffuse);
         b = mix(b, acc_b * 0.25, params.clim_diffuse);
+        c = mix(c, acc_c * 0.25, params.clim_diffuse);
     }
 
     // 3. Ornstein-Uhlenbeck step: mean-reverting so it stays in a sane band,
@@ -83,6 +103,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     a = a * (1.0 - theta) + vec4<f32>(
         gauss(&seed), gauss(&seed), gauss(&seed), gauss(&seed)) * sigma;
     b = b * (1.0 - theta) + vec4<f32>(
+        gauss(&seed), gauss(&seed), gauss(&seed), gauss(&seed)) * sigma;
+    c = c * (1.0 - theta) + vec4<f32>(
         gauss(&seed), gauss(&seed), gauss(&seed), gauss(&seed)) * sigma;
 
     // 4. Slow events (DESIGN.md §4.3). Applied here, to climate, rather than to
@@ -109,7 +131,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     a = clamp(finite_or4(a, 0.0), vec4<f32>(-1.0), vec4<f32>(1.0));
     b = clamp(finite_or4(b, 0.0), vec4<f32>(-1.0), vec4<f32>(1.0));
+    c = clamp(finite_or4(c, 0.0), vec4<f32>(-1.0), vec4<f32>(1.0));
 
     textureStore(clim_a_out, vec2<i32>(gid.xy), a);
     textureStore(clim_b_out, vec2<i32>(gid.xy), b);
+    textureStore(clim_c_out, vec2<i32>(gid.xy), c);
 }

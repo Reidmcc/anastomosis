@@ -143,9 +143,11 @@ ten hours.
 
 ### 4.1 Climate field
 
-A small texture (64×36 per layer) whose channels are the *local* values of the
-simulation's governing parameters: feed rate, kill rate, agent sensor angle, sensor
-distance, deposit rate, decay rate, flow strength, hue anchor. Each tick it is:
+A small texture (64×36 per layer, three `rgba16f` pairs) whose channels are the
+*local* values of the simulation's governing parameters: feed rate, kill rate,
+agent sensor angle, sensor distance, deposit rate, decay rate, flow strength,
+hue anchor, and — added later, for the reasons in §4.7 — feature size, trail
+pruning and fusion bias. Each tick it is:
 
 1. advected by its own very slow flow field,
 2. diffused slightly,
@@ -166,6 +168,16 @@ Effects, all of which serve requirement (a):
 The climate field is sampled with bilinear interpolation and is 40× lower resolution
 than the sim, so it is essentially free (2.3k texels) and inherently smooth — it can
 never introduce a hard edge.
+
+One calibration note, found while tuning §4.7 and applying to every channel: the
+field is clamped to [-1, 1] and each `range_*` parameter is the deviation at 1,
+but the field never gets near 1. The OU drive is spatially white and the
+per-tick diffusion removes almost all of it immediately, so the realised
+deviation settles at **s.d. ≈ 0.11, extremes ≈ ±0.44**. Every range is
+delivering about a tenth of its nominal amplitude. The existing values are tuned
+against what they actually produce and are staying as they are; the point is
+that anything *measuring* the effect of a range has to use the realised
+amplitude, not the nominal one.
 
 ### 4.2 Homeostat
 
@@ -462,10 +474,10 @@ climate-varying `du` stays covered by `test_parity.py`.
 
 **Build order.** Each step is useful on its own and the first is throwaway:
 
-1. A global OU on `du` in `_sim_values`, as a spike — confirms the visual before
-   any plumbing is paid for.
-2. The third climate pair, with `du` deviation per region. *This is the step that
-   addresses the texture itself.*
+1. ~~A global OU on `du` in `_sim_values`, as a spike~~ — **built**, and kept
+   rather than thrown away; see below.
+2. ~~The third climate pair, with `du` deviation per region.~~ **Built.** *This
+   is the step that addresses the texture itself.*
 3. Flux pruning in `trail.g`, centred.
 4. Rift events and anti-fusion, both riding the channels from (2).
 5. ℓ in the reduce pass, with a drifting setpoint.
@@ -473,6 +485,102 @@ climate-varying `du` stays covered by `test_parity.py`.
 
 Steps 1–3 should carry most of the value: polydisperse, migrating feature sizes
 plus genuine edge severance.
+
+**What steps 1 and 2 turned out to be.** They are not two mechanisms but one
+split the way feed and kill already are — a global mean and a per-region
+deviation around it. The spike was worth keeping in that role: a unit-variance
+OU walk on the mean (`Engine._advance_du_walk`, τ = 7 min, ±7% per standard
+deviation), with the climate deviation on top of it. The walk alone is
+explicitly *not* the fix, for the reason given above — it moves every feature on
+screen the same way at the same time and leaves them all the same size as each
+other — but as the carrier of the mean it is what step 5 will eventually hand
+over to the controller, so the plumbing is the same plumbing.
+
+**The climate field realises about a tenth of its nominal range, and this had to
+be measured before anything could be calibrated.** Every `range_*` parameter is
+the deviation at a climate value of 1, and the field is clamped to [-1, 1], so
+the natural reading is that `range_feed = 0.008` means ±0.008. It does not. The
+OU drive is spatially white and the per-tick diffusion (§4.1) removes almost all
+of the injected power immediately, so the field settles at **s.d. ≈ 0.11 with
+extremes near ±0.44** — measured off a running engine over ticks 1200–3600, and
+the same for every channel. Every existing range is therefore delivering roughly
+a tenth of its apparent amplitude. That is not being changed here: those values
+were tuned by eye against the behaviour they actually produce, and rescaling
+them would change the shipped look for no benefit. But `range_du` had to be
+calibrated against the realised amplitude rather than the nominal one, and any
+future measurement of a climate range has to do the same or it overstates the
+effect by an order of magnitude.
+
+**The deviation is geometric, not additive.** `du` is driven by the `scale`
+macro, so a fixed offset would mean a different spread at each end of that knob.
+More importantly the survivable band is not symmetric around the base — a factor
+of two of headroom above, and 0.57 below — so an additive deviation spends its
+downside against the floor while its upside is still unused. Measured, at
+matched spread of feature size: additive puts 13% of texels on a clamp,
+geometric 4%. Both terms are geometric, so the walk and the regional deviation
+compose exactly rather than interacting. `dv` rides on `du` throughout; holding
+the ratio is what keeps the lever off the homeostat's measures, and varying the
+two independently would reintroduce the mass movement that ruled the ratio out
+as a lever in the first place.
+
+**The floor is measured, not chosen.** The sweep in the table above stops at du
+= 0.12; below that, at fixed feed and kill: 0.10 gives mean V 0.128 with
+activity 1.5×10⁻⁴, 0.08 gives 0.097 and 1.1×10⁻⁴, and **0.06 collapses** — mean
+V 0.015 and activity indistinguishable from zero. `du_min = 0.12` sits a factor
+of two above that collapse and is the lowest point with any real measurement
+behind it. The ceiling, 0.42, has more headroom than it needs: du = 0.50 still
+ran clean.
+
+**One thing the analysis did not anticipate: the region has to be big enough to
+hold a wavelength.** Measured at a climate-texel-to-cell ratio of 10 the effect
+largely cancels — regions a few features across cannot establish their own
+length scale and average back to one. At 24 it is clean, and the engine's real
+ratio is ~40 (64×36 over a 1440p layer), so this is comfortable rather than
+marginal. It does mean an offline measurement has to be run at a realistic ratio
+or it understates the effect.
+
+Measured against a fixed-`du` control, isolated reaction (`tests/morphology.py`,
+192² torus, 4000 ticks, one climate snapshot at the realised amplitude):
+
+| | local ℓ spread (c.v.) | corr(local ℓ, local `du`) | mean V | activity |
+|---|---|---|---|---|
+| fixed | 0.081 | — | 0.1116 | 0.00135 |
+| climate-varying | 0.118 | 0.88 | 0.1175 | 0.00116 |
+
+and with the climate drifting under the field (160², 4000 ticks after warm-up):
+
+| | components | c.v. |
+|---|---|---|
+| fixed | 263–302 | 0.037 |
+| drifting | 241–388 | 0.157 |
+
+The correlation is the number that says the mechanism is doing what it claims
+rather than merely adding noise: where the climate asks for coarse structure,
+coarse structure appears. Mass and activity both stay inside the homeostat
+deadbands and within a few percent of the control, which is the property the
+whole choice of `du` rests on — and they stay there at both extremes of the
+walk (at ±2 s.d.: mean V 0.121 and 0.113, activity 1.01×10⁻³ and 1.32×10⁻³).
+That last check is what set the walk's amplitude: at ±20% rather than ±7%, the
+low end takes activity to 9.0×10⁻⁴ against a deadband floor of 8.4×10⁻⁴, and a
+homeostat that starts correcting for the drift would cancel it.
+
+The spatial swing in feature count is smaller than the 2.7× the global drift
+produced, and that is expected — a coarsening region and a refining one partly
+cancel in a whole-field count. The count is the weaker of the two measures here;
+the spread of the *local* length scale is the one that speaks to the complaint,
+since uniformity is the trigger.
+
+Two caveats worth recording. About 5% of texels sit on a `du` clamp at any
+moment, which is intended — the band is meant to be reachable — but those
+regions have no local variation left, so the figure is worth watching if the
+range is ever widened. And in the *full* engine, rather than the isolated
+reaction, the local length scale already varies (c.v. 0.15) from the agent and
+feed/kill machinery, so this lever is one contributor among several and the
+effect is not cleanly separable there. That is why the measurements above are
+made on the reaction alone, as §4.7's original analysis was.
+
+The `prune` and `fusion` channels of the new pair are allocated and maintained
+but not yet read; they belong to steps 3 and 4.
 
 ---
 
@@ -765,9 +873,13 @@ Conventional unit tests cover little of the risk here. The real QA is:
   semi-Lagrangian advection, checked against the WGSL to a tolerance. Catches shader
   bugs that otherwise present only as "it looks a bit wrong".
 - **Morphology check.** Feature count, characteristic length and hole count over a
-  long run (`tests/morphology.py`); assert the arrangement is *not* stationary.
-  This is the counterpart to the soak test: the soak test asserts the field is
-  alive, and a field can be alive and yet look identical for hours (§4.7).
+  long run (`tests/morphology.py`, asserted in `tests/test_morphology.py`);
+  assert the arrangement is *not* stationary, and that feature size is not
+  uniform *across* the field — uniformity is what makes the texture a
+  trypophobia trigger, so a churning field of identically-sized features would
+  pass a non-stationarity check and still fail the requirement. This is the
+  counterpart to the soak test: the soak test asserts the field is alive, and a
+  field can be alive and yet look identical for hours (§4.7).
 - **No-allocation check.** Assert steady-state buffer/texture count and process RSS
   are flat over a long run.
 
@@ -801,6 +913,8 @@ anastomosis/
   ui/                   control surface (TBD)
 tests/
   test_flash_safety.py  test_soak.py  test_parity.py  test_config.py
+  test_regime.py  test_morphology.py  test_resize.py  test_ui_backend.py
+  reference.py  morphology.py        numpy reference + measurement, not tests
 ```
 
 **Dependencies:** `wgpu>=0.32`, `rendercanvas>=2.7`, `glfw`, `numpy`, `tomlkit`,
@@ -837,8 +951,8 @@ Steps 1–6 produce something already usable for its purpose.
 ## 13. Implementation status
 
 Built and verified headless against a software adapter (Mesa lavapipe), so every
-shader compiles and the full tick/render sequence runs in CI without a GPU. 80
-tests pass in about a minute.
+shader compiles and the full tick/render sequence runs in CI without a GPU. 99
+tests pass in under two minutes.
 
 **Complete:** all 17 WGSL modules; the three-system substrate with agents, trail,
 reaction, curl-noise flow and pigment advection; the climate field and the
@@ -853,10 +967,14 @@ ramping; the Qt control panel; CLI.
 - **Checkpointing** (§4.4). Restarts begin from a fresh field rather than
   resuming a mature one. Everything else about long-duration survival is in
   place; this only affects what happens *after* a crash or reboot.
-- **The morphology work in §4.7.** The field is alive but its texture never
-  changes character, which is both a monotony problem and an accessibility one.
-  The diagnosis and the measured levers are recorded; none of the six steps in
-  that section are built yet.
+- **The morphology work in §4.7**, steps 3–6. Feature size is now polydisperse
+  and migrating — the third climate pair drives the reaction's diffusion rate
+  per region, over a global mean that walks — which addresses the texture
+  itself. What is still missing is the *topology*: the trail field can still
+  only gain edges, so flux pruning (step 3), rift events and anti-fusion (step
+  4), the ℓ term in the reduce pass (step 5) and trail advection (step 6) are
+  all outstanding. The `prune` and `fusion` climate channels steps 3 and 4 need
+  are allocated and maintained already.
 - **The volumetric slab backend** (§5.1), which was always positioned as the
   second step after the layered path is proven.
 - **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is

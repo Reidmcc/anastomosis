@@ -37,11 +37,20 @@ def gray_scott_step(
     v: np.ndarray,
     feed: float | np.ndarray,
     kill: float | np.ndarray,
-    du: float = 0.2097,
-    dv: float = 0.1050,
+    du: float | np.ndarray = 0.2097,
+    dv: float | np.ndarray = 0.1050,
     dt: float = 0.85,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """One substep, matching ``reaction.wgsl`` including its clamps."""
+    """One substep, matching ``reaction.wgsl`` including its clamps.
+
+    Every rate may be a scalar or a field. ``feed`` and ``kill`` vary per region
+    because the climate does; ``du`` and ``dv`` vary for the same reason and
+    additionally carry the morphology drift of DESIGN.md §4.7, which is what
+    keeps the feature size from being pinned to a single wavelength. Callers
+    are responsible for applying the shader's clamps to the rates they pass --
+    :func:`anastomosis.config.clamp_du` and
+    :func:`anastomosis.config.clamp_reaction` mirror them.
+    """
     rate = u * v * v
     u_next = u + dt * (du * laplacian9(u) - rate + feed * (1.0 - u))
     v_next = v + dt * (dv * laplacian9(v) + rate - (feed + kill) * v)

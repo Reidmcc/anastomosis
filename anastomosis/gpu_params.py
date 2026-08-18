@@ -51,6 +51,8 @@ SIM_FIELDS: list[Field] = [
     ("kill", "f32"),
     ("du", "f32"),
     ("dv", "f32"),
+    ("du_min", "f32"),
+    ("du_max", "f32"),
     ("rdt", "f32"),
     ("trail_feed_gain", "f32"),
     ("kill_follows_feed", "f32"),
@@ -81,6 +83,7 @@ SIM_FIELDS: list[Field] = [
     ("range_decay", "f32"),
     ("range_flow", "f32"),
     ("range_hue", "f32"),
+    ("range_du", "f32"),
     # Pigment / colour injection
     ("hue_anchor", "f32"),
     ("hue_spread", "f32"),
