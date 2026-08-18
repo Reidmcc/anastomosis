@@ -55,6 +55,18 @@ def test_validate_clamps_in_place():
         "safety.max_luma_delta"][1]
 
 
+def test_diffusion_band_is_bounded_for_stability():
+    """A hand-edited du_max must not be able to blow up the explicit scheme."""
+    cfg = config.Config(overrides={"reaction.du_max": 40.0, "reaction.du_min": 9.0})
+    params = cfg.resolve()
+    assert params.reaction.du_max * params.reaction.dt < 1.0, (
+        "du_max was accepted past the explicit-diffusion stability limit"
+    )
+    assert params.reaction.du_min <= params.reaction.du_max, (
+        "the du band was left inverted, so clamp_du would collapse it"
+    )
+
+
 def test_structural_values_stay_integers():
     params = config.Config(overrides={
         "render.layers": 99, "reaction.substeps": 0, "flow.psi_scale": 100,

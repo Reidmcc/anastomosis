@@ -42,15 +42,24 @@ SIM_FIELDS: list[Field] = [
     ("jitter", "f32"),
     ("deposit", "f32"),
     ("fusion_bias", "f32"),
+    ("fusion_max", "f32"),
     ("trail_decay", "f32"),
     ("trail_diffuse", "f32"),
+    ("income_rate", "f32"),
+    ("prune_gain", "f32"),
     ("starve_threshold", "f32"),
     ("max_age", "f32"),
+    ("found_fraction", "f32"),
+    ("found_period", "u32"),
+    ("found_site_cells", "u32"),
+    ("found_radius", "f32"),
     # Reaction
     ("feed", "f32"),
     ("kill", "f32"),
     ("du", "f32"),
     ("dv", "f32"),
+    ("du_min", "f32"),
+    ("du_max", "f32"),
     ("rdt", "f32"),
     ("trail_feed_gain", "f32"),
     ("kill_follows_feed", "f32"),
@@ -81,6 +90,9 @@ SIM_FIELDS: list[Field] = [
     ("range_decay", "f32"),
     ("range_flow", "f32"),
     ("range_hue", "f32"),
+    ("range_du", "f32"),
+    ("range_prune", "f32"),
+    ("range_repel", "f32"),
     # Pigment / colour injection
     ("hue_anchor", "f32"),
     ("hue_spread", "f32"),
@@ -176,7 +188,31 @@ EVENT_FIELDS: list[Field] = [
     ("chan_kill", "f32"),
     ("chan_flow", "f32"),
     ("chan_hue", "f32"),
+    # Added for rift events (DESIGN.md 4.7 step 4). Without these an event can
+    # thin material -- `dieback` lowers feed and raises kill -- but it cannot
+    # sever anything, because severance lives in the trail decay, the pruning
+    # term and the agents' junction behaviour, and none of those was reachable
+    # from an event.
+    ("chan_decay", "f32"),
+    ("chan_prune", "f32"),
+    ("chan_repel", "f32"),
 ]
+
+
+# Per-tile output of the reduction pass. Unlike every block above, this one is
+# never packed on the host -- only its size is, to allocate the buffer -- so it
+# is written as a pair of vec4s rather than derived from a scalar field list.
+# The second vec4 carries the trail flux balance the pruning term needs
+# centred; see reduce.wgsl and DESIGN.md §4.7.
+PARTIAL_WGSL = """\
+struct Partial {
+    field: vec4<f32>,  // sum V, sum V^2, sum |dV/dt|, count
+    flux: vec4<f32>,   // sum trail, sum trail*deficit, spare, spare
+};"""
+
+# Two vec4s. std430 gives a vec4 16-byte alignment and this struct holds
+# nothing else, so the stride is exactly the sum of the members.
+PARTIAL_SIZE = 32
 
 
 def wgsl_struct(name: str, fields: list[Field]) -> str:
@@ -246,7 +282,12 @@ STATS_FIELDS: list[Field] = [
     ("int_mass", "f32"),
     ("int_var", "f32"),
     ("int_activity", "f32"),
-    ("stats_pad", "f32"),
+    # Fraction of the trail field's throughput that flux pruning removes, so
+    # the agent deposit can hand back exactly that much. Measured rather than
+    # assumed: it moves by 3x across the intensity macro, and an unreturned
+    # prune term is a net mass sink that the homeostat cancels through
+    # corr_decay.
+    ("prune_return", "f32"),
     # Image statistics, used by the exposure governor.
     ("img_sum_l", "f32"),
     ("img_max_l", "f32"),

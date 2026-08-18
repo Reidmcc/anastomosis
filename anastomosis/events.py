@@ -22,12 +22,36 @@ from __future__ import annotations
 import logging
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import NamedTuple
 
 from .config import EventParams
 from . import gpu_params
 
 log = logging.getLogger(__name__)
+
+
+class Channels(NamedTuple):
+    """What an event does to the climate field, per channel.
+
+    Defaulted, so a kind only names the channels it actually uses and adding a
+    channel does not touch the kinds that ignore it. The names must match the
+    ``chan_*`` fields of :data:`anastomosis.gpu_params.EVENT_FIELDS`, which is
+    asserted in the tests.
+    """
+
+    feed: float = 0.0
+    kill: float = 0.0
+    flow: float = 0.0
+    hue: float = 0.0
+    # Severance. `decay` and `prune` raise the rate at which the trail field
+    # forgets, globally in the region and specifically on strands traffic has
+    # abandoned; `repel` pushes the agents' junction commitment past the point
+    # where it changes sign, so they veer away from filaments instead of
+    # committing to them. See DESIGN.md 4.7 step 4.
+    decay: float = 0.0
+    prune: float = 0.0
+    repel: float = 0.0
 
 
 @dataclass
@@ -38,7 +62,7 @@ class ActiveEvent:
     y: float
     radius: float
     peak: float
-    channels: tuple[float, float, float, float]  # feed, kill, flow, hue
+    channels: Channels
     attack: float
     hold: float
     release: float
@@ -70,16 +94,37 @@ class ActiveEvent:
 
 # Each kind perturbs a different combination of climate channels, so events are
 # recognisably different in character rather than being one effect at varying
-# amplitude. Values are (feed, kill, flow, hue) multipliers.
-EVENT_KINDS: dict[str, tuple[float, float, float, float]] = {
+# amplitude.
+EVENT_KINDS: dict[str, Channels] = {
     # A productive zone: more feed, less kill -- structure densifies.
-    "bloom": (1.0, -0.55, 0.15, 0.35),
+    "bloom": Channels(feed=1.0, kill=-0.55, flow=0.15, hue=0.35),
     # The opposite: material thins out and dissolves.
-    "dieback": (-0.85, 0.7, 0.1, -0.25),
+    "dieback": Channels(feed=-0.85, kill=0.7, flow=0.1, hue=-0.25),
     # Mostly flow, so structure is carried and stretched rather than changed.
-    "current": (0.1, 0.0, 1.0, 0.15),
+    "current": Channels(feed=0.1, flow=1.0, hue=0.15),
     # A regional hue shift with little structural effect.
-    "tint": (0.15, -0.1, 0.2, 1.0),
+    "tint": Channels(feed=0.15, kill=-0.1, flow=0.2, hue=1.0),
+    # A rift: the network comes apart across the region rather than merely
+    # thinning. `dieback` reaches only feed and kill, which removes material
+    # while leaving the topology exactly as it was -- the same mesh, fainter.
+    # Severance needs the three channels this kind adds: decay, so the trail
+    # forgets faster; prune, so it forgets abandoned strands fastest (inert
+    # while `agents.prune_gain` is zero); and repel, so the agents stop
+    # knitting the gap closed behind it.
+    #
+    # Those three and nothing else, which is a measured decision rather than a
+    # tidy one. Carrying a *small* feed and kill alongside them looked harmless
+    # and was not: an event adds its amplitude to the climate every tick
+    # against a mean reversion of 0.0016, so any channel a kind names is pinned
+    # at the clamp for the length of the envelope and the amplitude only shapes
+    # the ramp. Measured, the version carrying feed and kill took the reaction
+    # inside the disc down by a third and the whole field's mass by 16% -- a
+    # dieback wearing a rift's clothes, and a slow global brightness swing
+    # through the exposure governor. Without them the effect on the network is
+    # identical and the reaction is left alone, which is what makes this a
+    # structural event: it changes how the material is connected, not how much
+    # of it there is (DESIGN.md 4.7).
+    "rift": Channels(decay=1.0, prune=1.0, repel=1.0),
 }
 
 
@@ -132,7 +177,7 @@ class EventScheduler:
             y=self._rng.random(),
             radius=radius,
             peak=params.strength * self._rng.uniform(0.6, 1.0),
-            channels=tuple(c * jitter() for c in base),  # type: ignore[arg-type]
+            channels=Channels(*(c * jitter() for c in base)),
             attack=params.attack_seconds * jitter(),
             hold=params.hold_seconds * jitter(),
             release=params.release_seconds * jitter(),
@@ -152,19 +197,17 @@ class EventScheduler:
             strength = event.strength()
             if strength <= 1e-5:
                 continue
-            feed, kill, flow, hue = event.channels
-            rows.append(
-                {
-                    "pos_x": event.x,
-                    "pos_y": event.y,
-                    "radius": event.radius,
-                    "strength": strength,
-                    "chan_feed": feed,
-                    "chan_kill": kill,
-                    "chan_flow": flow,
-                    "chan_hue": hue,
-                }
+            row = {
+                "pos_x": event.x,
+                "pos_y": event.y,
+                "radius": event.radius,
+                "strength": strength,
+            }
+            row.update(
+                (f"chan_{name}", value)
+                for name, value in event.channels._asdict().items()
             )
+            rows.append(row)
         return rows, len(rows)
 
     def describe(self) -> str:

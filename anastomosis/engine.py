@@ -122,6 +122,10 @@ class Layer:
                                   f"climate_a{spec.index}")
         self.climate_b = PingPong(device, params.climate.width, params.climate.height,
                                   f"climate_b{spec.index}")
+        # Morphology: (scale, prune, repel, spare). DESIGN.md §4.7. The other
+        # two pairs are fully allocated, and a 64x36 rgba16f pair is ~9 KB.
+        self.climate_c = PingPong(device, params.climate.width, params.climate.height,
+                                  f"climate_c{spec.index}")
 
         psi_w = round_up(max(w // params.flow.psi_scale, 32), 32)
         psi_h = max(h // params.flow.psi_scale, 8)
@@ -188,7 +192,7 @@ class Layer:
         tiles_x = math.ceil(w / 16)
         tiles_y = math.ceil(h / 16)
         self.partials_buf = device.create_buffer(
-            size=tiles_x * tiles_y * 16,
+            size=tiles_x * tiles_y * gpu_params.PARTIAL_SIZE,
             usage=wgpu.BufferUsage.STORAGE,
             label=f"partials{spec.index}",
         )
@@ -248,7 +252,7 @@ class Layer:
         upload(self.interp_scratch, pigment)
 
         cw, ch = params.climate.width, params.climate.height
-        for pair in (self.climate_a, self.climate_b):
+        for pair in (self.climate_a, self.climate_b, self.climate_c):
             for tex in pair.textures:
                 upload(tex, rng.normal(0.0, 0.3, (ch, cw, 4)).clip(-1, 1))
 
@@ -300,6 +304,10 @@ class Engine:
         self.seed = seed if seed is not None else int(time.time_ns() & 0xFFFFFFFF)
         self._bind_cache: dict[tuple, wgpu.GPUBindGroup] = {}
         self._layout_cache: dict[int, wgpu.GPUBindGroupLayout] = {}
+        # Global mean of the reaction's diffusion rate, as a unit-variance OU
+        # state. See `_advance_du_walk`.
+        self._du_walk = 0.0
+        self._walk_rng = np.random.default_rng(self.seed ^ 0xD1FF)
 
         self.sampler = device.create_sampler(
             address_mode_u="repeat", address_mode_v="repeat",
@@ -336,6 +344,10 @@ class Engine:
 
         stats = np.zeros(1, dtype=gpu_params.STATS_DTYPE)
         stats["exposure"] = 1.0
+        # Zero is the correct starting value: the field starts empty, so there
+        # is nothing being pruned and nothing to hand back. The reduction
+        # overwrites it every tick.
+        stats["prune_return"] = 0.0
         device.queue.write_buffer(self.stats_buf, 0, stats.tobytes())
 
         self._make_noise_texture()
@@ -617,6 +629,18 @@ class Engine:
             -1.0 / max(ho.tau_seconds * max(params.sim_hz, 1e-3), 1.0)
         )
 
+        # The diffusion pair carries the global mean feature size; the climate
+        # field carries the per-region deviation around it (DESIGN.md §4.7),
+        # the same split feed and kill already use. Both are geometric, so the
+        # shader's per-texel deviation composes with this exactly rather than
+        # interacting with it. dv rides on du so the dv/du ratio is held: it is
+        # scaling the pair together, and only together, that moves feature size
+        # without moving mass -- which is what keeps this lever clear of the
+        # homeostat and of the exposure governor.
+        du_mean = min(
+            max(r.du * math.exp(r.du_walk * self._du_walk), r.du_min), r.du_max)
+        dv_mean = r.dv * (du_mean / max(r.du, 1e-6))
+
         return {
             "dims_x": spec.width, "dims_y": spec.height,
             "clim_w": c.width, "clim_h": c.height,
@@ -634,12 +658,23 @@ class Engine:
             "jitter": a.jitter,
             "deposit": a.deposit,
             "fusion_bias": a.fusion_bias,
+            "fusion_max": a.fusion_max,
             "trail_decay": a.trail_decay,
             "trail_diffuse": a.trail_diffuse * feature,
+            "income_rate": a.income_rate,
+            "prune_gain": a.prune_gain,
             "starve_threshold": a.starve_threshold,
             "max_age": a.max_age,
+            "found_fraction": a.found_fraction,
+            "found_period": a.found_period,
+            "found_site_cells": a.found_site_cells,
+            # In cells, like every other length here, so a half-resolution
+            # layer founds a cohort of the same screen size rather than half of
+            # one.
+            "found_radius": a.found_radius * feature,
 
-            "feed": r.feed, "kill": r.kill, "du": r.du, "dv": r.dv,
+            "feed": r.feed, "kill": r.kill, "du": du_mean, "dv": dv_mean,
+            "du_min": r.du_min, "du_max": r.du_max,
             "rdt": r.dt, "trail_feed_gain": r.trail_feed_gain,
             "kill_follows_feed": r.kill_follows_feed,
             "trail_seed_gain": r.trail_seed_gain,
@@ -662,6 +697,8 @@ class Engine:
             "range_sensor_distance": c.range_sensor_distance,
             "range_deposit": c.range_deposit, "range_decay": c.range_decay,
             "range_flow": c.range_flow, "range_hue": c.range_hue,
+            "range_du": c.range_du, "range_prune": c.range_prune,
+            "range_repel": c.range_repel,
 
             # Only the autonomous drift is baked into pigment; the palette macro
             # is applied at render time so turning the knob responds at once
@@ -720,6 +757,29 @@ class Engine:
 
     hue_phase: float = 0.0
 
+    def _advance_du_walk(self, dt: float, tau: float) -> None:
+        """One step of the Ornstein-Uhlenbeck walk on the global feature size.
+
+        Kept unit-variance and dimensionless here, so the amplitude lives with
+        the parameter it scales rather than being split across two places. The
+        noise term is ``sqrt(1 - (1 - theta)^2)``, which is what makes the
+        stationary variance exactly one whatever the tick rate is -- changing
+        the tempo macro must not change how far the field wanders.
+
+        A walk rather than a constant because a fixed diffusion rate pins the
+        Gray-Scott wavelength, and a pinned wavelength is what made the texture
+        stationary (DESIGN.md §4.7). It is deliberately the *smaller* half of
+        the mechanism: a global drift moves every feature on screen the same
+        way at the same time, which §4.2 warns against, and it does nothing
+        about the uniformity of size that is the actual accessibility problem.
+        The per-region deviation in `climate_c` is what addresses that.
+        """
+        theta = 1.0 - math.exp(-dt / max(tau, 1e-3))
+        sigma = math.sqrt(max(1.0 - (1.0 - theta) ** 2, 0.0))
+        walk = self._du_walk * (1.0 - theta) + float(self._walk_rng.normal()) * sigma
+        # Bounded, so a tail excursion cannot park the whole field at a clamp.
+        self._du_walk = max(-2.0, min(2.0, walk))
+
     def tick(self, params: Params, event_rows: list[dict] | None = None) -> None:
         """Advance the simulation by one tick."""
         event_rows = event_rows or []
@@ -730,6 +790,7 @@ class Engine:
             self.hue_phase
             + 2.0 * math.pi * params.render.hue_turns_per_hour * dt / 3600.0
         ) % (2.0 * math.pi)
+        self._advance_du_walk(dt, params.reaction.du_walk_tau)
 
         if event_count:
             self.device.queue.write_buffer(
@@ -764,20 +825,22 @@ class Engine:
             # 2. Climate.
             cpass.set_pipeline(self.p_climate)
             cpass.set_bind_group(0, self._bind(self.p_climate, [
-                pbind, layer.climate_a.cur, layer.climate_b.cur,
-                layer.climate_a.nxt, layer.climate_b.nxt,
+                pbind, layer.climate_a.cur, layer.climate_b.cur, layer.climate_c.cur,
+                layer.climate_a.nxt, layer.climate_b.nxt, layer.climate_c.nxt,
                 layer.psi.cur, sampler, events_bind,
             ]))
             cpass.dispatch_workgroups(*self._groups(params.climate.width,
                                                     params.climate.height))
             layer.climate_a.flip()
             layer.climate_b.flip()
+            layer.climate_c.flip()
 
             # 3. Agents deposit into the fixed-point accumulator.
             cpass.set_pipeline(self.p_agents)
             cpass.set_bind_group(0, self._bind(self.p_agents, [
                 pbind, agents_bind, layer.trail.cur, deposit_bind,
                 layer.climate_a.cur, layer.climate_b.cur, sampler, stats_bind,
+                layer.climate_c.cur,
             ]))
             cpass.dispatch_workgroups(math.ceil(spec.agent_count / 64), 1, 1)
 
@@ -785,7 +848,7 @@ class Engine:
             cpass.set_pipeline(self.p_trail)
             cpass.set_bind_group(0, self._bind(self.p_trail, [
                 pbind, layer.trail.cur, layer.trail.nxt, deposit_bind,
-                layer.climate_b.cur, sampler, stats_bind,
+                layer.climate_b.cur, layer.climate_c.cur, sampler, stats_bind,
             ]))
             cpass.dispatch_workgroups(gx, gy)
             layer.trail.flip()
@@ -824,7 +887,8 @@ class Engine:
             for _ in range(max(1, params.reaction.substeps)):
                 cpass.set_bind_group(0, self._bind(self.p_reaction, [
                     pbind, layer.reaction.cur, layer.reaction.nxt,
-                    layer.trail.cur, layer.climate_a.cur, sampler, stats_bind,
+                    layer.trail.cur, layer.climate_a.cur, layer.climate_c.cur,
+                    sampler, stats_bind,
                 ]))
                 cpass.dispatch_workgroups(gx, gy)
                 layer.reaction.flip()
@@ -851,7 +915,7 @@ class Engine:
             cpass.set_pipeline(self.p_reduce)
             cpass.set_bind_group(0, self._bind(self.p_reduce, [
                 pbind, layer.reaction.cur, layer.reaction_prev_view,
-                self._buffer_binding(layer.partials_buf),
+                layer.trail.cur, self._buffer_binding(layer.partials_buf),
             ]))
             cpass.dispatch_workgroups(*layer.tiles)
 
