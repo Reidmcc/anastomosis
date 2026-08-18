@@ -58,6 +58,11 @@ The control panel opens as a separate, ordinary window on your main display. It
 is not always-on-top and minimises freely — tuck it away and bring it back from
 the taskbar when you want it.
 
+Closing the render window quits: the field is saved, the control panel closes
+with it, and the process ends and gives you your terminal back. `Ctrl-C` in that
+terminal, and `kill` — which is what logging out sends — end the same way, with
+the field on disk.
+
 ```bash
 anastomosis --no-ui                  # no control panel
 anastomosis --list-presets
@@ -197,6 +202,9 @@ unrecoverable:
 - `test_checkpoint.py` — that a resumed engine evolves *bit-identically* to the
   one it was captured from, which is the only way to catch a piece of state
   quietly left out of the snapshot.
+- `test_shutdown.py` — that closing the window saves the field and really ends
+  the process, the last part in a subprocess with a live Qt loop, because a
+  session left running behind a closed window leaves no other trace.
 
 ## Layout
 
