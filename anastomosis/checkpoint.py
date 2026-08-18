@@ -30,12 +30,20 @@ minutes for days on end:
   saved one. The *in-flight* events are restored, because those are mid-envelope
   and dropping them would be a step.
 
-Geometry is a compatibility key rather than something to adapt to: resolution,
-layer count, agent counts and climate size all follow from the window size and
-the config, so a checkpoint whose shapes do not match the engine being restored
-into is refused with a log line and the run starts from seeds. Every failure
-here degrades to "start fresh" -- a mismatched, truncated or foreign file must
-never be able to stop the application from opening.
+Geometry is saved rather than required. Resolution, layer count, agent counts
+and climate size all follow from the window size and the config, so treating
+them as a compatibility key meant that resizing a window -- or editing any
+config value that touched them -- silently threw away a field that had taken
+hours to grow. What the file records instead is the geometry it was captured
+at, and :func:`required_geometry` reads it back so the launch can *build* an
+engine in that shape (``app.Application._start_engine``) before loading the
+field into it. The window is presentation and follows itself; the config's
+structural values take effect the next time a field is grown from seeds.
+
+What is still refused is a file this build cannot use at all: a foreign format
+version, missing or wrongly-shaped arrays, or a geometry no engine could be
+built at. Every failure here degrades to "start fresh" -- a mismatched,
+truncated or foreign file must never be able to stop the application opening.
 """
 
 from __future__ import annotations
@@ -52,11 +60,16 @@ from typing import Any
 
 import numpy as np
 
+from . import engine as engine_module
 from . import gpu_params
 
 log = logging.getLogger(__name__)
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+# Version 1 recorded the *window* size where version 2 records the simulation's
+# own, which are the same number unless that session was resized after starting.
+# Reading it costs a few lines and saves anyone upgrading their mature field.
+OLDEST_READABLE_VERSION = 1
 
 # Five minutes: long enough that the readback cost is negligible, short enough
 # that a crash costs less field maturity than it takes to notice one.
@@ -155,7 +168,6 @@ def capture(engine, scheduler=None, sim_hz: float = 0.0) -> Checkpoint:
     """
     device = engine.device
     arrays: dict[str, np.ndarray] = {}
-    layers_meta: list[dict[str, Any]] = []
 
     for layer in engine.layers:
         index = layer.spec.index
@@ -166,27 +178,16 @@ def capture(engine, scheduler=None, sim_hz: float = 0.0) -> Checkpoint:
             )
         arrays[f"layer{index}.agents"] = _read_buffer(device, layer.agents_buf)
 
-        climate = layer.climate_a.textures[0]
-        layers_meta.append({
-            "index": index,
-            "width": layer.spec.width,
-            "height": layer.spec.height,
-            "agent_count": layer.spec.agent_count,
-            "psi_width": layer.psi_dims[0],
-            "psi_height": layer.psi_dims[1],
-            "climate_width": climate.width,
-            "climate_height": climate.height,
-        })
-
     arrays["stats"] = _read_buffer(device, engine.stats_buf)
 
     meta: dict[str, Any] = {
         "version": FORMAT_VERSION,
         "created": time.time(),
         "sim_hz": float(sim_hz),
+        # The shape the next launch has to build itself in to be able to load
+        # this, rather than the shape it has to happen to already be in.
+        "geometry": _geometry_meta(engine.geometry),
         "engine": {
-            "width": engine.width,
-            "height": engine.height,
             "tick_count": int(engine.tick_count),
             "frame_count": int(engine.frame_count),
             "seed": int(engine.seed),
@@ -195,10 +196,30 @@ def capture(engine, scheduler=None, sim_hz: float = 0.0) -> Checkpoint:
                 [float(x), float(y)] for x, y in (engine._parallax or [])
             ],
         },
-        "layers": layers_meta,
         "events": scheduler.state() if scheduler is not None else {},
     }
     return Checkpoint(meta=meta, arrays=arrays)
+
+
+def _geometry_meta(geometry) -> dict[str, Any]:
+    """A geometry as plain JSON-able data."""
+    return {
+        "sim_width": int(geometry.sim_width),
+        "sim_height": int(geometry.sim_height),
+        "layers": [
+            {
+                "index": int(layer.index),
+                "width": int(layer.width),
+                "height": int(layer.height),
+                "agent_count": int(layer.agent_count),
+                "psi_width": int(layer.psi_width),
+                "psi_height": int(layer.psi_height),
+                "climate_width": int(layer.climate_width),
+                "climate_height": int(layer.climate_height),
+            }
+            for layer in geometry.layers
+        ],
+    }
 
 
 # --------------------------------------------------------------------------
@@ -333,73 +354,139 @@ class BackgroundSaver:
 # --------------------------------------------------------------------------
 
 
-def _expected_arrays(engine) -> dict[str, tuple[int, ...]]:
-    """Array name -> required shape, derived from the live GPU resources."""
+def _field_shape(layer, name: str) -> tuple[int, int, int]:
+    """The shape one saved field has, given the layer geometry it belongs to."""
+    if name.startswith("climate"):
+        width, height = layer.climate_width, layer.climate_height
+    elif name == "psi":
+        width, height = layer.psi_width, layer.psi_height
+    else:
+        width, height = layer.width, layer.height
+    return (height, width, 4)
+
+
+def _expected_arrays(geometry) -> dict[str, tuple[int, ...]]:
+    """Array name -> required shape, for a given simulation geometry."""
     expected: dict[str, tuple[int, ...]] = {
         "stats": (gpu_params.STATS_DTYPE.itemsize,),
     }
-    for layer in engine.layers:
-        index = layer.spec.index
+    for layer in geometry.layers:
         for name in PAIR_FIELDS:
-            texture = getattr(layer, name).textures[0]
-            expected[f"layer{index}.{name}"] = (texture.height, texture.width, 4)
-        expected[f"layer{index}.agents"] = (layer.agents_buf.size,)
+            expected[f"layer{layer.index}.{name}"] = _field_shape(layer, name)
+        expected[f"layer{layer.index}.agents"] = (
+            max(layer.agent_count, 1) * engine_module.AGENT_STRIDE,
+        )
     return expected
 
 
-def compatibility_problems(engine, checkpoint: Checkpoint) -> list[str]:
-    """Human-readable reasons this checkpoint cannot be restored, if any.
+def _read_geometry(meta: dict[str, Any]) -> engine_module.Geometry | None:
+    """The geometry described by a checkpoint's metadata, or ``None``.
 
-    The metadata comparison exists for the log message; the shape comparison
-    against the live resources is what actually makes the upload safe.
+    Nothing in here is trusted: the values are coerced to ``int`` and the result
+    is bounds-checked by the caller before an engine is built from it.
     """
+    block = meta.get("geometry")
+    if not isinstance(block, dict):
+        # Format version 1, which kept the sizes in two other places and
+        # recorded the window size rather than the simulation's.
+        saved = meta.get("engine") or {}
+        block = {
+            "sim_width": saved.get("width"),
+            "sim_height": saved.get("height"),
+            "layers": meta.get("layers"),
+        }
+
+    rows = block.get("layers")
+    if not isinstance(rows, list) or not rows:
+        return None
+    try:
+        layers = tuple(
+            engine_module.LayerGeometry(
+                index=int(row["index"]),
+                width=int(row["width"]),
+                height=int(row["height"]),
+                agent_count=int(row["agent_count"]),
+                psi_width=int(row["psi_width"]),
+                psi_height=int(row["psi_height"]),
+                climate_width=int(row["climate_width"]),
+                climate_height=int(row["climate_height"]),
+            )
+            for row in rows
+        )
+        return engine_module.Geometry(
+            sim_width=int(block["sim_width"]),
+            sim_height=int(block["sim_height"]),
+            layers=layers,
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _usable_geometry(
+    checkpoint: Checkpoint,
+) -> tuple[engine_module.Geometry | None, list[str]]:
+    """``(geometry, problems)``: what this file needs, or why it is unusable."""
     version = checkpoint.meta.get("version")
-    if version != FORMAT_VERSION:
-        return [f"format version {version!r}, expected {FORMAT_VERSION}"]
+    if (
+        not isinstance(version, int)
+        or not OLDEST_READABLE_VERSION <= version <= FORMAT_VERSION
+    ):
+        return None, [
+            f"format version {version!r}, expected "
+            f"{OLDEST_READABLE_VERSION} to {FORMAT_VERSION}"
+        ]
 
-    problems: list[str] = []
-    saved_engine = checkpoint.meta.get("engine") or {}
-    saved_size = (saved_engine.get("width"), saved_engine.get("height"))
-    if saved_size != (engine.width, engine.height):
-        problems.append(
-            f"saved at {saved_size[0]}x{saved_size[1]}, "
-            f"now {engine.width}x{engine.height}"
-        )
+    geometry = _read_geometry(checkpoint.meta)
+    if geometry is None:
+        return None, ["the metadata describes no usable geometry"]
+    problems = geometry.problems()
+    if problems:
+        return None, problems
 
-    saved_layers = checkpoint.meta.get("layers") or []
-    if len(saved_layers) != len(engine.layers):
-        problems.append(
-            f"{len(saved_layers)} layers saved, {len(engine.layers)} now"
-        )
-    else:
-        for layer, row in zip(engine.layers, saved_layers):
-            if not isinstance(row, dict):
-                problems.append("malformed layer metadata")
-                break
-            climate = layer.climate_a.textures[0]
-            for label, saved, live in (
-                ("size", (row.get("width"), row.get("height")),
-                 (layer.spec.width, layer.spec.height)),
-                ("agent count", row.get("agent_count"), layer.spec.agent_count),
-                ("psi size", (row.get("psi_width"), row.get("psi_height")),
-                 layer.psi_dims),
-                ("climate size",
-                 (row.get("climate_width"), row.get("climate_height")),
-                 (climate.width, climate.height)),
-            ):
-                if saved != live:
-                    problems.append(
-                        f"layer {layer.spec.index} {label} {saved} != {live}"
-                    )
-
-    for name, shape in _expected_arrays(engine).items():
+    # The file must actually hold what its own metadata claims, since that is
+    # what the arrays are uploaded against.
+    for name, shape in _expected_arrays(geometry).items():
         array = checkpoint.arrays.get(name)
         if array is None:
             problems.append(f"missing {name}")
         elif tuple(array.shape) != shape:
             problems.append(f"{name} is {tuple(array.shape)}, expected {shape}")
+    if problems:
+        return None, problems
+    return geometry, []
 
-    return problems
+
+def required_geometry(checkpoint: Checkpoint) -> engine_module.Geometry | None:
+    """The geometry an engine must be built at to be able to load this, or ``None``.
+
+    This is what stops the window size from mattering: instead of asking whether
+    a saved field fits the session that is starting, the session asks what shape
+    the field needs and starts in it. ``None`` means the file cannot be used at
+    all -- foreign version, corrupt metadata, missing arrays, or a geometry no
+    engine could be built at -- and the caller grows a new field instead.
+    """
+    geometry, problems = _usable_geometry(checkpoint)
+    if problems:
+        log.info(
+            "the saved state cannot be used, starting from a fresh field (%s)",
+            "; ".join(problems),
+        )
+    return geometry
+
+
+def compatibility_problems(engine, checkpoint: Checkpoint) -> list[str]:
+    """Human-readable reasons this checkpoint cannot be restored into *this* engine.
+
+    Normally empty by construction: the launch builds its engine at
+    :func:`required_geometry`. A non-empty list means either the file is unusable
+    or the restore is being attempted into an engine built for something else,
+    and either way it is what keeps the upload from writing mismatched shapes to
+    the GPU.
+    """
+    geometry, problems = _usable_geometry(checkpoint)
+    if geometry is None:
+        return problems
+    return geometry.differences(engine.geometry)
 
 
 def _write_texture(device, texture, data: np.ndarray) -> None:
@@ -416,14 +503,16 @@ def _write_texture(device, texture, data: np.ndarray) -> None:
 def restore(engine, checkpoint: Checkpoint, scheduler=None) -> bool:
     """Load a checkpoint into a freshly built engine.
 
-    Returns False and changes nothing if the checkpoint does not match: every
-    shape is validated before the first upload, so a refusal leaves the seeded
-    field intact and the run simply starts new.
+    Returns False and changes nothing if the checkpoint does not fit the engine
+    it was handed: every shape is validated before the first upload, so a refusal
+    leaves the seeded field intact and the run simply starts new. Building the
+    engine so that it *does* fit is the caller's job -- see
+    :func:`required_geometry`.
     """
     problems = compatibility_problems(engine, checkpoint)
     if problems:
         log.info(
-            "saved state does not fit this session, starting from a fresh "
+            "saved state does not fit this engine, starting from a fresh "
             "field (%s)", "; ".join(problems),
         )
         return False

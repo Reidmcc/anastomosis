@@ -296,14 +296,27 @@ Long runs fail in specific, known ways. Each gets an explicit countermeasure:
   statistically identical; the *in-flight* events are saved, since those are
   mid-envelope.
 
-  Geometry is a compatibility key rather than something to adapt to: resolution,
-  layer count, agent counts and climate size all follow from the window size and
-  the config, and a snapshot whose shapes don't match is refused with a log line
-  and the session starts from seeds. Every failure path here degrades to "start
-  fresh"; nothing on disk can stop the application opening. Verified by resuming
-  into a second engine and asserting it evolves bit-identically for further ticks —
-  the only check that catches a piece of state quietly left out, and the one that
-  keeps `velocity` and `reaction_prev` honest about being derived.
+  Geometry is saved, not required. Resolution, layer count, agent counts and
+  climate size all follow from the window size and the config, so treating them as
+  a compatibility key meant that opening the window at a different size — or
+  editing any config value that touched them — silently discarded a field that had
+  taken hours to grow, over a mismatch that only ever concerned the presentation.
+  The snapshot therefore records the geometry it was captured at, and the launch
+  builds its engine in *that* shape before loading the field into it. This costs
+  nothing visually, because the simulation's resolution is already independent of
+  the window's: a resize only rebuilds the presentation chain (§8), and the
+  compositor corrects the aspect difference. The consequence is that a resumed
+  field keeps the geometry it was grown at, so the structural config values land on
+  the next *new* field — which is what the reset is for.
+
+  What is still refused is a file this build cannot use at all: a foreign format
+  version, missing or wrongly-shaped arrays, or a geometry no engine could be built
+  at — bounds-checked before allocation, since that number comes off disk and
+  decides how much memory the launch asks for. Every failure path here degrades to
+  "start fresh"; nothing on disk can stop the application opening. Verified by
+  resuming into a second engine and asserting it evolves bit-identically for
+  further ticks — the only check that catches a piece of state quietly left out,
+  and the one that keeps `velocity` and `reaction_prev` honest about being derived.
 - **Zero per-frame allocation.** All buffers, bind groups, and pipelines are created
   at startup. A run of `10^7` frames will find any leak.
 
