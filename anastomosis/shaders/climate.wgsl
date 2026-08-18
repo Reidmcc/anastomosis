@@ -12,7 +12,7 @@
 // Channel layout:
 //   climate_a = (feed, kill, sensor_angle, sensor_distance)
 //   climate_b = (deposit, decay, flow, hue)
-//   climate_c = (scale, prune, fusion, spare)
+//   climate_c = (scale, prune, repel, spare)
 //
 // The third pair carries morphology (DESIGN.md §4.7). `scale` is a deviation
 // on the reaction's diffusion rate, and so on the characteristic feature size;
@@ -23,9 +23,14 @@
 // is what makes the texture a trypophobia trigger. Carried spatially, coarse
 // and fine regions coexist and migrate past each other.
 //
-// `prune` and `fusion` are allocated but not yet consumed; they belong to
-// steps 3 and 4 of the §4.7 build order. A 64x36 rgba16f pair is ~9 KB, so
-// reserving them costs nothing measurable and saves a second re-plumbing.
+// `prune` scales the flux-pruning term in trail.wgsl, so the network comes
+// apart in some regions while it holds together in others. `repel` is the
+// agents' junction commitment (agents.wgsl): past the point where the steering
+// term changes sign the agents veer away from filaments instead of committing
+// to them, which is the anti-fusion half of §4.7 step 4. §4.7 calls that
+// channel `fusion`; it is named for what it delivers, because the axis is not
+// monotone in how much fusing happens -- peak fusion sits at the crossing
+// point, and both sides of it fuse less.
 
 //!include common.wgsl
 
@@ -126,6 +131,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             a.y = a.y + amp * ev.chan_kill;
             b.z = b.z + amp * ev.chan_flow;
             b.w = b.w + amp * ev.chan_hue;
+            // Severance (§4.7 step 4). Before these three an event could thin
+            // material but never sever anything: feed and kill move how much
+            // is there, not how it is connected.
+            b.y = b.y + amp * ev.chan_decay;
+            c.y = c.y + amp * ev.chan_prune;
+            c.z = c.z + amp * ev.chan_repel;
         }
     }
 

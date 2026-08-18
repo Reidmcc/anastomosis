@@ -67,6 +67,40 @@ class AgentParams:
     jitter: float = 0.10  # radians, stochastic steering
     deposit: float = 0.018  # per tick, kept far below trail_decay
     fusion_bias: float = 0.55  # commitment to sensed junctions, 0..1
+    # The ceiling on that commitment, and the anti-fusion mechanism entire
+    # (DESIGN.md 4.7 step 4). The steering term is `turn * (1 - commitment)`,
+    # so the axis is not two-sided but three-valued: 0 leaves the agent
+    # glancing along whatever it sensed, 1 cancels the turn so it drives
+    # straight through the junction and fuses, and past 1 the term changes
+    # sign and the agent veers *away*. Held at 0.92 the layer had attraction
+    # and no repulsion, so every fusion added a cycle and nothing could remove
+    # one. That old ceiling was never actually reached -- the bias tops out at
+    # 0.72 across the intensity macro -- so widening it changes nothing on its
+    # own; what it does is let the climate `repel` channel and rift events push
+    # a region past the crossing. The look at a neutral climate is unchanged.
+    fusion_max: float = 1.85
+    # Founding respawn. A respawned agent used to land alone on uniform random
+    # ground, where a single agent's deposit is far below what can hold against
+    # decay -- so it could never found anything, and all growth accreted onto
+    # the network that already existed. DESIGN.md 4.7 identifies that as what
+    # made flux pruning (below) concentrate the network rather than turn it
+    # over: the resorbed mass had nowhere to go but back into the existing
+    # structure. This is the mechanism that half of the argument asked for.
+    #
+    # This fraction of respawns instead land together at a shared site, which
+    # is reselected every `found_period` ticks, so the arrivals of a whole
+    # epoch pile onto one patch of bare ground and can actually establish
+    # something. The site is chosen as the barest of four candidates, which
+    # costs four trail samples on the respawn path only.
+    found_fraction: float = 0.55
+    found_period: int = 240  # ticks a founding site lasts, ~12 s at 20 Hz
+    # Simulation cells per concurrent founding site. A *density* rather than a
+    # count, so the arrival rate per site is the same on a 128-cell test layer
+    # as on a 1440p one -- agent count scales with area, and a fixed number of
+    # sites would concentrate a hundred times more traffic on the large layer,
+    # which would land as a visible flare rather than as a founding.
+    found_site_cells: int = 16_384
+    found_radius: float = 6.0  # cells; the scatter of a cohort around its site
     trail_decay: float = 0.055
     trail_diffuse: float = 1.15  # gaussian sigma in cells
     # Flux pruning -- the autolysis half of anastomosis (DESIGN.md 4.7).
@@ -267,6 +301,22 @@ class ClimateParams:
     # where it holds together. Inert while agents.prune_gain is zero, which it
     # is by default.
     range_prune: float = 1.5
+    # Junction behaviour, per region -- the `repel` channel of the third pair.
+    # Additive, unlike range_du and range_prune, because what matters on this
+    # axis is a *threshold* rather than a ratio: at a commitment of 1 the
+    # steering term vanishes and the agent crosses the junction, and past 1 it
+    # changes sign and the agent veers away (agents.wgsl). An additive
+    # deviation puts that crossing at a fixed distance in climate units, so the
+    # fraction of the field that is repelling can be reasoned about directly.
+    #
+    # Against the realised climate amplitude (s.d. ~0.11, see range_du), 2.6
+    # puts the crossing at 1.6 s.d. above the mean, so roughly 6% of the field
+    # is coming apart at any moment while the rest fuses -- and those zones
+    # migrate with the climate. A rift event saturates the channel at its clamp
+    # for the length of its envelope -- an event adds its amplitude every tick
+    # against a mean reversion of 0.0016, so any channel it names ends up
+    # pinned -- which puts the whole event disc at `agents.fusion_max`.
+    range_repel: float = 2.6
 
 
 @dataclass
@@ -605,6 +655,12 @@ def validate(params: Params) -> Params:
     params.reaction.substeps = max(1, min(8, int(params.reaction.substeps)))
     params.flow.psi_scale = max(1, min(16, int(params.flow.psi_scale)))
     params.events.max_concurrent = max(0, min(8, int(params.events.max_concurrent)))
+    # A founding period of zero would divide by zero picking the epoch, and a
+    # period of one would reselect the site every tick, which is the uniform
+    # respawn this exists to replace.
+    params.agents.found_period = max(2, min(20_000, int(params.agents.found_period)))
+    params.agents.found_site_cells = max(
+        64, min(1 << 24, int(params.agents.found_site_cells)))
     return params
 
 

@@ -212,6 +212,55 @@ def test_the_feature_size_band_is_used_but_not_camped_on():
     )
 
 
+def test_repulsion_is_reachable_but_is_not_the_common_case():
+    """Where the anti-fusion crossing sits, against the climate that drives it.
+
+    The commitment axis runs *through* fusion rather than peaking at it: under
+    1 the agent follows the filament it sensed, at 1 it drives straight through
+    and fuses, past 1 it veers away (agents.wgsl). So the whole mechanism is
+    the position of that crossing relative to the climate amplitude, and both
+    failure directions are quiet ones. Out of reach, and the layer is one-way
+    again -- attraction with no repulsion, a topology that can only accrete.
+    Too easily reached, and the network never gets to close a loop anywhere.
+
+    As with the diffusion band, the climate does not reach the +-1 it is
+    clamped to; it settles near ``morphology.CLIMATE_SD``.
+    """
+    params = config.Config().resolve()
+    agents, climate = params.agents, params.climate
+    sigma = morphology.CLIMATE_SD
+
+    assert agents.fusion_bias < 1.0 <= agents.fusion_max, (
+        f"the commitment clamp ({agents.fusion_max:.2f}) no longer reaches "
+        f"past 1, so no region can repel however hard the climate pushes"
+    )
+
+    def repelling(bias: float) -> float:
+        """Fraction of a normal climate whose commitment crosses 1."""
+        z = (1.0 - bias) / (climate.range_repel * sigma)
+        return 0.5 * math.erfc(z / math.sqrt(2.0))
+
+    fraction = repelling(agents.fusion_bias)
+    assert 0.02 < fraction < 0.12, (
+        f"{fraction:.1%} of the field is repelling at any moment; the zones "
+        f"where the network comes apart are either vanishing or are most of "
+        f"the screen"
+    )
+
+    # The intensity macro moves the base bias, so it moves the crossing with
+    # it. That coupling is intended -- a denser field should knit and unknit
+    # harder -- but it must not take either end out of the band.
+    lo, hi = next(
+        (low, high) for path, low, high, _ in config.MACRO_CURVES["intensity"]
+        if path == "agents.fusion_bias"
+    )
+    for bias in (lo, hi):
+        assert 0.005 < repelling(bias) < 0.25, (
+            f"at a fusion bias of {bias:.2f} -- an end of the intensity macro "
+            f"-- {repelling(bias):.1%} of the field repels"
+        )
+
+
 @pytest.mark.slow
 def test_flux_pruning_returns_the_mass_it_removes(gpu_device):
     """The property that decides whether pruning survives the homeostat.
@@ -289,6 +338,63 @@ def test_flux_pruning_returns_the_mass_it_removes(gpu_device):
 # ---------------------------------------------------------------------------
 
 
+def test_every_event_channel_reaches_the_climate_field():
+    """A packed channel that nothing reads is invisible in every other way.
+
+    The GPU record, the host-side :class:`events.Channels` and the shader that
+    consumes them are three lists that have to agree, and a mismatch produces
+    no error anywhere -- the event simply does less than it says. That is how
+    §4.7 found the events layer at all: `dieback` could thin material but not
+    sever anything, because severance lives in channels ``EVENT_FIELDS`` did
+    not have.
+    """
+    packed = {name for name, _ in gpu_params.EVENT_FIELDS if name.startswith("chan_")}
+    declared = {f"chan_{name}" for name in events.Channels._fields}
+    assert packed == declared, (
+        f"host and GPU event channels disagree: {packed ^ declared}"
+    )
+
+    source = shaders.load("climate.wgsl")
+    unread = {name for name in packed if f"ev.{name}" not in source}
+    assert not unread, (
+        f"event channels packed but never applied to the climate field: "
+        f"{sorted(unread)}"
+    )
+
+
+def test_an_event_kind_can_sever_the_network():
+    """Not merely thin it -- the distinction §4.7 step 4 turns on.
+
+    Feed and kill move how much material there is. They leave the topology
+    exactly as it was: the same mesh, fainter. Severance needs the trail decay,
+    the pruning term and the agents' junction behaviour, and an event that
+    reaches only feed and kill cannot touch any of them.
+    """
+    severing = {
+        kind: channels for kind, channels in events.EVENT_KINDS.items()
+        if channels.decay or channels.prune or channels.repel
+    }
+    assert severing, (
+        "no event kind reaches the severance channels, so events can only ever "
+        "thin material -- the topology is one-way again"
+    )
+
+    # And a severing kind must not also move mass, which is not the fussy
+    # constraint it looks like. An event *adds* its amplitude to the climate
+    # every tick against a mean reversion of 0.0016, so any channel a kind
+    # names is pinned at the clamp for the length of the envelope -- the
+    # coefficient shapes the ramp and nothing else. A "small" feed term is
+    # therefore a full one, measured: it took the reaction inside the disc down
+    # by a third and the whole field's mass by 16%, which reaches the image as
+    # a slow global brightness swing through the exposure governor.
+    for kind, channels in severing.items():
+        assert channels.feed == 0.0 and channels.kill == 0.0, (
+            f"the {kind} event moves feed by {channels.feed:+.2f} and kill by "
+            f"{channels.kill:+.2f} as well as severing; there is no such thing "
+            f"as a small event channel, so this is a dieback with extra steps"
+        )
+
+
 def test_event_envelope_never_steps():
     params = config.EventParams()
     scheduler = events.EventScheduler(seed=1)
@@ -350,6 +456,189 @@ def test_events_can_be_disabled():
     for _ in range(10_000):
         scheduler.update(1.0, params)
     assert scheduler.spawned == 0
+
+
+def test_only_a_rift_drives_the_severance_channels_of_the_climate(gpu_device):
+    """The plumbing, end to end, without waiting for the field to respond.
+
+    Cheap and deterministic where the structural consequence is neither: what
+    the climate field holds inside an event's disc is a property of the event
+    pass alone, so it can be read after a few hundred ticks. `dieback` is the
+    control -- it is the strongest thinning event there is, and it must leave
+    every one of these channels alone, because thinning material and severing
+    a network are different things.
+    """
+    device, _ = gpu_device
+    size = 64
+
+    def climate_inside(kind: str | None) -> tuple[float, float]:
+        params = config.Config().resolve()
+        params.render.layers = 1
+        engine = engine_module.Engine(device, size, size, params, seed=13)
+        rows = []
+        if kind is not None:
+            scheduler = events.EventScheduler(seed=0)
+            scheduler.active = [
+                events.ActiveEvent(
+                    x=0.5, y=0.5, radius=0.24, peak=params.events.strength,
+                    channels=events.EVENT_KINDS[kind],
+                    attack=1.0, hold=1e6, release=1.0, kind=kind,
+                )
+            ]
+            scheduler.active[0].elapsed = 2.0
+            rows, _ = scheduler.pack(8)
+        for _ in range(400):
+            engine.tick(params, rows)
+
+        layer = engine.layers[0]
+        width, height = params.climate.width, params.climate.height
+        read = {}
+        for name, pair in (("b", layer.climate_b), ("c", layer.climate_c)):
+            texture = pair.textures[pair.index]
+            raw = device.queue.read_texture(
+                {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
+                {"offset": 0, "bytes_per_row": width * 8, "rows_per_image": height},
+                (width, height, 1),
+            )
+            read[name] = np.frombuffer(raw, dtype=np.float16).reshape(
+                height, width, 4).astype(np.float32)
+        middle = (slice(height // 2 - 2, height // 2 + 3),
+                  slice(width // 2 - 2, width // 2 + 3))
+        # decay (climate_b.y) and repel (climate_c.z).
+        return float(read["b"][middle][..., 1].mean()), float(read["c"][middle][..., 2].mean())
+
+    quiet = climate_inside(None)
+    thinning = climate_inside("dieback")
+    severing = climate_inside("rift")
+
+    for name, value in zip(("decay", "repel"), quiet):
+        assert abs(value) < 0.5, (
+            f"the {name} channel sits at {value:+.2f} with no event at all; "
+            f"the drift alone is as strong as an event"
+        )
+    for name, value in zip(("decay", "repel"), thinning):
+        assert abs(value) < 0.5, (
+            f"a dieback moved the {name} channel to {value:+.2f}; it is "
+            f"supposed to thin material, not take the network apart"
+        )
+    for name, value in zip(("decay", "repel"), severing):
+        assert value > 0.9, (
+            f"a rift left the {name} channel at {value:+.2f}; the severance "
+            f"channels are not reaching the climate field"
+        )
+
+
+@pytest.mark.slow
+def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_device):
+    """What a rift does to the field, against a no-event control on one seed.
+
+    Three claims, and the second is as important as the first:
+
+    * the network inside the disc comes apart -- which is the thing `dieback`
+      cannot do at any amplitude, since nothing flows from the reaction back to
+      the trail;
+    * the *material* is left alone. A rift moves how the material is connected,
+      not how much of it there is. An event that moved mass would reach the
+      image as a slow global brightness swing through the exposure governor,
+      which is the interaction DESIGN.md §4.7 flags as the real risk;
+    * it heals. V = 0 is an absorbing state for Gray-Scott, so an event that
+      could empty a quarter of the screen and leave it empty would be a worse
+      failure than the monotony §4.7 exists to fix, because it would be
+      permanent.
+
+    Two runs of the same seed rather than an inside/outside ratio within one:
+    the disc's own ground is not representative of the field -- it can be a
+    dense hub or a void -- and the control run is the only fair reference for
+    what would have been there anyway.
+
+    The attack and release are compressed but the hold is not, and that is not
+    a free choice. The direct effect of the raised decay is about a fifth of
+    the trail; the rest is the feedback behind it -- a thinned strand stops
+    being found, which thins it further -- and that takes on the order of a
+    thousand ticks to develop.
+
+    The seed is fixed because the *magnitude* of the severance depends on what
+    the disc lands on, and legitimately so: the feedback runs furthest where
+    the network is thinnest. Measured, the trail inside falls to 0.32 of the
+    control on this seed and to 0.77 on one where the disc sits on a dense hub.
+    The material and healing claims held on both.
+    """
+    device, _ = gpu_device
+    size, radius = 128, 0.24
+    warm, attack, hold, release, recover = 800, 200, 2000, 400, 2000
+
+    ys, xs = np.mgrid[0:size, 0:size]
+    distance = np.hypot((xs + 0.5) / size - 0.5, (ys + 0.5) / size - 0.5)
+    inside = distance < radius * 0.5
+
+    def run(with_event: bool) -> dict[str, tuple[float, float]]:
+        params = config.Config().resolve()
+        params.render.layers = 1
+        engine = engine_module.Engine(device, size, size, params, seed=31)
+        event = events.ActiveEvent(
+            x=0.5, y=0.5, radius=radius, peak=params.events.strength,
+            channels=events.EVENT_KINDS["rift"],
+            attack=attack, hold=hold, release=release, kind="rift",
+        )
+        scheduler = events.EventScheduler(seed=0)
+
+        def sample() -> tuple[float, float]:
+            layer = engine.layers[0]
+            means = []
+            for pair, channel in ((layer.trail, 0), (layer.reaction, 1)):
+                texture = pair.textures[pair.index]
+                raw = device.queue.read_texture(
+                    {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
+                    {"offset": 0, "bytes_per_row": size * 8, "rows_per_image": size},
+                    (size, size, 1),
+                )
+                field = np.frombuffer(raw, dtype=np.float16).reshape(
+                    size, size, 4)[..., channel].astype(np.float32)
+                means.append(float(field[inside].mean()))
+            return means[0], means[1]
+
+        marks: dict[str, tuple[float, float]] = {}
+        for tick in range(warm + attack + hold + release + recover):
+            rows: list[dict] = []
+            if with_event and tick >= warm:
+                event.elapsed = tick - warm
+                if not event.finished:
+                    scheduler.active = [event]
+                    rows, _ = scheduler.pack(8)
+            engine.tick(params, rows)
+            if tick == warm + attack + hold - 1:
+                marks["during"] = sample()
+            if tick == warm + attack + hold + release + recover - 1:
+                marks["after"] = sample()
+        return marks
+
+    control = run(False)
+    rifted = run(True)
+
+    trail_during = rifted["during"][0] / max(control["during"][0], 1e-9)
+    assert trail_during < 0.6, (
+        f"the network inside the rift is at {trail_during:.2f} of the control "
+        f"run's, so the severance channels barely reached it"
+    )
+
+    material = rifted["during"][1] / max(control["during"][1], 1e-9)
+    assert material > 0.75, (
+        f"the reaction inside the rift fell to {material:.2f} of the control's; "
+        f"a rift is supposed to sever the network, not thin the material -- "
+        f"check whether the kind has picked up a feed or kill channel, which "
+        f"an event pins at its clamp however small the coefficient looks"
+    )
+
+    trail_after = rifted["after"][0] / max(control["after"][0], 1e-9)
+    assert trail_after > 0.35, (
+        f"the network inside the rift is still at {trail_after:.2f} of the "
+        f"control's well after the envelope released; a rift is leaving "
+        f"permanently bare ground"
+    )
+    assert rifted["after"][1] / max(control["after"][1], 1e-9) > 0.7, (
+        f"the reaction inside the rift did not come back "
+        f"({rifted['after'][1]:.4f} against a control's {control['after'][1]:.4f})"
+    )
 
 
 # ---------------------------------------------------------------------------

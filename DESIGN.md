@@ -480,7 +480,9 @@ climate-varying `du` stays covered by `test_parity.py`.
    is the step that addresses the texture itself.*
 3. ~~Flux pruning in `trail.g`, centred.~~ **Built, and off by default** — it
    does not do what this section predicted. See below.
-4. Rift events and anti-fusion, both riding the channels from (2).
+4. ~~Rift events and anti-fusion, both riding the channels from (2).~~
+   **Built**, together with the founding respawn step 3's postmortem asked
+   for; see below.
 5. ℓ in the reduce pass, with a drifting setpoint.
 6. Trail advection, behind a knob, once the rest is tuned.
 
@@ -582,8 +584,9 @@ feed/kill machinery, so this lever is one contributor among several and the
 effect is not cleanly separable there. That is why the measurements above are
 made on the reaction alone, as §4.7's original analysis was.
 
-The `fusion` channel of the new pair is allocated and maintained but not yet
-read; it belongs to step 4.
+The third channel of the new pair is read by the agent layer as of step 4,
+under the name `repel` rather than `fusion`; the section below says why the
+name had to change.
 
 ### What step 3 actually did
 
@@ -671,6 +674,170 @@ turnover rather than concentration: material resorbed here, reinvested there.
 That makes step 4 the interesting one, and it makes step 3 a component of step 4
 rather than a step in its own right. The mechanism stays in the tree, tested and
 inert, waiting for that.
+
+### What step 4 actually did
+
+Three mechanisms rather than two: anti-fusion and rift events as prescribed,
+plus the founding respawn that step 3's postmortem identified as the thing
+standing between flux pruning and genuine turnover. All three are on by
+default; flux pruning still is not.
+
+**Anti-fusion, and the axis it turned out to sit on.** The prescription is what
+shipped — the `commitment` clamp reaches past 1.0, at `fusion_max = 1.85`, so
+that `turn * (1.0 - commitment)` changes sign — with two corrections found in
+the building.
+
+The first is that this is not a *fusion* axis, and a channel named for fusion
+would have been named for the wrong thing. Commitment runs from 0, where the
+agent turns toward what it sensed and follows it, through 1, where the turn is
+cancelled and it drives straight through the junction and fuses, to above 1,
+where the turn reverses and it veers away. Fusion is a *point* on that axis
+rather than an end of it, and both sides of the point fuse less. A single
+signed channel has to pick a monotone direction, so the channel carries
+deflection toward the junction and is named `repel`. Note also that the old
+0.92 ceiling was never reached in the first place — the bias tops out at 0.72
+at the far end of the intensity macro — so widening the clamp does nothing on
+its own. What it does is make the region past the crossing reachable at all.
+
+The deviation is additive, unlike `range_du` and `range_prune`, and for a
+reason specific to this axis: what matters is a fixed crossing at 1.0 rather
+than a ratio, so an additive deviation puts that crossing at a fixed distance
+in climate units and the fraction of the field that repels can be read off the
+amplitude. At `range_repel = 2.6` against the realised climate amplitude of
+0.11 (measured for step 2, and the same for every channel) the crossing sits
+1.6 s.d. out: about 6% of the field is coming apart at any moment, and those
+zones migrate with the climate.
+
+The second correction is that the sign flip alone does not cover the case that
+matters most. When the forward sensor is the strongest reading the steering
+term is *already* zero — that is what committing to a junction means — so
+multiplying it by a negative number leaves it zero and the agent drives
+straight into the thing it is supposed to be avoiding. And an agent that has
+been committing to junctions is, by construction, pointed at one: head-on is
+the common case here, not the corner case. A repelling region therefore breaks
+the agent toward the weaker flank explicitly, at the strength the sign-flipped
+term would have had.
+
+**Founding respawn.** Respawns now land in cohorts — 55% of them — at a site
+shared by everything respawning in the same 240-tick epoch, chosen as the
+barest of four hashed candidates. There is no communication between
+invocations and none is needed: every agent hashes the same (epoch, site) and
+gets the same answer. The one thing that needed care is that the number of
+sites is a *density* (cells per site) rather than a count. Agent count scales
+with layer area, so a fixed number of sites would put a hundred times more
+traffic on each one at 1440p than on a 128-cell test layer, and a founding
+would arrive as a flare rather than as a founding.
+
+**Rift events, and what an event amplitude actually means.** Three channels
+added to the event record — `chan_decay` into `climate_b.y`, `chan_prune` and
+`chan_repel` into the new pair — and one kind that drives all three.
+
+Measuring it turned up something about the *whole* event system that had not
+been noticed: **an event pins every channel it names**. The climate is
+mean-reverting at `theta = 0.0016` and an event *adds* its amplitude every
+tick, so a sustained contribution settles at `amplitude / theta` — hundreds of
+times the clamp. Every channel a kind names therefore sits at ±1 through the
+whole hold, whatever coefficient it was given; the coefficient shapes the ramp
+and nothing else. (The spatial raised cosine survives only as a rim, though the
+climate's own diffusion softens it; the temporal envelope is unaffected, since
+the plateau is approached over the ~625-tick reversion time.)
+
+That turned a tidy-looking choice into a wrong one. The kind originally carried
+a small feed and kill "so the reaction is not what is being taken apart" —
+which, pinned, meant feed at its clamp for the length of the event. Measured
+against a no-event control at 96²: with feed and kill, the reaction inside the
+disc fell to 0.65 of its surroundings and the whole field's mass fell 16%; with
+the identical severance channels and no feed or kill, the reaction sat at 0.93
+against a control's 0.97 and the effect on the trail was *exactly the same*.
+So the kind now names the three severance channels and nothing else. That is
+what makes it structural: it changes how the material is connected, not how
+much of it there is, which is also what keeps it clear of the exposure governor
+— the interaction §4.7 flagged as the real risk.
+
+Traced at 128² through a shipped-length envelope, as the disc's middle over
+ground the event never reached, against a no-event control on the same seed:
+
+| | trail inside / outside | V inside / outside | global mean V |
+|---|---|---|---|
+| control | 0.10 – 0.13 | 0.9 – 1.2 | 0.115 – 0.125 |
+| dieback | 0.10 – 0.13 | 0.13 – 0.37 | 0.085 – 0.104 |
+| rift | 0.024 – 0.06 | 0.9 – 1.2 | 0.115 – 0.125 |
+
+(The rift's two right-hand columns are the control's, which is the point of the
+row: measured against the control run's *own* disc, the reaction inside a rift
+sits at 0.97 and 1.00 of it on the two seeds tried, while the trail falls to
+0.32 and 0.77.)
+
+The dieback row for the trail is not merely similar to the control, it is
+*identical at every sample*, and that is the sharpest possible statement of the
+gap this kind fills. Nothing flows from the reaction back to the trail, so an
+event reaching only feed and kill cannot touch the network at all, whatever it
+does to the material. The two kinds are now orthogonal: dieback moves how much
+there is, rift moves how it is joined up.
+
+Decomposed at 96², against the same control (trail inside/outside 3.92, V
+0.97): the raised decay does most of the work (3.22), the repulsion adds to it
+(3.63 alone, 3.08 together), and neither moves the reaction outside the
+run-to-run spread (1.25 and 1.11). The `prune` channel is inert, since
+`prune_gain` is zero — it is wired so that switching pruning on would sharpen
+rifts rather than needing a second change.
+
+Severance is strongest where the network is thinnest, by a factor of two or
+more. In a sparse region the raised decay thins a strand, agents stop finding
+it, and that thins it further — the feedback §4.7 predicted — and the trail
+inside falls to 0.32 of the control's. Where the disc lands on a dense hub the
+same event takes off 0.77, and at 96² about a fifth. That is the right shape
+for the mechanism: it takes apart what is weakly held and leaves trunks alone.
+It also means the effect needs on the order of a thousand ticks at strength to
+develop, since the direct effect of the decay term alone is only that fifth.
+The reaction sat at 0.97 and 1.00 of the control in both, which is the claim
+that does not depend on where the disc lands.
+
+And it heals. Traced for 4000 ticks past the release, the reaction inside the
+disc is back to parity with its surroundings about 1700 ticks after the hold
+ends — before the envelope has finished releasing — and the trail comes back to
+0.53 and 0.92 of the control's on the two seeds tried, the network being the
+slower of the two to return. This half is not optional: V = 0 is an absorbing
+state for Gray–Scott, and an event that could empty a quarter of the screen and
+leave it empty would be a worse failure than the monotony this section exists
+to fix, because it would be permanent. It is asserted in `test_soak.py`.
+
+**What could not be measured, which is most of what step 4 claims.** The
+mechanisms are verified individually — that agents in a repelling region turn
+away from a junction and break off a head-on approach, that respawns land
+together and on bare ground, that a rift severs and heals — and every invariant
+they had to respect is unmoved: across every configuration and seed run here,
+trail mass sits at 0.088–0.093, mean V at 0.123–0.144, activity at
+0.0014–0.0015, and the homeostat's `corr_decay` does not move.
+
+The system-level claim — that this makes the trail layer churn — did not
+survive its own measurement. Every statistic tried (structural turnover at a
+1000-tick lag, per-texel change rate, threshold-crossing rate, field
+autocorrelation) has a run-to-run spread comparable to or larger than the
+difference between configurations, in *both* directions. At 160² over 4000
+sampled ticks, four seeds gave structural turnover 0.058 → 0.090 with the
+mechanisms on, which looks like the doubling one would want; the spread between
+seeds is 0.049, so it is not distinguishable from nothing. Nine seeds per arm
+at 128², using a per-texel rate rather than a pattern correlation, gave a mean
+change of nothing at all: 0.127 against 0.130, with individual runs spanning
+0.04 to 0.22 in both arms. Nor can the runs be genuinely paired to
+recover power: founding respawn draws extra random numbers per agent, so
+turning it on shifts every subsequent draw and two runs of "the same seed"
+share only their first few ticks. The honest summary is that the field's
+aggregate behaviour on a 128–160 cell test layer is dominated by which
+dynamical state a given run wandered into, and that resolving an effect of this
+size would need tens of independent runs per arm at a resolution the software
+adapter cannot reach in reasonable time. What the tests assert is therefore the
+mechanism and the invariants, not the aggregate.
+
+They are on by default anyway, and that is a deliberate call rather than an
+oversight: the argument for them is structural rather than statistical — the
+agent layer could previously only add edges and could only grow onto what it
+already had — and nothing measured says they do harm, across nine seeds per
+arm, with the field neither collapsing nor freezing and the homeostat never
+reaching for a correction. Whether they earn their place perceptually is one
+more question for the first viewing on real hardware (§13), alongside the ones
+already waiting there.
 
 ---
 
@@ -1003,7 +1170,8 @@ anastomosis/
   ui/                   control surface (TBD)
 tests/
   test_flash_safety.py  test_soak.py  test_parity.py  test_config.py
-  test_regime.py  test_morphology.py  test_resize.py  test_ui_backend.py
+  test_regime.py  test_morphology.py  test_agents.py  test_resize.py
+  test_ui_backend.py
   reference.py  morphology.py        numpy reference + measurement, not tests
 ```
 
@@ -1057,15 +1225,18 @@ ramping; the Qt control panel; CLI.
 - **Checkpointing** (§4.4). Restarts begin from a fresh field rather than
   resuming a mature one. Everything else about long-duration survival is in
   place; this only affects what happens *after* a crash or reboot.
-- **The morphology work in §4.7**, steps 4–6. Feature size is now polydisperse
+- **The morphology work in §4.7**, steps 5–6. Feature size is now polydisperse
   and migrating — the third climate pair drives the reaction's diffusion rate
   per region, over a global mean that walks — which addresses the texture
-  itself. Flux pruning (step 3) is built but switched off: measured, it
-  concentrates the network without adding any turnover, and it needs the
-  founding respawn from step 4 before the mass it resorbs can start anything
-  new. Outstanding: rift events and anti-fusion (step 4), the ℓ setpoint (step
-  5, though the reduce pass already carries the wider partials it needs) and
-  trail advection (step 6).
+  itself. Step 4 is in: agents repel from junctions where the climate asks them
+  to, respawns land in founding cohorts on bare ground, and a `rift` event
+  takes a region's network apart and lets it heal. Its individual mechanisms
+  are asserted and its invariants hold, but the aggregate churn it was meant to
+  buy could not be resolved above run-to-run variance at test resolution — see
+  §4.7. Flux pruning (step 3) is still switched off; the founding respawn it
+  was waiting for exists now, but nothing measured says it has earned being
+  switched on. Outstanding: the ℓ setpoint (step 5, though the reduce pass
+  already carries the wider partials it needs) and trail advection (step 6).
 - **The volumetric slab backend** (§5.1), which was always positioned as the
   second step after the layered path is proven.
 - **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is

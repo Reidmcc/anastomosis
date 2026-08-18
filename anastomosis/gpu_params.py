@@ -42,12 +42,17 @@ SIM_FIELDS: list[Field] = [
     ("jitter", "f32"),
     ("deposit", "f32"),
     ("fusion_bias", "f32"),
+    ("fusion_max", "f32"),
     ("trail_decay", "f32"),
     ("trail_diffuse", "f32"),
     ("income_rate", "f32"),
     ("prune_gain", "f32"),
     ("starve_threshold", "f32"),
     ("max_age", "f32"),
+    ("found_fraction", "f32"),
+    ("found_period", "u32"),
+    ("found_site_cells", "u32"),
+    ("found_radius", "f32"),
     # Reaction
     ("feed", "f32"),
     ("kill", "f32"),
@@ -87,6 +92,7 @@ SIM_FIELDS: list[Field] = [
     ("range_hue", "f32"),
     ("range_du", "f32"),
     ("range_prune", "f32"),
+    ("range_repel", "f32"),
     # Pigment / colour injection
     ("hue_anchor", "f32"),
     ("hue_spread", "f32"),
@@ -182,6 +188,14 @@ EVENT_FIELDS: list[Field] = [
     ("chan_kill", "f32"),
     ("chan_flow", "f32"),
     ("chan_hue", "f32"),
+    # Added for rift events (DESIGN.md 4.7 step 4). Without these an event can
+    # thin material -- `dieback` lowers feed and raises kill -- but it cannot
+    # sever anything, because severance lives in the trail decay, the pruning
+    # term and the agents' junction behaviour, and none of those was reachable
+    # from an event.
+    ("chan_decay", "f32"),
+    ("chan_prune", "f32"),
+    ("chan_repel", "f32"),
 ]
 
 

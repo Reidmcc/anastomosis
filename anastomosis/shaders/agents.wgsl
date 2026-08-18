@@ -12,6 +12,25 @@
 //     has been laying down itself, it *reduces* its turn rate and commits to
 //     the junction rather than glancing off. This is what turns a tangle into a
 //     network with genuine anastomoses.
+//
+// Two additions from DESIGN.md 4.7 step 4, both of which exist because the
+// layer was topologically one-way -- it could only ever add edges and mass to
+// the structure it already had:
+//
+//   * Anti-fusion. The commitment clamp now reaches past 1.0, where
+//     `turn * (1 - commitment)` changes sign and the agent veers *away* from
+//     what it sensed. Driven per region from the climate `repel` channel, so
+//     there are migrating zones where the network comes apart while it fuses
+//     everywhere else, and reachable by a rift event.
+//
+//   * Founding respawn. A respawned agent used to land alone on uniform random
+//     ground, where one agent's deposit is orders of magnitude below what can
+//     hold against decay -- so respawn could never found anything and every
+//     new structure had to grow off an old one. Respawns now mostly land
+//     together at a shared site on bare ground. §4.7 wants this as the thing
+//     that would turn flux pruning from concentration into turnover --
+//     material resorbed here, reinvested there -- though measurement has not
+//     yet shown that it does; pruning stays off.
 
 //!include common.wgsl
 
@@ -34,6 +53,7 @@ struct Agent {
 @group(0) @binding(5) var clim_b: texture_2d<f32>;
 @group(0) @binding(6) var samp: sampler;
 @group(0) @binding(7) var<storage, read> stats: Stats;
+@group(0) @binding(8) var clim_c: texture_2d<f32>;
 
 // Deposits accumulate in fixed point because floating-point atomics are not
 // available in core WebGPU. 2^20 gives ample headroom: a heavily trafficked
@@ -69,6 +89,37 @@ fn splat(pos: vec2<f32>, dims: vec2<u32>, amount: f32) {
     }
 }
 
+// Where this epoch's founding cohort lands.
+//
+// Every agent respawning into the same (epoch, site) computes the same answer
+// from the same hash, which is what makes a cohort out of what is otherwise a
+// stream of unrelated events -- there is no communication between invocations
+// and none is needed. The number of sites scales with the field's area, so the
+// arrival rate *per site* is the same on a 128-cell test layer as on a 1440p
+// one; a single global site would concentrate a hundred times more traffic on
+// the large layer and land as a visible flare rather than a founding.
+//
+// The barest of four candidates, because bare ground is the entire point: a
+// cohort landing on the existing network only reinforces it, which is what
+// uniform respawn already did. The four candidates are fixed for the epoch but
+// the trail under them is not, so a site that fills up can hand off to another
+// mid-epoch. That is wanted -- once something is established there, the next
+// arrivals are better spent elsewhere.
+fn founding_site(epoch: u32, site: u32, fdims: vec2<f32>) -> vec2<f32> {
+    var seed = pcg3(epoch, site, params.seed);
+    var best = vec2<f32>(rnd(&seed), rnd(&seed)) * fdims;
+    var bare = sample_trail(best / fdims);
+    for (var i = 0u; i < 3u; i = i + 1u) {
+        let candidate = vec2<f32>(rnd(&seed), rnd(&seed)) * fdims;
+        let trail = sample_trail(candidate / fdims);
+        if (trail < bare) {
+            bare = trail;
+            best = candidate;
+        }
+    }
+    return best;
+}
+
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let index = gid.x;
@@ -91,6 +142,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Local parameters from the climate field.
     let ca = textureSampleLevel(clim_a, samp, wrap_uv(uv), 0.0);
     let cb = textureSampleLevel(clim_b, samp, wrap_uv(uv), 0.0);
+    let cc = textureSampleLevel(clim_c, samp, wrap_uv(uv), 0.0);
 
     let sensor_angle = max(0.02, params.sensor_angle + params.range_sensor_angle * ca.z);
     let sensor_dist = max(1.0, params.sensor_distance + params.range_sensor_distance * ca.w);
@@ -129,8 +181,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // so commit to it instead of turning away.
     let best = max(s_f, max(s_l, s_r));
     let excess = best / (agent.recent + 1e-4) - 1.0;
-    let commitment = clamp(params.fusion_bias * smoothstep(0.0, 2.0, excess), 0.0, 0.92);
+
+    // Anti-fusion. The clamp reaches past 1.0, and the sign of the steering
+    // term is what changes there: below 1 the agent turns toward the filament
+    // and follows it, at 1 the turn is cancelled and it drives straight
+    // through the junction and fuses, above 1 it turns away. So the axis is
+    // one of *deflection toward the junction*, running through fusion rather
+    // than peaking at it -- which is why the climate channel is named for the
+    // repulsion it buys rather than for the fusion it passes through.
+    //
+    // Additive, not geometric like `range_du`: what matters here is the fixed
+    // crossing point at 1.0, so the fraction of the field that is repelling
+    // can be read straight off the climate amplitude.
+    let junction = params.fusion_bias + params.range_repel * cc.z;
+    let commitment = clamp(
+        junction * smoothstep(0.0, 2.0, excess), 0.0, params.fusion_max);
     turn = turn * (1.0 - commitment);
+    if (commitment > 1.0 && s_f >= s_l && s_f >= s_r) {
+        // Head-on, the steering term is already zero, so scaling it cannot
+        // express avoidance and the agent would fuse with the thing it is
+        // supposed to be avoiding -- which is the common case, since an agent
+        // that has been committing to junctions is by then pointed at one.
+        // Turn toward the weaker flank instead, at the same strength the
+        // sign-flipped term would have had.
+        turn = turn + params.turn_rate * (commitment - 1.0)
+            * select(-1.0, 1.0, s_l < s_r);
+    }
 
     turn = turn + params.jitter * rnd_signed(&seed);
 
@@ -149,6 +225,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let elderly = agent.age > params.max_age;
     if (starving || elderly) {
         new_pos = vec2<f32>(rnd(&seed), rnd(&seed)) * fdims;
+        if (rnd(&seed) < params.found_fraction) {
+            // Integer division, so the epoch index is a counter and not a
+            // clock: nothing here is ever a float function of the tick.
+            let epoch = params.tick / max(params.found_period, 1u);
+            let sites = max(
+                (dims.x * dims.y) / max(params.found_site_cells, 1u), 1u);
+            let site = min(u32(rnd(&seed) * f32(sites)), sites - 1u);
+            let centre = founding_site(epoch, site, fdims);
+            // Gaussian scatter rather than a disc: a hard-edged cohort would
+            // put a step in the trail field at its rim.
+            new_pos = centre
+                + vec2<f32>(gauss(&seed), gauss(&seed)) * params.found_radius;
+            new_pos = new_pos - floor(new_pos / fdims) * fdims;
+        }
         agent.heading = rnd(&seed) * TAU;
         agent.age = 0.0;
         agent.recent = params.starve_threshold * 4.0;
