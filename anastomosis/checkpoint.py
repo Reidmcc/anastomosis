@@ -8,9 +8,12 @@ would otherwise throw away exactly the thing the user came back for.
 
 What is saved is the state that *accumulates*: the field textures at their
 current ping-pong parity, the agent array, the climate and psi (OU) state, the
-homeostat integrators, and the counters. What is left out is left out on purpose,
-because at 1440p the whole world is ~230 MB and this is written every five
-minutes for days on end:
+homeostat integrators, the global feature-size walk, and the counters. The rule
+for what belongs here is not "is it large" but "does the next tick read
+something the previous tick left behind" -- anything answering yes to that is
+state a resume has to carry, wherever it happens to live. What is left out is
+left out on purpose, because at 1440p the whole world is ~230 MB and this is
+written every five minutes for days on end:
 
 * **Derived fields.** ``velocity`` is rewritten by the flow pass and
   ``reaction_prev`` by a texture copy, both unconditionally at the start of every
@@ -28,7 +31,10 @@ minutes for days on end:
 * **The event scheduler's RNG stream.** Arrivals are exponential and therefore
   memoryless, so a fresh stream is statistically indistinguishable from the
   saved one. The *in-flight* events are restored, because those are mid-envelope
-  and dropping them would be a step.
+  and dropping them would be a step. The feature-size walk's noise stream *is*
+  saved, for the opposite reason to a payload argument: it is a hundred bytes,
+  and carrying it is what lets a resume be checked for being identical rather
+  than merely similar.
 
 Geometry is saved rather than required. Resolution, layer count, agent counts
 and climate size all follow from the window size and the config, so treating
@@ -65,10 +71,12 @@ from . import gpu_params
 
 log = logging.getLogger(__name__)
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 # Version 1 recorded the *window* size where version 2 records the simulation's
 # own, which are the same number unless that session was resized after starting.
-# Reading it costs a few lines and saves anyone upgrading their mature field.
+# Version 3 adds the morphology climate pair and the feature-size walk, both of
+# which postdate version 2 and neither of which an older file can carry.
+# Reading them costs a few lines and saves anyone upgrading their mature field.
 OLDEST_READABLE_VERSION = 1
 
 # Five minutes: long enough that the readback cost is negligible, short enough
@@ -78,7 +86,16 @@ DEFAULT_INTERVAL_SECONDS = 300.0
 # Ping-pong fields, saved at their current parity and restored into both slots
 # so the next flip cannot read stale data. Every field carrying state between
 # ticks is in this list; see the module docstring for what is not and why.
-PAIR_FIELDS = ("trail", "reaction", "pigment", "climate_a", "climate_b", "psi")
+PAIR_FIELDS = (
+    "trail", "reaction", "pigment",
+    "climate_a", "climate_b", "climate_c", "psi",
+)
+
+# Fields younger than the format itself: the version each first appeared in. A
+# file written before that is not broken, it simply has nothing to say about
+# them, so the engine keeps the field it seeded and loses that one channel's
+# history rather than the whole field.
+FIELDS_SINCE = {"climate_c": 3}
 
 # Rewritten from scratch every tick before anything reads them, so they are not
 # saved. Named here so the tests can check that this stays true.
@@ -192,6 +209,10 @@ def capture(engine, scheduler=None, sim_hz: float = 0.0) -> Checkpoint:
             "frame_count": int(engine.frame_count),
             "seed": int(engine.seed),
             "hue_phase": float(engine.hue_phase),
+            # The global feature-size walk: its value, and the position of the
+            # stream that drives it (see `_walk_rng_state`).
+            "du_walk": float(engine._du_walk),
+            "walk_rng": _walk_rng_state(engine),
             "parallax": [
                 [float(x), float(y)] for x, y in (engine._parallax or [])
             ],
@@ -199,6 +220,23 @@ def capture(engine, scheduler=None, sim_hz: float = 0.0) -> Checkpoint:
         "events": scheduler.state() if scheduler is not None else {},
     }
     return Checkpoint(meta=meta, arrays=arrays)
+
+
+def _walk_rng_state(engine) -> dict[str, Any]:
+    """The feature-size walk's noise stream, as plain JSON-able data.
+
+    A hundred bytes, unlike every other omission in this module, so the argument
+    that settled the event scheduler's stream -- statistically identical is good
+    enough -- buys nothing here. Saving it instead makes a resume *identical*
+    rather than merely similar, which is the property the suite can actually
+    check, and checking it is what catches the next piece of state someone adds
+    to the engine and forgets to add here.
+    """
+    try:
+        state = engine._walk_rng.bit_generator.state
+        return json.loads(json.dumps(state))
+    except (AttributeError, TypeError, ValueError):  # pragma: no cover
+        return {}
 
 
 def _geometry_meta(geometry) -> dict[str, Any]:
@@ -365,13 +403,21 @@ def _field_shape(layer, name: str) -> tuple[int, int, int]:
     return (height, width, 4)
 
 
-def _expected_arrays(geometry) -> dict[str, tuple[int, ...]]:
-    """Array name -> required shape, for a given simulation geometry."""
+def _expected_arrays(
+    geometry, version: int = FORMAT_VERSION
+) -> dict[str, tuple[int, ...]]:
+    """Array name -> required shape, for a given simulation geometry.
+
+    Version-aware, because a field that did not exist when the file was written
+    cannot be in it and must not be demanded of it.
+    """
     expected: dict[str, tuple[int, ...]] = {
         "stats": (gpu_params.STATS_DTYPE.itemsize,),
     }
     for layer in geometry.layers:
         for name in PAIR_FIELDS:
+            if version < FIELDS_SINCE.get(name, 0):
+                continue
             expected[f"layer{layer.index}.{name}"] = _field_shape(layer, name)
         expected[f"layer{layer.index}.agents"] = (
             max(layer.agent_count, 1) * engine_module.AGENT_STRIDE,
@@ -445,7 +491,7 @@ def _usable_geometry(
 
     # The file must actually hold what its own metadata claims, since that is
     # what the arrays are uploaded against.
-    for name, shape in _expected_arrays(geometry).items():
+    for name, shape in _expected_arrays(geometry, version).items():
         array = checkpoint.arrays.get(name)
         if array is None:
             problems.append(f"missing {name}")
@@ -500,6 +546,33 @@ def _write_texture(device, texture, data: np.ndarray) -> None:
     )
 
 
+def _restore_walk(engine, saved: dict[str, Any]) -> None:
+    """Put the global feature-size walk back where it was.
+
+    Its value is accumulated state like any other: dropping it would restart the
+    reaction's diffusion rate at the middle of its band and drift away from the
+    saved field's feature size over the following minutes. The stream position
+    goes back with it so the walk continues rather than merely resembling itself.
+
+    Both halves are untrusted input, and neither is worth failing a restore over:
+    a value that is not a finite number falls back to the walk's own centre, and
+    a stream state this build cannot use leaves the fresh stream in place.
+    """
+    try:
+        walk = float(saved.get("du_walk") or 0.0)
+    except (TypeError, ValueError):
+        walk = 0.0
+    engine._du_walk = max(-2.0, min(2.0, walk)) if math.isfinite(walk) else 0.0
+
+    state = saved.get("walk_rng")
+    if not isinstance(state, dict) or not state:
+        return
+    try:
+        engine._walk_rng.bit_generator.state = state
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        log.info("could not resume the feature-size walk's noise stream (%s)", exc)
+
+
 def restore(engine, checkpoint: Checkpoint, scheduler=None) -> bool:
     """Load a checkpoint into a freshly built engine.
 
@@ -521,8 +594,12 @@ def restore(engine, checkpoint: Checkpoint, scheduler=None) -> bool:
     for layer in engine.layers:
         index = layer.spec.index
         for name in PAIR_FIELDS:
+            data = checkpoint.arrays.get(f"layer{index}.{name}")
+            if data is None:
+                # Only ever a field this file predates -- the validation above
+                # refuses anything else missing -- so the seeded one stays.
+                continue
             pair = getattr(layer, name)
-            data = checkpoint.arrays[f"layer{index}.{name}"]
             # Both slots, so the parity the next tick happens to start on cannot
             # resurrect the seeded state.
             for texture in pair.textures:
@@ -543,6 +620,7 @@ def restore(engine, checkpoint: Checkpoint, scheduler=None) -> bool:
     parallax = saved.get("parallax") or []
     if len(parallax) == len(engine.layers):
         engine._parallax = [[float(x), float(y)] for x, y in parallax]
+    _restore_walk(engine, saved)
 
     if scheduler is not None:
         scheduler.load_state(checkpoint.meta.get("events") or {})

@@ -241,6 +241,103 @@ def test_a_version_1_checkpoint_is_still_readable(gpu_device):
     assert resumed.tick_count == engine.tick_count
 
 
+def test_a_version_2_checkpoint_without_the_morphology_climate_is_readable(
+    gpu_device,
+):
+    """The morphology climate pair postdates version 2, so those files lack it.
+
+    A field that a build did not have cannot be demanded of a file that build
+    wrote. The resume keeps the freshly seeded `climate_c` and loses that one
+    channel's history -- which drifts back to a normal spread within a couple of
+    OU timescales -- rather than losing the hours of field that came with it.
+    """
+    params = _params()
+    engine = _make_engine(gpu_device, params)
+    engine.tick(params)
+    snapshot = checkpoint.capture(engine, sim_hz=params.sim_hz)
+
+    old = checkpoint.Checkpoint(
+        meta=json.loads(json.dumps(snapshot.meta)),
+        arrays={
+            name: array
+            for name, array in snapshot.arrays.items()
+            if not name.endswith(".climate_c")
+        },
+    )
+    old.meta["version"] = 2
+
+    resumed = _make_engine(gpu_device, params, seed=7)
+    seeded = [
+        checkpoint._read_texture(
+            resumed.device, layer.climate_c.textures[layer.climate_c.index]
+        )
+        for layer in resumed.layers
+    ]
+    assert checkpoint.restore(resumed, old)
+    assert resumed.tick_count == engine.tick_count
+    for layer, before in zip(resumed.layers, seeded):
+        after = checkpoint._read_texture(
+            resumed.device, layer.climate_c.textures[layer.climate_c.index]
+        )
+        assert np.array_equal(before, after), (
+            "a field the file predates must be left as the engine seeded it"
+        )
+
+
+def test_the_morphology_climate_is_part_of_a_current_checkpoint(gpu_device):
+    """It is stateful -- advected, diffused and OU-stepped from its own previous
+    value -- so leaving it out is a resume that continues a different field."""
+    engine = _make_engine(gpu_device, _params())
+    snapshot = checkpoint.capture(engine, sim_hz=20.0)
+    assert "climate_c" in checkpoint.PAIR_FIELDS
+    for layer in engine.layers:
+        pair = layer.climate_c
+        assert snapshot.arrays[f"layer{layer.spec.index}.climate_c"].shape == (
+            pair.textures[0].height, pair.textures[0].width, 4
+        )
+
+
+def test_the_feature_size_walk_is_restored_rather_than_recentred(gpu_device):
+    """The walk on the reaction's diffusion rate is engine state like any other.
+
+    Dropping it would put a resumed field back at the middle of its band and let
+    it wander somewhere else from there -- a slow change in feature size that no
+    field comparison at the moment of the resume would catch.
+    """
+    params = _params()
+    engine = _make_engine(gpu_device, params, seed=3)
+    for _ in range(20):
+        engine.tick(params)
+    assert engine._du_walk != 0.0, "the fixture should have walked somewhere"
+    snapshot = checkpoint.capture(engine, sim_hz=params.sim_hz)
+
+    resumed = _make_engine(gpu_device, params, seed=808)
+    assert checkpoint.restore(resumed, snapshot)
+    assert resumed._du_walk == engine._du_walk
+    # And the stream it is driven by, so the walk continues rather than starting
+    # a different path from the same point.
+    for _ in range(5):
+        engine.tick(params)
+        resumed.tick(params)
+    assert resumed._du_walk == engine._du_walk
+
+
+def test_a_walk_state_this_build_cannot_use_is_not_fatal(gpu_device):
+    """Every field of the metadata is untrusted; none of them may cost the field."""
+    params = _params()
+    engine = _make_engine(gpu_device, params, seed=3)
+    engine.tick(params)
+    snapshot = checkpoint.capture(engine, sim_hz=params.sim_hz)
+    snapshot.meta["engine"]["walk_rng"] = {"bit_generator": "NotARealGenerator"}
+    snapshot.meta["engine"]["du_walk"] = "not a number"
+
+    resumed = _make_engine(gpu_device, params, seed=808)
+    assert checkpoint.restore(resumed, snapshot)
+    assert resumed.tick_count == engine.tick_count
+    assert resumed._du_walk == 0.0
+    resumed.tick(params)  # and the fresh stream still drives it
+
+
 def test_a_future_format_version_is_refused(gpu_device):
     engine = _make_engine(gpu_device, _params())
     snapshot = checkpoint.capture(engine, sim_hz=20.0)

@@ -307,7 +307,10 @@ class Layer:
                                   f"climate_b{spec.index}")
         # Morphology: (scale, prune, repel, spare). DESIGN.md §4.7. The other
         # two pairs are fully allocated, and a 64x36 rgba16f pair is ~9 KB.
-        self.climate_c = PingPong(device, params.climate.width, params.climate.height,
+        # Sized from the layer geometry, like its two siblings: the climate pass
+        # dispatches over that, and a resumed engine is built at the geometry the
+        # saved field needs rather than at whatever the live config now says.
+        self.climate_c = PingPong(device, climate_w, climate_h,
                                   f"climate_c{spec.index}")
 
         self.psi = PingPong(device, *spec.psi_dims, f"psi{spec.index}")
@@ -435,7 +438,9 @@ class Layer:
         upload(self.interp, pigment)
         upload(self.interp_scratch, pigment)
 
-        cw, ch = params.climate.width, params.climate.height
+        # From the layer's own geometry, not the live config: the two can differ
+        # in a session resumed into the shape a saved field needs.
+        cw, ch = self.spec.climate_dims
         for pair in (self.climate_a, self.climate_b, self.climate_c):
             for tex in pair.textures:
                 upload(tex, rng.normal(0.0, 0.3, (ch, cw, 4)).clip(-1, 1))

@@ -320,6 +320,16 @@ Long runs fail in specific, known ways. Each gets an explicit countermeasure:
   statistically identical; the *in-flight* events are saved, since those are
   mid-envelope.
 
+  The test of what belongs in the snapshot is not size but whether the next tick
+  reads something the last one left behind — which includes state that does not
+  live in a texture at all. Both halves of §4.7's feature-size mechanism are in
+  it on that basis: the per-region morphology climate (`climate_c`), and the
+  global OU walk on the diffusion rate, whose value *and* noise-stream position
+  are a hundred bytes of metadata. `test_checkpoint.py` advances a restored
+  engine alongside the one it was captured from and compares every field
+  bit-for-bit, which is what turns "everything stateful is saved" into something
+  that fails loudly when a new mechanism forgets to say so.
+
   Geometry is saved, not required. Resolution, layer count, agent counts and
   climate size all follow from the window size and the config, so treating them as
   a compatibility key meant that opening the window at a different size — or
