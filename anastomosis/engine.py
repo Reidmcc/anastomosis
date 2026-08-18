@@ -45,6 +45,14 @@ FIELD_USAGE = (
 MAX_LAYERS = 4
 AGENT_STRIDE = 24  # vec2 pos, f32 heading, u32 rng, f32 recent, f32 age
 
+# Bounds for geometry that arrives from outside -- i.e. out of a checkpoint file,
+# which decides how much memory a launch allocates before anything has validated
+# it. MAX_DIM is core WebGPU's guaranteed maxTextureDimension2D; the agent
+# ceiling is far above any density the config can ask for (0.44/cell) and only
+# needs to catch nonsense.
+MAX_DIM = 8192
+MAX_AGENTS_PER_CELL = 8
+
 
 def round_up(value: int, multiple: int) -> int:
     return max(multiple, ((value + multiple - 1) // multiple) * multiple)
@@ -96,15 +104,189 @@ class PingPong:
         self.index = 1 - self.index
 
 
-@dataclass
-class LayerSpec:
+@dataclass(frozen=True)
+class LayerGeometry:
+    """The allocation sizes of one layer.
+
+    Kept apart from the rest of :class:`LayerSpec` because these are the numbers
+    a saved field is *made of*: every texture and buffer in a checkpoint has one
+    of these shapes, so they have to be settable from a checkpoint rather than
+    always re-derived from the window (see :class:`Geometry`).
+    """
+
     index: int
     width: int
     height: int
     agent_count: int
+    psi_width: int
+    psi_height: int
+    climate_width: int
+    climate_height: int
+
+
+@dataclass(frozen=True)
+class LayerSpec:
+    """A layer's geometry, plus the scales its depth in the stack implies.
+
+    The two halves have different lifetimes. The geometry is fixed for as long
+    as the field exists, because changing it would mean reallocating the state.
+    The scales are pure configuration, re-derived on every launch, so resuming a
+    field never pins the look it is rendered with.
+    """
+
+    geometry: LayerGeometry
     feature_scale: float
     tempo_scale: float
     depth: float  # 0 = front, 1 = backmost
+
+    @property
+    def index(self) -> int:
+        return self.geometry.index
+
+    @property
+    def width(self) -> int:
+        return self.geometry.width
+
+    @property
+    def height(self) -> int:
+        return self.geometry.height
+
+    @property
+    def agent_count(self) -> int:
+        return self.geometry.agent_count
+
+    @property
+    def psi_dims(self) -> tuple[int, int]:
+        return (self.geometry.psi_width, self.geometry.psi_height)
+
+    @property
+    def climate_dims(self) -> tuple[int, int]:
+        return (self.geometry.climate_width, self.geometry.climate_height)
+
+
+@dataclass(frozen=True)
+class Geometry:
+    """Every size the simulation's accumulated state is made of.
+
+    Deliberately *not* the window size. The presentation follows the window
+    (:meth:`Engine.resize`); the simulation keeps the resolution it was grown at.
+    Making that a value an engine can be *given* rather than one it always
+    derives is what lets a saved field be resumed into a window of any size: the
+    launch reads what geometry the checkpoint needs and builds that, instead of
+    asking whether the checkpoint happens to fit the window it found.
+
+    Which means the config's structural values -- layer count, base scale,
+    agent density, climate and psi sizes -- take effect when a *new* field is
+    grown, not while an old one is being carried forward.
+    """
+
+    sim_width: int
+    sim_height: int
+    layers: tuple[LayerGeometry, ...]
+
+    @classmethod
+    def derive(cls, width: int, height: int, params: Params) -> "Geometry":
+        """The geometry a fresh field of this size and configuration would have."""
+        render = params.render
+        count = max(1, min(render.layers, MAX_LAYERS))
+        layers = []
+        for i in range(count):
+            shrink = render.scale_falloff**i
+            w = round_up(max(int(width * render.base_scale * shrink), 64), 32)
+            h = max(int(height * render.base_scale * shrink), 32)
+            layers.append(LayerGeometry(
+                index=i,
+                width=w,
+                height=h,
+                agent_count=round_up(int(params.agents.density * w * h), 64),
+                # Rounded to 32 for the same reason the layers are: a texture row
+                # has to be a multiple of 256 bytes.
+                psi_width=round_up(max(w // params.flow.psi_scale, 32), 32),
+                psi_height=max(h // params.flow.psi_scale, 8),
+                climate_width=params.climate.width,
+                climate_height=params.climate.height,
+            ))
+        return cls(sim_width=width, sim_height=height, layers=tuple(layers))
+
+    def specs(self, params: Params) -> list[LayerSpec]:
+        """These shapes, dressed with the scales the current config asks for."""
+        render = params.render
+        count = len(self.layers)
+        return [
+            LayerSpec(
+                geometry=geometry,
+                feature_scale=render.feature_falloff**i,
+                tempo_scale=render.tempo_falloff**i,
+                depth=i / max(count - 1, 1),
+            )
+            for i, geometry in enumerate(self.layers)
+        ]
+
+    def problems(self) -> list[str]:
+        """Reasons an engine could not be built at this geometry.
+
+        Geometry that came from a file is untrusted input, and it decides how
+        much GPU memory a launch tries to allocate, so it is bounds-checked
+        before anything is created from it.
+        """
+        if not 1 <= len(self.layers) <= MAX_LAYERS:
+            return [f"{len(self.layers)} layers, expected 1 to {MAX_LAYERS}"]
+
+        problems: list[str] = []
+        if not (_plausible(self.sim_width) and _plausible(self.sim_height)):
+            problems.append(
+                f"simulation size {self.sim_width}x{self.sim_height}"
+            )
+        for i, layer in enumerate(self.layers):
+            if layer.index != i:
+                problems.append(f"layer {i} is indexed {layer.index}")
+            for label, w, h in (
+                ("size", layer.width, layer.height),
+                ("psi size", layer.psi_width, layer.psi_height),
+                ("climate size", layer.climate_width, layer.climate_height),
+            ):
+                if not (_plausible(w) and _plausible(h)):
+                    problems.append(f"layer {i} {label} {w}x{h}")
+            ceiling = MAX_AGENTS_PER_CELL * max(layer.width * layer.height, 0)
+            if not 0 <= layer.agent_count <= ceiling:
+                problems.append(f"layer {i} has {layer.agent_count} agents")
+        return problems
+
+    def differences(self, other: "Geometry") -> list[str]:
+        """Human-readable list of where two geometries disagree."""
+        differences: list[str] = []
+        mine = (self.sim_width, self.sim_height)
+        theirs = (other.sim_width, other.sim_height)
+        if mine != theirs:
+            differences.append(
+                f"simulation {mine[0]}x{mine[1]} != {theirs[0]}x{theirs[1]}"
+            )
+        if len(self.layers) != len(other.layers):
+            differences.append(
+                f"{len(self.layers)} layers != {len(other.layers)}"
+            )
+            return differences
+        for a, b in zip(self.layers, other.layers):
+            for label, left, right in (
+                ("size", (a.width, a.height), (b.width, b.height)),
+                ("agent count", a.agent_count, b.agent_count),
+                ("psi size", (a.psi_width, a.psi_height),
+                 (b.psi_width, b.psi_height)),
+                ("climate size", (a.climate_width, a.climate_height),
+                 (b.climate_width, b.climate_height)),
+            ):
+                if left != right:
+                    differences.append(f"layer {a.index} {label} {left} != {right}")
+        return differences
+
+    def describe(self) -> str:
+        """One phrase, for the log line that explains which shape won."""
+        layers = ", ".join(f"{l.width}x{l.height}" for l in self.layers)
+        return f"{self.sim_width}x{self.sim_height} in {len(self.layers)} layers ({layers})"
+
+
+def _plausible(value: int) -> bool:
+    return isinstance(value, int) and 1 <= value <= MAX_DIM
 
 
 class Layer:
@@ -114,19 +296,17 @@ class Layer:
         self.device = device
         self.spec = spec
         w, h = spec.width, spec.height
+        climate_w, climate_h = spec.climate_dims
 
         self.trail = PingPong(device, w, h, f"trail{spec.index}")
         self.reaction = PingPong(device, w, h, f"reaction{spec.index}")
         self.pigment = PingPong(device, w, h, f"pigment{spec.index}")
-        self.climate_a = PingPong(device, params.climate.width, params.climate.height,
+        self.climate_a = PingPong(device, climate_w, climate_h,
                                   f"climate_a{spec.index}")
-        self.climate_b = PingPong(device, params.climate.width, params.climate.height,
+        self.climate_b = PingPong(device, climate_w, climate_h,
                                   f"climate_b{spec.index}")
 
-        psi_w = round_up(max(w // params.flow.psi_scale, 32), 32)
-        psi_h = max(h // params.flow.psi_scale, 8)
-        self.psi = PingPong(device, psi_w, psi_h, f"psi{spec.index}")
-        self.psi_dims = (psi_w, psi_h)
+        self.psi = PingPong(device, *spec.psi_dims, f"psi{spec.index}")
 
         def plain(label: str, tw: int = w, th: int = h) -> wgpu.GPUTexture:
             return device.create_texture(
@@ -251,12 +431,12 @@ class Layer:
         upload(self.interp, pigment)
         upload(self.interp_scratch, pigment)
 
-        cw, ch = params.climate.width, params.climate.height
+        cw, ch = self.spec.climate_dims
         for pair in (self.climate_a, self.climate_b):
             for tex in pair.textures:
                 upload(tex, rng.normal(0.0, 0.3, (ch, cw, 4)).clip(-1, 1))
 
-        pw, ph = self.psi_dims
+        pw, ph = self.spec.psi_dims
         psi = np.zeros((ph, pw, 4), dtype=np.float32)
         psi[..., 0] = rng.normal(0.0, 0.5, (ph, pw))
         for tex in self.psi.textures:
@@ -291,14 +471,21 @@ class Engine:
         height: int,
         params: Params,
         seed: int | None = None,
+        geometry: Geometry | None = None,
     ) -> None:
         self.device = device
         self.width = width
         self.height = height
-        # The size the simulation layers were built for. The window may end up
-        # a different size or shape later; the layers never change.
-        self.sim_width = width
-        self.sim_height = height
+        # `width`/`height` are the *output* size and follow the window. The
+        # simulation's own geometry is separate, and is passed in when the field
+        # being loaded into this engine was grown at a different one -- a
+        # checkpoint taken in another window, or under another config.
+        self.geometry = (
+            geometry if geometry is not None
+            else Geometry.derive(width, height, params)
+        )
+        self.sim_width = self.geometry.sim_width
+        self.sim_height = self.geometry.sim_height
         self.tick_count = 0
         self.frame_count = 0
         self.seed = seed if seed is not None else int(time.time_ns() & 0xFFFFFFFF)
@@ -311,7 +498,7 @@ class Engine:
         )
 
         self.layers = [
-            Layer(device, spec, params) for spec in self._layer_specs(params)
+            Layer(device, spec, params) for spec in self.geometry.specs(params)
         ]
 
         # --- Render targets ------------------------------------------------
@@ -346,9 +533,8 @@ class Engine:
         self._build_pipelines()
 
         log.info(
-            "engine ready: %dx%d, %d layers (%s), %d agents total",
-            width, height, len(self.layers),
-            ", ".join(f"{l.spec.width}x{l.spec.height}" for l in self.layers),
+            "engine ready: output %dx%d, simulation %s, %d agents total",
+            width, height, self.geometry.describe(),
             sum(l.spec.agent_count for l in self.layers),
         )
 
@@ -471,24 +657,6 @@ class Engine:
                 del bindings[key]
 
     # -- setup --------------------------------------------------------------
-
-    def _layer_specs(self, params: Params) -> list[LayerSpec]:
-        render = params.render
-        count = max(1, min(render.layers, MAX_LAYERS))
-        specs = []
-        for i in range(count):
-            shrink = render.scale_falloff**i
-            w = round_up(max(int(self.width * render.base_scale * shrink), 64), 32)
-            h = max(int(self.height * render.base_scale * shrink), 32)
-            depth = i / max(count - 1, 1)
-            specs.append(LayerSpec(
-                index=i, width=w, height=h,
-                agent_count=round_up(int(params.agents.density * w * h), 64),
-                feature_scale=render.feature_falloff**i,
-                tempo_scale=render.tempo_falloff**i,
-                depth=depth,
-            ))
-        return specs
 
     def _make_noise_texture(self) -> None:
         from . import bluenoise
@@ -621,10 +789,13 @@ class Engine:
             -1.0 / max(ho.tau_seconds * max(params.sim_hz, 1e-3), 1.0)
         )
 
+        # The grid sizes come from the layer, never from the live params: those
+        # can be hot-reloaded mid-session, and the textures they describe were
+        # allocated once, when the field was created.
         return {
             "dims_x": spec.width, "dims_y": spec.height,
-            "clim_w": c.width, "clim_h": c.height,
-            "psi_w": layer.psi_dims[0], "psi_h": layer.psi_dims[1],
+            "clim_w": spec.climate_dims[0], "clim_h": spec.climate_dims[1],
+            "psi_w": spec.psi_dims[0], "psi_h": spec.psi_dims[1],
             "tick": self.tick_count,
             "seed": (self.seed ^ (spec.index * 0x9E3779B9)) & 0xFFFFFFFF,
             "agent_count": spec.agent_count,
@@ -762,7 +933,7 @@ class Engine:
             cpass.set_pipeline(self.p_psi)
             cpass.set_bind_group(0, self._bind(
                 self.p_psi, [pbind, layer.psi.cur, layer.psi.nxt]))
-            cpass.dispatch_workgroups(*self._groups(*layer.psi_dims))
+            cpass.dispatch_workgroups(*self._groups(*spec.psi_dims))
             layer.psi.flip()
 
             # 2. Climate.
@@ -772,8 +943,7 @@ class Engine:
                 layer.climate_a.nxt, layer.climate_b.nxt,
                 layer.psi.cur, sampler, events_bind,
             ]))
-            cpass.dispatch_workgroups(*self._groups(params.climate.width,
-                                                    params.climate.height))
+            cpass.dispatch_workgroups(*self._groups(*spec.climate_dims))
             layer.climate_a.flip()
             layer.climate_b.flip()
 

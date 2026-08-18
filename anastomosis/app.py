@@ -14,6 +14,12 @@ and the simulation is left running exactly as it was. Rebuilding it would
 reseed every field and every agent, which is a hard cut in the middle of a
 session intended to last for days.
 
+Launching works the same way round. A simulation's geometry belongs to the
+field, not to the window it happens to be shown in, so a launch that finds a
+saved field builds its engine in *that field's* shape and presents it into
+whatever window it was given -- see ``_start_engine``. The alternative, asking
+whether the saved field fits the window, threw away hours of maturity every
+time a window opened at a different size.
 Closing the window, by contrast, *is* the end of the world, and ``shutdown``
 is the one path out: checkpoint, stop the watcher, close the panel, stop the
 loop. It is idempotent and hooked from every direction the close can arrive
@@ -189,12 +195,9 @@ class Application:
         )
 
         width, height = self.canvas.get_physical_size()
-        self.engine = engine_module.Engine(
-            self.device, width, height, self.params, seed=self.options.seed
-        )
+        self._start_engine(width, height)
         self._size = (width, height)
 
-        self._resume_from_checkpoint()
         self._start_hot_reload()
         self._watch_for_close()
         if self.options.fullscreen:
@@ -286,22 +289,84 @@ class Application:
 
     # -- checkpointing ------------------------------------------------------
 
-    def _resume_from_checkpoint(self) -> None:
-        """Load the saved field over the freshly seeded one, if there is one.
+    def _start_engine(self, width: int, height: int) -> None:
+        """Build the engine, in whatever shape the saved field needs.
 
-        Every failure path here ends in "run with the seeded field": a missing,
-        stale or unreadable checkpoint is a normal thing to find, not a reason to
-        refuse to open.
+        The order is the point. The checkpoint is read *before* the engine
+        exists, so the engine can be built at the geometry the saved field was
+        grown at rather than the one this window and this config would imply.
+        Otherwise every launch became a coin toss: a window opened a few pixels
+        wider, or a config edit that moved the layer count, and hours of field
+        maturity were quietly discarded for a mismatch that only ever concerned
+        the presentation.
+
+        Adopting the saved geometry costs nothing visually, because the
+        simulation's resolution is already independent of the window's -- a
+        resize only rebuilds the presentation chain (``Engine.resize``), and the
+        compositor corrects the aspect difference. The config's structural
+        values -- layer count, base scale, agent density, climate and psi sizes
+        -- therefore take effect when a new field is grown, which is what
+        ``reset_simulation`` is for.
+
+        Every failure path ends in "run with a freshly seeded field": a missing,
+        foreign or unbuildable checkpoint is a normal thing to find, not a reason
+        to refuse to open.
         """
+        derived = engine_module.Geometry.derive(width, height, self.params)
+        saved = self._saved_checkpoint()
+        geometry = derived
+
+        if saved is not None:
+            wanted = checkpoint_module.required_geometry(saved)
+            if wanted is None:
+                saved = None  # unusable; required_geometry has said why
+            elif wanted != derived:
+                log.info(
+                    "launching the simulation at the saved field's geometry "
+                    "(%s) rather than the %s this window and config imply; "
+                    "reset the simulation to adopt the latter",
+                    wanted.describe(), derived.describe(),
+                )
+                geometry = wanted
+
+        try:
+            self.engine = self._make_engine(width, height, geometry)
+        except Exception as exc:
+            if geometry is derived:
+                raise
+            # The saved geometry passed its bounds check but this device would
+            # not build it -- a file from a machine with more memory, say.
+            log.error(
+                "could not build the simulation at the saved geometry (%s); "
+                "starting from a fresh field", exc,
+            )
+            saved = None
+            self.engine = self._make_engine(width, height, derived)
+
+        if saved is not None:
+            self._restore(saved)
+
+    def _make_engine(
+        self, width: int, height: int, geometry: engine_module.Geometry
+    ) -> engine_module.Engine:
+        return engine_module.Engine(
+            self.device, width, height, self.params,
+            seed=self.options.seed, geometry=geometry,
+        )
+
+    def _saved_checkpoint(self) -> checkpoint_module.Checkpoint | None:
+        """The checkpoint on disk, if there is one and this launch wants it."""
         if not (self.options.checkpoint and self.options.resume):
-            return
+            return None
         saved = checkpoint_module.load(self.checkpoint_path)
         if saved is None:
             log.info(
                 "no saved state at %s; starting from a fresh field",
                 self.checkpoint_path,
             )
-            return
+        return saved
+
+    def _restore(self, saved: checkpoint_module.Checkpoint) -> None:
         try:
             if checkpoint_module.restore(self.engine, saved, scheduler=self.scheduler):
                 self.resumed_from = saved.describe()
@@ -355,11 +420,15 @@ class Application:
     def reset_simulation(self) -> None:
         """Discard the current world and grow a new one from seeds.
 
-        Rebuilds the engine exactly as a resize does. The new field starts from
-        scattered seeds and the safety stage's history is empty, so the image
-        settles down and grows back rather than cutting -- a reset is the one
-        moment the user has explicitly asked for a change, and even then it is
-        not allowed to be a step.
+        The new field starts from scattered seeds and the safety stage's history
+        is empty, so the image settles down and grows back rather than cutting --
+        a reset is the one moment the user has explicitly asked for a change, and
+        even then it is not allowed to be a step.
+
+        This is also the moment the structural config values land. A resumed
+        field keeps the geometry it was grown at, so changing the layer count or
+        the base scale does nothing until there is a new field to apply it to,
+        and here there is one.
         """
         width, height = self._size
         # Wait for any in-flight write first, or it would land on disk after the
@@ -368,8 +437,9 @@ class Application:
         checkpoint_module.discard(self.checkpoint_path)
 
         self.scheduler = events_module.EventScheduler(seed=self.options.seed)
-        self.engine = engine_module.Engine(
-            self.device, width, height, self.params, seed=self.options.seed
+        self.engine = self._make_engine(
+            width, height,
+            engine_module.Geometry.derive(width, height, self.params),
         )
         self._accumulator = 0.0
         self._sim_hz_scale = 1.0

@@ -7,8 +7,11 @@ the two would diverge on the very next tick, and that divergence is what the
 first test looks for.
 
 The other half is failure behaviour. This file is read at startup and may be
-stale, truncated, or from a different window size, and none of those may stop the
-application from opening.
+stale, truncated, or foreign, and none of those may stop the application from
+opening. A *different window size* is deliberately not in that list any more:
+the launch builds its engine at the geometry the saved field needs instead of
+asking whether the field fits the window it found, and the tests below are what
+hold that distinction in place.
 """
 
 from __future__ import annotations
@@ -140,8 +143,13 @@ def test_the_trail_pass_drains_the_deposit_accumulator():
 # ---------------------------------------------------------------------------
 
 
-def test_a_different_window_size_is_refused_not_forced(gpu_device):
-    """Geometry is a compatibility key. A mismatch must leave the seeded field."""
+def test_restoring_into_an_engine_of_another_shape_is_refused(gpu_device):
+    """The upload is still shape-checked, whatever the launch decided to build.
+
+    The launch path avoids this case by building the engine the checkpoint asks
+    for; if something ever gets that wrong, a refusal is the failure mode, not a
+    mismatched write to the GPU.
+    """
     params = _params()
     original = _make_engine(gpu_device, params)
     for _ in range(2):
@@ -150,7 +158,7 @@ def test_a_different_window_size_is_refused_not_forced(gpu_device):
 
     smaller = _make_engine(gpu_device, params, size=(96, 64))
     problems = checkpoint.compatibility_problems(smaller, snapshot)
-    assert problems, "a size change must be detected"
+    assert problems, "a size mismatch must be detected"
     assert any("128x96" in problem for problem in problems)
 
     assert not checkpoint.restore(smaller, snapshot)
@@ -164,6 +172,73 @@ def test_a_layer_count_change_is_refused(gpu_device):
     snapshot = checkpoint.capture(original, sim_hz=20.0)
     other = _make_engine(gpu_device, _params(layers=1))
     assert not checkpoint.restore(other, snapshot)
+
+
+# ---------------------------------------------------------------------------
+# The geometry a checkpoint asks to be launched into
+# ---------------------------------------------------------------------------
+
+
+def test_the_required_geometry_is_the_one_it_was_captured_from(gpu_device):
+    """What the launch reads out of the file to decide what to build."""
+    engine = _make_engine(gpu_device, _params())
+    snapshot = checkpoint.capture(engine, sim_hz=20.0)
+    required = checkpoint.required_geometry(snapshot)
+    assert required == engine.geometry
+    assert not required.differences(engine.geometry)
+
+
+def test_a_geometry_this_engine_could_not_build_is_ignored():
+    """Geometry out of a file decides how much memory a launch allocates.
+
+    So it is bounds-checked before anything is created from it -- otherwise a
+    corrupt or foreign file could turn the launch into an allocation failure,
+    which is precisely the "cannot open the application" outcome the whole
+    module exists to avoid.
+    """
+    snapshot = checkpoint.Checkpoint(meta={
+        "version": checkpoint.FORMAT_VERSION,
+        "geometry": {
+            "sim_width": 10**6,
+            "sim_height": 10**6,
+            "layers": [{
+                "index": 0, "width": 10**6, "height": 10**6,
+                "agent_count": 10**12, "psi_width": 256, "psi_height": 256,
+                "climate_width": 64, "climate_height": 36,
+            }],
+        },
+    })
+    assert checkpoint.required_geometry(snapshot) is None
+
+
+def test_metadata_that_describes_no_geometry_is_ignored():
+    for block in ("nonsense", {}, {"sim_width": 128, "sim_height": 96},
+                  {"sim_width": 128, "sim_height": 96, "layers": ["nope"]}):
+        snapshot = checkpoint.Checkpoint(
+            meta={"version": checkpoint.FORMAT_VERSION, "geometry": block}
+        )
+        assert checkpoint.required_geometry(snapshot) is None
+
+
+def test_a_version_1_checkpoint_is_still_readable(gpu_device):
+    """Version 1 kept the same sizes in two other keys. Nobody loses a field to
+    an upgrade over that."""
+    engine = _make_engine(gpu_device, _params())
+    engine.tick(_params())
+    snapshot = checkpoint.capture(engine, sim_hz=20.0)
+
+    meta = json.loads(json.dumps(snapshot.meta))
+    geometry = meta.pop("geometry")
+    meta["version"] = 1
+    meta["engine"]["width"] = geometry["sim_width"]
+    meta["engine"]["height"] = geometry["sim_height"]
+    meta["layers"] = geometry["layers"]
+    old = checkpoint.Checkpoint(meta=meta, arrays=snapshot.arrays)
+
+    assert checkpoint.required_geometry(old) == engine.geometry
+    resumed = _make_engine(gpu_device, _params(), seed=7)
+    assert checkpoint.restore(resumed, old)
+    assert resumed.tick_count == engine.tick_count
 
 
 def test_a_future_format_version_is_refused(gpu_device):
@@ -281,7 +356,7 @@ def test_describe_survives_metadata_it_cannot_use():
 # ---------------------------------------------------------------------------
 
 
-def _offscreen(gpu_device, monkeypatch, tmp_path, loop=None, **options):
+def _offscreen(gpu_device, monkeypatch, tmp_path, loop=None, size=SIZE, **options):
     from rendercanvas.offscreen import RenderCanvas, loop as offscreen_loop
     from anastomosis import app as app_module, device as device_module
 
@@ -295,13 +370,13 @@ def _offscreen(gpu_device, monkeypatch, tmp_path, loop=None, **options):
         app_module.Application,
         "_make_canvas",
         lambda self: (
-            RenderCanvas(size=SIZE, update_mode="manual"),
+            RenderCanvas(size=size, update_mode="manual"),
             loop or offscreen_loop,
             False,
         ),
     )
     return app_module.Application(app_module.AppOptions(
-        width=SIZE[0], height=SIZE[1], ui=False,
+        width=size[0], height=size[1], ui=False,
         config_path=tmp_path / "config.toml",
         checkpoint_path=tmp_path / "checkpoint.npz",
         **options,
@@ -327,6 +402,124 @@ def test_a_new_session_picks_up_where_the_last_one_left_off(
     assert second.resumed_from is not None
     assert second.engine.tick_count == ticks
     second.draw_frame()  # and it runs on from there
+
+
+def test_a_new_window_size_resumes_the_field_rather_than_resetting_it(
+    gpu_device, monkeypatch, tmp_path
+):
+    """The requirement: launch in the state the saved field needs.
+
+    The window is presentation, so a session that reopens at a different size
+    keeps the field and simply shows it at the new size -- exactly what a
+    mid-session resize already does -- instead of discarding hours of maturity
+    over a mismatch that never concerned the simulation.
+    """
+    first = _offscreen(gpu_device, monkeypatch, tmp_path, checkpoint_seconds=0.0)
+    first.setup()
+    for _ in range(4):
+        first.draw_frame()
+    ticks = first.engine.tick_count
+    assert first.save_checkpoint(blocking=True)
+
+    bigger = (SIZE[0] * 2, SIZE[1] + 64)
+    second = _offscreen(
+        gpu_device, monkeypatch, tmp_path, size=bigger, checkpoint_seconds=0.0
+    )
+    second.setup()
+
+    assert second.resumed_from is not None, "the saved field must survive a resize"
+    assert second.engine.tick_count == ticks
+    # The simulation is in the shape the checkpoint needed; only the output
+    # targets followed the window.
+    assert (second.engine.sim_width, second.engine.sim_height) == SIZE
+    assert (second.engine.width, second.engine.height) == bigger
+    second.draw_frame()  # and it renders into the new window
+
+
+def test_a_structural_config_change_no_longer_throws_the_field_away(
+    gpu_device, monkeypatch, tmp_path
+):
+    """Layer count follows the config, and the config may have been edited.
+
+    The saved field wins for as long as it exists; the new value takes effect
+    when there is a new field to apply it to.
+    """
+    first = _offscreen(gpu_device, monkeypatch, tmp_path, checkpoint_seconds=0.0)
+    first.setup()
+    first.draw_frame()
+    layers = len(first.engine.layers)
+    first.save_checkpoint(blocking=True)
+
+    (tmp_path / "config.toml").write_text(
+        '[overrides]\n"render.layers" = 1\n', encoding="utf-8"
+    )
+    second = _offscreen(gpu_device, monkeypatch, tmp_path, checkpoint_seconds=0.0)
+    second.setup()
+    assert second.params.render.layers == 1, "the edited config must be in force"
+    assert second.resumed_from is not None
+    assert len(second.engine.layers) == layers, (
+        "the resumed field keeps the geometry it was grown at"
+    )
+
+    # ...and the new layer count lands on the next field, which is what the
+    # reset is for.
+    second.reset_simulation()
+    assert len(second.engine.layers) == 1
+
+
+def test_an_unusable_saved_state_still_starts_a_session(
+    gpu_device, monkeypatch, tmp_path
+):
+    """Reading the checkpoint now decides how the engine is built, so a foreign
+    file must not be able to take the launch down with it."""
+    app = _offscreen(gpu_device, monkeypatch, tmp_path, checkpoint_seconds=0.0)
+    app.setup()
+    app.draw_frame()
+    app.save_checkpoint(blocking=True)
+
+    snapshot = checkpoint.load(tmp_path / "checkpoint.npz")
+    snapshot.meta["geometry"]["layers"][0]["width"] = 10**6
+    checkpoint.save(tmp_path / "checkpoint.npz", snapshot)
+
+    fresh = _offscreen(gpu_device, monkeypatch, tmp_path, checkpoint_seconds=0.0)
+    fresh.setup()
+    assert fresh.resumed_from is None
+    assert fresh.engine.tick_count == 0
+    assert (fresh.engine.sim_width, fresh.engine.sim_height) == SIZE
+    fresh.draw_frame()
+
+
+def test_a_saved_geometry_this_device_refuses_falls_back_to_a_fresh_field(
+    gpu_device, monkeypatch, tmp_path
+):
+    """Plausible geometry can still fail to allocate -- a file from a machine
+    with more memory, say. The session opens anyway."""
+    first = _offscreen(gpu_device, monkeypatch, tmp_path, checkpoint_seconds=0.0)
+    first.setup()
+    first.draw_frame()
+    first.save_checkpoint(blocking=True)
+
+    real_engine = engine_module.Engine
+    attempts: list = []
+
+    def refuses_the_first_shape(*args, **kwargs):
+        attempts.append(kwargs.get("geometry"))
+        if len(attempts) == 1:
+            raise MemoryError("not enough device memory")
+        return real_engine(*args, **kwargs)
+
+    monkeypatch.setattr(engine_module, "Engine", refuses_the_first_shape)
+    app = _offscreen(
+        gpu_device, monkeypatch, tmp_path, size=(192, 160), checkpoint_seconds=0.0
+    )
+    app.setup()
+
+    assert [g.sim_width for g in attempts] == [SIZE[0], 192], (
+        "the saved geometry is tried first, then the one this window implies"
+    )
+    assert app.resumed_from is None
+    assert app.engine.tick_count == 0
+    app.draw_frame()
 
 
 def test_reset_starts_a_new_field_and_drops_the_saved_one(

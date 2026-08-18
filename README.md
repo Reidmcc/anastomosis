@@ -88,10 +88,17 @@ anastomosis --checkpoint-interval 60 # save more often than every 5 minutes
 
 The state lives in `~/.local/state/anastomosis/checkpoint.npz` — about 150 MB at
 1440p, rewritten in place, with the fields the engine recomputes every tick left
-out. It records the window size and layer geometry it was taken at: resize the
-window or change the layer count in the config and it no longer fits, so that
-launch quietly starts from seeds instead. Same if the file is missing or
-damaged — anything unreadable there costs you the field, never the session.
+out. It records the simulation geometry it was taken at, and the next launch
+builds itself in that shape before loading it, so reopening at a different window
+size — or on another monitor, or after editing the layer count in the config —
+resumes the field rather than discarding it. The window is presentation: the
+image is simply shown at the new size, exactly as it is when you resize a running
+session. A resumed field keeps the resolution it was grown at, so the structural
+config values (layer count, base scale, agent density) take effect on the next
+new field — press **Reset simulation** when you want them now.
+
+A file that is missing, damaged, or from a version this build cannot read costs
+you the field, never the session: that launch quietly starts from seeds.
 
 The save itself is a GPU readback on the render thread followed by a disk write
 on a worker, so a frame is held rather than dropped, and nothing about the image
