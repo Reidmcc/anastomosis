@@ -58,6 +58,14 @@ The control panel opens as a separate, ordinary window on your main display. It
 is not always-on-top and minimises freely — tuck it away and bring it back from
 the taskbar when you want it.
 
+Under **Events** there is a button for each kind of slow perturbation the
+simulation produces on its own — a bloom, a dieback, a shift in current, a tint,
+a rift. Pressing one asks for that event *now* instead of waiting for it to come
+up by chance. It is the same event either way: it arrives in one region, builds
+over a minute or two, holds, and fades, and it counts against the same limit on
+how many can run at once — so the buttons go quiet while that limit is reached,
+and come back as events fade. Nothing here cuts.
+
 Closing the render window quits: the field is saved, the control panel closes
 with it, and the process ends and gives you your terminal back. `Ctrl-C` in that
 terminal, and `kill` — which is what logging out sends — end the same way, with

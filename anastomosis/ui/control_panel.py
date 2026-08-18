@@ -16,16 +16,30 @@ dragging a slider can never itself produce visual punctuation.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import fields
 
 from PySide6 import QtCore, QtWidgets
 
+from .. import events as events_module
 from .. import presets as presets_module
 from ..config import Macros
 
 log = logging.getLogger(__name__)
 
 SLIDER_STEPS = 1000
+
+# How long the line under the event buttons keeps its message. Long enough to
+# read without hunting for it, short enough that a stale one is never mistaken
+# for a report on the event now running.
+NOTE_SECONDS = 6.0
+
+# What that line says when it has nothing more particular to report.
+NOTE_IDLE = "Ask for a perturbation. It builds over a minute or two."
+NOTE_AT_CAP = (
+    "As many events are running as the settings allow; the buttons come back "
+    "as they fade."
+)
 
 # Ordered for the panel, with a plain-language description of what each does.
 MACRO_LABELS: list[tuple[str, str, str]] = [
@@ -38,12 +52,26 @@ MACRO_LABELS: list[tuple[str, str, str]] = [
     ("depth", "Depth", "Parallax, focus falloff, and atmosphere"),
 ]
 
+# One entry per kind in ``events.EVENT_KINDS``, in the order the buttons should
+# read. A kind with no entry here still gets a button -- built from its own name
+# -- so adding one to the simulation cannot silently leave it unreachable from
+# the panel; the label is what is missing, not the control.
+EVENT_LABELS: dict[str, str] = {
+    "bloom": "A productive region: structure densifies and fills in",
+    "dieback": "The opposite: material thins out and dissolves",
+    "current": "A shift in flow, carrying and stretching what is there",
+    "tint": "A regional colour shift, with little structural effect",
+    "rift": "The network comes apart across the region, rather than thinning",
+}
+
 
 class ControlPanel(QtWidgets.QWidget):
     def __init__(self, app) -> None:
         super().__init__()
         self.app = app
         self._updating = False
+        # When the note under the event buttons stops being current.
+        self._note_expires = 0.0
 
         self.setWindowTitle("anastomosis — controls")
         # No always-on-top flag: this window must be able to disappear behind
@@ -56,15 +84,18 @@ class ControlPanel(QtWidgets.QWidget):
 
         layout.addWidget(self._build_presets())
         layout.addWidget(self._build_macros())
+        layout.addWidget(self._build_events())
         layout.addWidget(self._build_status())
         layout.addStretch(1)
         layout.addLayout(self._build_buttons())
 
         self._timer = QtCore.QTimer(self)
+        self._timer.timeout.connect(self._refresh_events)
         self._timer.timeout.connect(self._refresh_status)
         self._timer.start(1000)
 
         self._load_from_app()
+        self._refresh_events()
 
     # -- construction -------------------------------------------------------
 
@@ -104,6 +135,46 @@ class ControlPanel(QtWidgets.QWidget):
             self.sliders[name] = slider
             self.values[name] = value
 
+        return box
+
+    def _build_events(self) -> QtWidgets.QWidget:
+        """Buttons that ask the scheduler for an event of a given kind.
+
+        These do not bypass anything. The request goes to the same scheduler
+        the simulation uses, which builds the event exactly as it would have
+        built its own -- same envelope, same size cap, same concurrency limit --
+        so pressing one chooses *when* an event arrives and *which* kind, and
+        nothing else. The result is a perturbation that takes a minute or two to
+        come up, not a button that does something to the picture.
+        """
+        box = QtWidgets.QGroupBox("Events")
+        column = QtWidgets.QVBoxLayout(box)
+        column.setSpacing(6)
+
+        grid = QtWidgets.QGridLayout()
+        grid.setSpacing(6)
+        self.event_buttons: dict[str, QtWidgets.QPushButton] = {}
+
+        columns = 3
+        for index, kind in enumerate(events_module.EVENT_KINDS):
+            button = QtWidgets.QPushButton(kind.capitalize())
+            description = EVENT_LABELS.get(kind, f"A {kind} event")
+            button.setToolTip(
+                f"{description}.\nIt arrives slowly, in one region, and fades "
+                "out again over a few minutes."
+            )
+            # Default-bound `kind`, or every button would trigger the last one.
+            # `clicked` passes a checked flag that we have no use for.
+            button.clicked.connect(
+                lambda _checked=False, kind=kind: self._on_trigger(kind)
+            )
+            grid.addWidget(button, index // columns, index % columns)
+            self.event_buttons[kind] = button
+        column.addLayout(grid)
+
+        self.event_note = QtWidgets.QLabel(NOTE_IDLE)
+        self.event_note.setWordWrap(True)
+        column.addWidget(self.event_note)
         return box
 
     def _build_status(self) -> QtWidgets.QWidget:
@@ -223,6 +294,53 @@ class ControlPanel(QtWidgets.QWidget):
         except Exception as exc:
             log.error("could not reset the simulation: %s", exc)
             QtWidgets.QMessageBox.warning(self, "Could not reset", str(exc))
+
+    def _on_trigger(self, kind: str) -> None:
+        try:
+            started = self.app.trigger_event(kind)
+        except Exception as exc:
+            log.error("could not trigger a %s event: %s", kind, exc)
+            self._set_note(f"Could not start a {kind}: {exc}")
+            return
+        if started:
+            self._set_note(
+                f"{kind.capitalize()} started — it comes up over the next "
+                "minute or two."
+            )
+        else:
+            # Refused, not lost: queueing it would mean an event arriving long
+            # after the press that asked for it, which is worse than saying no.
+            self._set_note(
+                f"Not now — {self._active_events()} events are already "
+                "running, which is as many as the settings allow. Try again "
+                "when one has faded."
+            )
+        self._refresh_events()
+
+    def _set_note(self, text: str) -> None:
+        self.event_note.setText(text)
+        self._note_expires = time.monotonic() + NOTE_SECONDS
+
+    def _active_events(self) -> int:
+        return len(self.app.scheduler.active)
+
+    def _refresh_events(self) -> None:
+        """Keep the buttons honest about whether there is room for another.
+
+        Deliberately separate from `_refresh_status`, which gives up early when
+        the engine is not there or a readback fails; whether the scheduler can
+        take another event does not depend on either.
+        """
+        room = self._active_events() < self.app.params.events.max_concurrent
+        for button in self.event_buttons.values():
+            button.setEnabled(room)
+        if self._note_expires and time.monotonic() < self._note_expires:
+            # A reply to something the user just pressed outranks the standing
+            # text, including when their own event was the one that filled the
+            # last slot.
+            return
+        self.event_note.setText(NOTE_IDLE if room else NOTE_AT_CAP)
+        self._note_expires = 0.0
 
     def _refresh_status(self) -> None:
         engine = self.app.engine

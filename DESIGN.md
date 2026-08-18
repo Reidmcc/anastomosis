@@ -220,6 +220,18 @@ Every event is constrained to be non-punctuating:
 - applied to *climate*, never directly to pigment or luminance, so its effect
   reaches the image only through several stages of diffusion and lowpass.
 
+Events can also be **asked for** from the control panel, one button per kind.
+This is arrival-time only: the request goes through the same `_spawn` the
+scheduler's own arrivals do, so the event that results is jittered, localised,
+enveloped, capped in radius and counted against `max_concurrent` exactly as a
+sampled one is — there is no privileged path and nothing a button can produce
+that the simulation could not have produced by itself. A request that would
+exceed the concurrency cap is refused rather than queued, and it never
+reschedules the next automatic arrival: exponential inter-arrivals are
+memoryless, and letting a click move the next one would make the stream
+predictable from the user's own actions, which is the property this section
+exists to prevent.
+
 ### 4.4 Staying on the live band — three findings from implementation
 
 Everything above was designed before any of it ran. Building it surfaced three
@@ -1254,7 +1266,8 @@ GPU-resident homeostat; slow events; layered compositing with parallax, DOF and
 atmosphere; the Oklab colour pipeline; the full safety stage with blue-noise
 dither; sim/render decoupling with motion-compensated interpolation and the
 budget governor; the parameter system with macros, presets, hot reload and
-ramping; the Qt control panel; CLI; checkpointing on a five-minute interval and
+ramping; the Qt control panel, including asking for an event of a given kind on
+demand; CLI; checkpointing on a five-minute interval and
 on close, resuming by default, with an explicit reset in the control panel;
 shutdown as a single idempotent path reached from the window closing, a signal,
 or the loop ending, so closing the window saves the field and ends the process.

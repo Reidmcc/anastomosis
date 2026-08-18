@@ -195,8 +195,53 @@ class EventScheduler:
 
         return self.active
 
-    def _spawn(self, params: EventParams) -> ActiveEvent:
-        kind = self._rng.choice(list(EVENT_KINDS))
+    def trigger(self, kind: str, params: EventParams) -> ActiveEvent | None:
+        """Start one event of `kind` now, or return None if there is no room.
+
+        Asking for an event is the same act as the scheduler drawing one: it
+        goes through `_spawn`, so it gets the same jittered radius, amplitude
+        and envelope, lands in the same `active` list, is packed for the GPU by
+        the same code and expires the same way. There is no such thing as a
+        manual event once it exists -- only an event whose arrival time was
+        chosen rather than sampled.
+
+        Two consequences of that are worth being explicit about, because both
+        are the point rather than oversights:
+
+        * `max_concurrent` is honoured, and a request that would exceed it is
+          refused rather than queued. The cap is what keeps several overlapping
+          perturbations from summing into something that reads as punctuation,
+          and a manual arrival stacks exactly like an automatic one.
+        * `_time_to_next` is *not* touched. Poisson arrivals are memoryless, so
+          the next automatic event is independent of everything that has
+          already happened; rescheduling it here would make the stream
+          predictable from the user's own clicks, which is the one property
+          §4.3 is built to avoid.
+
+        `params.enabled` is deliberately not consulted. It gates *arrivals* --
+        whether the scheduler draws events of its own -- and an explicit
+        request is an arrival, supplied by the user instead of by the RNG. An
+        event already in flight keeps running when it is switched off (`update`
+        advances and retires the active list before it looks at `enabled`), so
+        a requested one behaves no differently.
+        """
+        if kind not in EVENT_KINDS:
+            raise KeyError(
+                f"unknown event kind {kind!r}; known: {sorted(EVENT_KINDS)}"
+            )
+        if params.max_concurrent <= 0 or len(self.active) >= params.max_concurrent:
+            log.info(
+                "declining a requested %s event: %d already in flight (max %d)",
+                kind, len(self.active), params.max_concurrent,
+            )
+            return None
+        event = self._spawn(params, kind=kind)
+        self.active.append(event)
+        return event
+
+    def _spawn(self, params: EventParams, kind: str | None = None) -> ActiveEvent:
+        if kind is None:
+            kind = self._rng.choice(list(EVENT_KINDS))
         base = EVENT_KINDS[kind]
 
         # Radius is capped well below the flash-area threshold, and jittered so

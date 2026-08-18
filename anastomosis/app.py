@@ -284,6 +284,27 @@ class Application:
         resolved.max_fps = min(resolved.max_fps, self.options.max_fps)
         self.ramp.set_target(resolved)
 
+    def trigger_event(self, kind: str) -> bool:
+        """Start one event of `kind` now. Called by the control panel.
+
+        The request is handed to the scheduler with the *live* parameters --
+        the ramped ones the tick loop is using this frame, not the config file's
+        -- so a requested event is shaped by the same intensity the running
+        image is, and is subject to the same concurrency cap. Returns False if
+        the scheduler had no room for it.
+
+        Safe to call from a Qt slot: the panel shares the render window's event
+        loop, so this runs between frames and never inside a tick.
+        """
+        event = self.scheduler.trigger(kind, self.params.events)
+        if event is None:
+            return False
+        log.info(
+            "requested event %s at (%.2f, %.2f) r=%.3f for %.0fs",
+            event.kind, event.x, event.y, event.radius, event.duration,
+        )
+        return True
+
     def save_config(self) -> None:
         config_module.save(self.config, self.config_path)
 
