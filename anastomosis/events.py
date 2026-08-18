@@ -54,6 +54,31 @@ class Channels(NamedTuple):
     prune: float = 0.0
     repel: float = 0.0
 
+    @classmethod
+    def coerce(cls, value: object) -> "Channels":
+        """Rebuild the named tuple from whatever a checkpoint round-trip left.
+
+        JSON has no named tuples, so `state` writes the channels positionally
+        and they come back as a plain list -- which behaves like `Channels` for
+        arithmetic and comparison and then fails in `pack`, which addresses the
+        channels *by name*. Normalising on the way in is the only way that
+        failure cannot come back; see `ActiveEvent.__post_init__`.
+
+        Length is treated as a version marker, because that is what it is: a
+        checkpoint written before a channel existed is short, so it takes the
+        default (zero, i.e. the channel does nothing), and one written by a
+        later build carrying channels this one has never heard of is long, so
+        the surplus is dropped. Either way the event survives the restart,
+        which is the whole point of saving it mid-envelope.
+        """
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, dict):
+            return cls(**{
+                name: float(value[name]) for name in cls._fields if name in value
+            })
+        return cls(*(float(c) for c in tuple(value)[:len(cls._fields)]))
+
 
 @dataclass
 class ActiveEvent:
@@ -69,6 +94,12 @@ class ActiveEvent:
     release: float
     elapsed: float = 0.0
     kind: str = "bloom"
+
+    def __post_init__(self) -> None:
+        # One choke point for every way an event can be built -- spawned here,
+        # restored from disk, or assembled by a test -- so `channels` is a
+        # `Channels` by the time anything reads it.
+        self.channels = Channels.coerce(self.channels)
 
     @property
     def duration(self) -> float:
@@ -239,9 +270,8 @@ class EventScheduler:
             if not isinstance(row, dict):
                 continue
             row = dict(row)
-            channels = row.get("channels") or (0.0, 0.0, 0.0, 0.0)
+            row["channels"] = row.get("channels") or Channels()
             try:
-                row["channels"] = tuple(float(c) for c in channels)
                 event = ActiveEvent(**row)
             except (TypeError, ValueError) as exc:
                 log.warning("ignoring unreadable saved event (%s)", exc)

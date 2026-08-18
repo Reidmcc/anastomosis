@@ -709,6 +709,58 @@ def test_in_flight_events_survive_a_round_trip():
     assert resumed.pack(8) == scheduler.pack(8)
 
 
+def test_restored_events_carry_named_channels():
+    """`pack` reads the channels by name, so a restored event must have names.
+
+    JSON stores the channels positionally and a plain list of floats survives
+    everything the round-trip test checks -- equality, `describe`, arithmetic --
+    and then takes down every frame in `pack`, which is the draw callback: a
+    resumed session that renders nothing but a grey window.
+    """
+    scheduler = events.EventScheduler(seed=3)
+    scheduler.load_state({
+        "active": [{
+            "x": 0.5, "y": 0.5, "radius": 0.1, "peak": 1.0,
+            "channels": [1.0, -0.5, 0.25, 0.125, 0.0, 0.0, 0.0],
+            "attack": 10.0, "hold": 10.0, "release": 10.0,
+            "elapsed": 10.0, "kind": "bloom",
+        }],
+    })
+    (restored,) = scheduler.active
+    assert isinstance(restored.channels, events.Channels)
+
+    (row,), count = scheduler.pack(8)
+    assert count == 1
+    assert row["chan_feed"] == pytest.approx(1.0)
+    assert row["chan_kill"] == pytest.approx(-0.5)
+    assert row["chan_repel"] == pytest.approx(0.0)
+
+
+def test_a_checkpoint_from_before_the_severance_channels_still_loads():
+    """Channel count is a version marker: short means old, not corrupt.
+
+    A checkpoint written before rift events existed carries four channels. It
+    describes a perfectly valid bloom, and dropping it would lose an in-flight
+    envelope for no reason -- the channels it never heard of simply do nothing.
+    """
+    scheduler = events.EventScheduler(seed=3)
+    scheduler.load_state({
+        "active": [{
+            "x": 0.5, "y": 0.5, "radius": 0.1, "peak": 1.0,
+            "channels": [1.0, -0.55, 0.15, 0.35],
+            "attack": 10.0, "hold": 10.0, "release": 10.0,
+            "elapsed": 10.0, "kind": "bloom",
+        }],
+    })
+    (restored,) = scheduler.active
+    assert restored.channels == events.Channels(
+        feed=1.0, kill=-0.55, flow=0.15, hue=0.35
+    )
+    assert restored.channels.decay == 0.0
+    (row,), _ = scheduler.pack(8)
+    assert row["chan_decay"] == pytest.approx(0.0)
+
+
 def test_finished_events_are_not_resurrected():
     scheduler = events.EventScheduler(seed=3)
     scheduler.load_state({
