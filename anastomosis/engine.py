@@ -122,7 +122,7 @@ class Layer:
                                   f"climate_a{spec.index}")
         self.climate_b = PingPong(device, params.climate.width, params.climate.height,
                                   f"climate_b{spec.index}")
-        # Morphology: (scale, prune, fusion, spare). DESIGN.md §4.7. The other
+        # Morphology: (scale, prune, repel, spare). DESIGN.md §4.7. The other
         # two pairs are fully allocated, and a 64x36 rgba16f pair is ~9 KB.
         self.climate_c = PingPong(device, params.climate.width, params.climate.height,
                                   f"climate_c{spec.index}")
@@ -658,12 +658,20 @@ class Engine:
             "jitter": a.jitter,
             "deposit": a.deposit,
             "fusion_bias": a.fusion_bias,
+            "fusion_max": a.fusion_max,
             "trail_decay": a.trail_decay,
             "trail_diffuse": a.trail_diffuse * feature,
             "income_rate": a.income_rate,
             "prune_gain": a.prune_gain,
             "starve_threshold": a.starve_threshold,
             "max_age": a.max_age,
+            "found_fraction": a.found_fraction,
+            "found_period": a.found_period,
+            "found_site_cells": a.found_site_cells,
+            # In cells, like every other length here, so a half-resolution
+            # layer founds a cohort of the same screen size rather than half of
+            # one.
+            "found_radius": a.found_radius * feature,
 
             "feed": r.feed, "kill": r.kill, "du": du_mean, "dv": dv_mean,
             "du_min": r.du_min, "du_max": r.du_max,
@@ -690,6 +698,7 @@ class Engine:
             "range_deposit": c.range_deposit, "range_decay": c.range_decay,
             "range_flow": c.range_flow, "range_hue": c.range_hue,
             "range_du": c.range_du, "range_prune": c.range_prune,
+            "range_repel": c.range_repel,
 
             # Only the autonomous drift is baked into pigment; the palette macro
             # is applied at render time so turning the knob responds at once
@@ -831,6 +840,7 @@ class Engine:
             cpass.set_bind_group(0, self._bind(self.p_agents, [
                 pbind, agents_bind, layer.trail.cur, deposit_bind,
                 layer.climate_a.cur, layer.climate_b.cur, sampler, stats_bind,
+                layer.climate_c.cur,
             ]))
             cpass.dispatch_workgroups(math.ceil(spec.agent_count / 64), 1, 1)
 

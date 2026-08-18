@@ -163,6 +163,9 @@ unrecoverable:
 - `test_soak.py` — non-repetition, NaN recovery, and no per-frame allocation.
 - `test_parity.py` — the WGSL reaction against a numpy reference, so shader bugs
   surface as failures rather than as "it looks a bit wrong".
+- `test_agents.py` — the agent layer's junction behaviour and respawn, by
+  dispatching the compute shader against a world with one filament in it and a
+  known right answer.
 
 ## Layout
 
