@@ -62,7 +62,20 @@ class AgentParams:
     density: float = 0.27  # agents per simulation cell
     speed: float = 0.90  # cells per tick
     sensor_angle: float = 0.42  # radians, off-axis sensors
-    sensor_distance: float = 7.0  # cells
+    # How far ahead an agent senses, in cells. Bounded relative to the width of
+    # what it is sensing: `sensor_distance` above roughly 4x `trail_diffuse`
+    # puts the layer in a condensing regime where the whole population ends up
+    # on one axis-aligned strand that wraps the torus (DESIGN.md §4.9). This is
+    # the *base*; the shader clamps the climate's deviation against
+    # `sensor_reach_max` so no region can cross the threshold on its own.
+    sensor_distance: float = 3.6  # cells
+    # The bound, as a multiple of the trail's diffusion sigma. Measured on a
+    # 256x160 field: the layer condenses at a ratio of 5.8, is still drifting
+    # toward it at 4.0, and holds a distributed network at 3.7 and below. On a
+    # smaller field the same ratios bite harder -- 3.2 was still half-condensed
+    # at 192x128 where 2.5 was not -- so the base sits at 2.6, with the ceiling
+    # far enough above it for the climate to deviate on both sides.
+    sensor_reach_max: float = 3.2
     turn_rate: float = 0.32  # radians per tick
     jitter: float = 0.10  # radians, stochastic steering
     deposit: float = 0.018  # per tick, kept far below trail_decay
@@ -100,7 +113,14 @@ class AgentParams:
     # sites would concentrate a hundred times more traffic on the large layer,
     # which would land as a visible flare rather than as a founding.
     found_site_cells: int = 16_384
-    found_radius: float = 6.0  # cells; the scatter of a cohort around its site
+    # Cells; the scatter of a cohort around its site. Bounded by the sensing
+    # reach for the same reason that reach is bounded by the trail width
+    # (DESIGN.md §4.9): a cohort scattered wider than its members can see does
+    # not find itself, so the site never establishes and the founding mechanism
+    # quietly stops working. Measured, at a reach of 3.6 cells a radius of 6.0
+    # left a rifted disc at 1-3% of the control's trail for 5400 ticks -- bare
+    # ground that never came back -- where 2.55 heals it to 80%.
+    found_radius: float = 2.55
     trail_decay: float = 0.055
     trail_diffuse: float = 1.15  # gaussian sigma in cells
     # Flux pruning -- the autolysis half of anastomosis (DESIGN.md 4.7).
@@ -271,7 +291,11 @@ class ClimateParams:
     range_feed: float = 0.0080
     range_kill: float = 0.0035
     range_sensor_angle: float = 0.22
-    range_sensor_distance: float = 3.0
+    # Kept inside the band the sensing reach is safe in (DESIGN.md §4.9) rather
+    # than the +-3 cells it used to span, which put the tails of an ordinary
+    # climate excursion well over the condensation threshold. The shader clamps
+    # the top as well, so this only has to be the typical spread.
+    range_sensor_distance: float = 0.8
     range_deposit: float = 0.008
     range_decay: float = 0.018
     range_flow: float = 0.55
@@ -444,9 +468,16 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
     ],
     "scale": [
         # Larger scale == coarser features: slower agents, longer sensors,
-        # faster diffusion.
-        ("agents.sensor_distance", 4.0, 12.0, 1.0),
+        # faster diffusion. Sensing and diffusion move *together*, holding
+        # `sensor_distance / trail_diffuse` at ~2.6 across the whole range:
+        # above ~4 the agent layer condenses onto a single axis-aligned strand
+        # (DESIGN.md §4.9), and the old 4.0-12.0 sweep was over that threshold
+        # along its entire length.
+        ("agents.sensor_distance", 2.2, 4.9, 1.0),
         ("agents.trail_diffuse", 0.85, 1.90, 1.0),
+        # A cohort is a length like the other two, and has to stay inside the
+        # sensing reach that moves alongside it.
+        ("agents.found_radius", 1.6, 3.5, 1.0),
         ("reaction.du", 0.16, 0.26, 1.0),
         ("reaction.dv", 0.080, 0.130, 1.0),
         ("flow.psi_noise_scale", 2.0, 5.0, 1.0),
@@ -531,6 +562,18 @@ def clamp_du(du_raw: float, reaction: "ReactionParams") -> float:
     other must.
     """
     return min(max(du_raw, reaction.du_min), reaction.du_max)
+
+
+def clamp_sensor_distance(distance_raw: float, agents: "AgentParams") -> float:
+    """Constrain the sensing reach to the width of what it senses.
+
+    Mirrors ``agents.wgsl`` exactly, for the same reason :func:`clamp_du` does.
+    An agent that senses much further than a strand is wide stops following the
+    strand it is on and starts driving at whatever it can see from a distance,
+    which on a torus ends with the whole population on one straight
+    axis-aligned strand (DESIGN.md §4.9). If one changes, the other must.
+    """
+    return min(max(distance_raw, 1.0), agents.sensor_reach_max * agents.trail_diffuse)
 
 
 def clamp_reaction(

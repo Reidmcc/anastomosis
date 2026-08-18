@@ -277,7 +277,12 @@ def test_flux_pruning_returns_the_mass_it_removes(gpu_device):
     numbers, since what matters is the difference the term makes.
     """
     device, _ = gpu_device
-    width, height, ticks = 128, 128, 700
+    # 1400 ticks, not 700: this is a statement about the steady state, and the
+    # field takes longer to reach one now that the network is less concentrated
+    # (DESIGN.md §4.9). Measured across two seeds, the mass difference is 2-3%
+    # from 1400 ticks on; at 700 one seed was still 29% short of the control
+    # purely because it had not finished building.
+    width, height, ticks = 128, 128, 1400
 
     def run(prune_gain: float) -> dict:
         params = config.Config().resolve()
@@ -570,9 +575,10 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     This test was previously anchored to a seed whose disc turned out to sit on
     a void, at a threshold only reachable there. Fixing the flow's wrap seam
     (DESIGN.md §4.8) re-rolled the field and moved that disc onto different
-    ground, which is what exposed it. The effect size itself did not move: the
-    dense-hub figure recorded before that fix was 0.77, and it measures 0.73 and
-    0.83 on the two grounded seeds after it.
+    ground, which is what exposed it; bounding the sensing reach (§4.9) re-rolled
+    it again, hence the seed here. The effect size has been stable across all of
+    it: 0.77 on a dense hub before either change, 0.73 and 0.83 after the first,
+    0.78 here after the second.
     """
     device, _ = gpu_device
     size, radius = 128, 0.24
@@ -585,7 +591,7 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     def run(with_event: bool) -> dict[str, tuple[float, float]]:
         params = config.Config().resolve()
         params.render.layers = 1
-        engine = engine_module.Engine(device, size, size, params, seed=3)
+        engine = engine_module.Engine(device, size, size, params, seed=13)
         event = events.ActiveEvent(
             x=0.5, y=0.5, radius=radius, peak=params.events.strength,
             channels=events.EVENT_KINDS["rift"],
@@ -657,6 +663,105 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     assert rifted["after"][1] / max(control["after"][1], 1e-9) > 0.7, (
         f"the reaction inside the rift did not come back "
         f"({rifted['after'][1]:.4f} against a control's {control['after'][1]:.4f})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Condensation of the agent layer
+# ---------------------------------------------------------------------------
+
+
+def _agent_layer_state(device, engine) -> tuple[float, float, float]:
+    """Axis alignment, band share, and the trail's peak-to-median ratio.
+
+    ``axis`` is ``|mean exp(4i.heading)|``, which is 1.0 when every agent runs
+    along +-x or +-y and 0 when the headings are spread; the fourth harmonic is
+    the one that does not care which of the four directions an agent picked.
+    ``band`` is the largest share of the population inside any eight-cell row or
+    column. Together they separate the two things that can go wrong: a
+    population that has aligned, and a population that has piled up.
+    """
+    layer = engine.layers[0]
+    width, height = layer.spec.width, layer.spec.height
+    agents = np.frombuffer(
+        device.queue.read_buffer(layer.agents_buf),
+        dtype=np.dtype([
+            ("x", "<f4"), ("y", "<f4"), ("heading", "<f4"),
+            ("rng", "<u4"), ("recent", "<f4"), ("age", "<f4")]),
+    )
+    axis = float(np.abs(np.mean(np.exp(4j * np.mod(agents["heading"], 2 * np.pi)))))
+    rows, _ = np.histogram(agents["y"], bins=height // 8, range=(0, height))
+    columns, _ = np.histogram(agents["x"], bins=width // 8, range=(0, width))
+    band = float(max(rows.max(), columns.max()) / len(agents))
+
+    raw = device.queue.read_texture(
+        {"texture": layer.trail.textures[layer.trail.index], "mip_level": 0,
+         "origin": (0, 0, 0)},
+        {"offset": 0, "bytes_per_row": width * 8, "rows_per_image": height},
+        (width, height, 1),
+    )
+    trail = np.frombuffer(raw, dtype=np.float16).reshape(
+        height, width, 4)[..., 0].astype(np.float64)
+    # Per axis, then the worse of the two. Pooling the row and column profiles
+    # instead would hide exactly the case being measured: a strand running the
+    # width of the field leaves every *row* alike, so the pooled median lands
+    # between the two distributions and flattens the ratio by an order of
+    # magnitude.
+    peak = 0.0
+    for profile in (trail.mean(axis=1), trail.mean(axis=0)):
+        peak = max(peak, float(profile.max() / max(np.median(profile), 1e-9)))
+    return axis, band, peak
+
+
+def _run_agent_layer(device, ticks, seed, reach=None):
+    """Run one layer and report what its agent population has become."""
+    params = config.Config().resolve()
+    params.render.layers = 1
+    if reach is not None:
+        params.agents.sensor_distance, params.agents.sensor_reach_max = reach[:2]
+        params.climate.range_sensor_distance = reach[2]
+    engine = engine_module.Engine(device, 192, 128, params, seed=seed)
+    scheduler = events.EventScheduler(seed=3)
+    for _ in range(ticks):
+        rows, _ = scheduler.pack(8)
+        engine.tick(params, rows)
+    return _agent_layer_state(device, engine)
+
+
+@pytest.mark.slow
+def test_the_agent_layer_does_not_condense_onto_one_strand(gpu_device):
+    """DESIGN.md §4.9, and the reason the sensing reach is bounded at all.
+
+    Left unbounded, trail following straightens the strand an agent is on --
+    sensors placed well ahead of it cut every corner -- and a straight strand on
+    a torus closes on itself after one lap, so it is reinforced every lap while
+    nothing else is. Trail following has no capacity limit and no exit but
+    `max_age`, so that strand then takes the whole population: within ~1000
+    ticks every agent runs along one axis-aligned line and the rest of the field
+    is bare. That is what the reported vertical and horizontal lines were.
+
+    The control arm is the reach as it shipped, because a collapse metric that
+    has never seen a collapse is not evidence. It is not a claim that those
+    numbers are uniquely bad -- anything past a ratio of about four does it.
+    """
+    device, _ = gpu_device
+
+    axis, _band, peak = _run_agent_layer(device, 1100, seed=5)
+    assert axis < 0.35, (
+        f"agent headings are {axis:.2f} aligned to the axes, so the layer is "
+        f"laying the straight strands that close on the torus"
+    )
+    assert peak < 150.0, (
+        f"the trail's busiest row or column is {peak:.0f}x the median, i.e. the "
+        f"field has emptied into one strand"
+    )
+
+    # The reach as it shipped: 8.0 cells, no ceiling, +-3.0 cells of climate.
+    was = _run_agent_layer(device, 1100, seed=5, reach=(8.0, 99.0, 3.0))
+    assert was[0] > 0.6 and was[2] > 150.0, (
+        f"the unbounded reach no longer condenses (axis {was[0]:.2f}, band "
+        f"{was[1]:.2f}, peak {was[2]:.0f}), so the assertions above are not "
+        f"testing anything"
     )
 
 

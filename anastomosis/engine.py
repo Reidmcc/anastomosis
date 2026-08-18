@@ -829,6 +829,10 @@ class Engine:
             "speed": a.speed * tempo,
             "sensor_angle": a.sensor_angle,
             "sensor_distance": a.sensor_distance * feature,
+            # In cells like the rest, so it scales with the layer the same way
+            # the two lengths it relates do, and the ratio is per-layer
+            # invariant.
+            "sensor_distance_max": a.sensor_reach_max * a.trail_diffuse * feature,
             "turn_rate": a.turn_rate,
             "jitter": a.jitter,
             "deposit": a.deposit,

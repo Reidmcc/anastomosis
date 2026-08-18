@@ -136,6 +136,12 @@ def _steering_params(agents_cfg, **over):
         "speed": agents_cfg.speed,
         "sensor_angle": agents_cfg.sensor_angle,
         "sensor_distance": agents_cfg.sensor_distance,
+        # The ceiling the shader clamps the sensing reach against (DESIGN.md
+        # §4.9). Unset it would pack as zero, and the clamp would pull every
+        # sensor in to one cell -- so it belongs in the shared block rather
+        # than in the tests that happen to notice.
+        "sensor_distance_max": (
+            agents_cfg.sensor_reach_max * agents_cfg.trail_diffuse),
         "turn_rate": agents_cfg.turn_rate,
         # Jitter is stochastic steering, which is the whole point of the
         # parameter and exactly what must not be in the measurement.
@@ -155,8 +161,15 @@ def _steering_params(agents_cfg, **over):
 
 
 def _blob(centre, sigma=1.5, size=SIZE):
-    """One filament, as a smooth blob -- no texel edges for a sensor to catch."""
-    ys, xs = np.mgrid[0:size, 0:size].astype(np.float32)
+    """One filament, as a smooth blob -- no texel edges for a sensor to catch.
+
+    Evaluated at texel *centres*, which is where the shader reads them: `uv =
+    pos / dims` puts position ``i + 0.5`` at the centre of texel ``i``. Built on
+    integer coordinates instead, every blob sits half a cell from where the test
+    means it to be, and a fixture whose asymmetry is smaller than that half cell
+    measures the offset rather than the behaviour.
+    """
+    ys, xs = np.mgrid[0:size, 0:size].astype(np.float32) + 0.5
     dx = np.abs(xs - centre[0])
     dy = np.abs(ys - centre[1])
     dx = np.minimum(dx, size - dx)  # toroidal, like the domain
@@ -253,10 +266,24 @@ def test_a_repelling_region_deflects_a_head_on_approach(gpu_device):
     cfg = config.Config().resolve().agents
     dist = cfg.sensor_distance
 
-    # Just off the forward axis, toward the right sensor: the forward reading
-    # stays the largest, and the right flank is the one to avoid.
-    offset = -0.10
-    trail = _blob((16.0 + dist * math.cos(offset), 16.0 + dist * math.sin(offset)))
+    # A filament dead ahead, so the forward reading is the largest and the
+    # steering term is zero, plus a weaker one sitting on the right sensor so
+    # that the flanks are unambiguously ordered.
+    #
+    # Two blobs rather than one nudged a tenth of a radian off the axis: that
+    # nudge put the flank difference at half a cell, which is the same size as
+    # the half-texel offset between where this file evaluates a Gaussian
+    # (integer coordinates) and where the shader reads a texel centre. Which
+    # flank came out stronger then depended on the sensing distance, so the
+    # fixture broke when that distance moved (DESIGN.md §4.9). Placing the
+    # asymmetry on a sensor rather than inferring it from an angle keeps the
+    # ordering by a wide margin at any reach.
+    ahead = _blob((16.0 + dist, 16.0))
+    right = _blob((
+        16.0 + dist * math.cos(-cfg.sensor_angle),
+        16.0 + dist * math.sin(-cfg.sensor_angle),
+    ))
+    trail = ahead + 0.25 * right
     agent = _one_agent((16.0, 16.0), 0.0)
 
     neutral, _ = _run_agents(device, trail, agent, _steering_params(cfg), repel=0.0)
