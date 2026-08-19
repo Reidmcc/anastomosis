@@ -68,6 +68,35 @@ BACKEND_LABELS: list[tuple[str, str, str]] = [
     ),
 ]
 
+# How wide the volumetric slab is (config.VOLUME_DETAIL), described by what it
+# looks like rather than by its voxel count -- the number is in the label for
+# anyone who wants it, but "sharper" is the thing being chosen.
+#
+# Only the volumetric view has a slab, so this is disabled under the layered
+# one rather than hidden: a control that vanishes is harder to find again than
+# one that is greyed out and says why.
+VOLUME_DETAIL_LABELS: list[tuple[str, str, str]] = [
+    (
+        "standard",
+        "Standard (512)",
+        "The original size, and the least demanding. Filaments are a few "
+        "pixels wide on a large display.",
+    ),
+    (
+        "fine",
+        "Fine (768)",
+        "Half again as wide. Noticeably sharper, for about twice the "
+        "simulation cost and memory; the drawing itself costs no more.",
+    ),
+    (
+        "finest",
+        "Finest (1024)",
+        "Twice as wide, and as sharp as this view gets. About four times the "
+        "simulation cost and memory of standard -- worth checking your card "
+        "has the room.",
+    ),
+]
+
 # Ordered for the panel, with a plain-language description of what each does.
 MACRO_LABELS: list[tuple[str, str, str]] = [
     ("intensity", "Intensity", "How much is happening: density, contrast, colour"),
@@ -164,17 +193,44 @@ class ControlPanel(QtWidgets.QWidget):
         that, for the same reason the reset button does -- except that here the
         field being left is kept, so the answer is much less costly than it
         looks.
+
+        The slab's size sits under it, and is the one place the two differ in
+        what they cost the user: there is only one volumetric field, so
+        changing its size grows a new one over the top of it rather than
+        setting it aside. That is a reset, and it asks like a reset.
         """
         box = QtWidgets.QGroupBox("Depth")
-        row = QtWidgets.QHBoxLayout(box)
+        layout = QtWidgets.QFormLayout(box)
+
         self.backend_combo = QtWidgets.QComboBox()
         for name, label, tip in BACKEND_LABELS:
             self.backend_combo.addItem(label, name)
             self.backend_combo.setItemData(
                 self.backend_combo.count() - 1, tip, QtCore.Qt.ToolTipRole)
         self.backend_combo.activated.connect(self._on_backend)
-        row.addWidget(self.backend_combo, 1)
+        layout.addRow("View", self.backend_combo)
+
+        self.detail_combo = QtWidgets.QComboBox()
+        for name, label, tip in VOLUME_DETAIL_LABELS:
+            self.detail_combo.addItem(label, name)
+            self.detail_combo.setItemData(
+                self.detail_combo.count() - 1, tip, QtCore.Qt.ToolTipRole)
+        self.detail_combo.activated.connect(self._on_volume_detail)
+        self.detail_label = QtWidgets.QLabel("Detail")
+        layout.addRow(self.detail_label, self.detail_combo)
         return box
+
+    def _sync_detail_enabled(self) -> None:
+        """Grey the size out when there is no slab for it to describe."""
+        volumetric = self.app.backend == "volumetric"
+        self.detail_combo.setEnabled(volumetric)
+        self.detail_label.setEnabled(volumetric)
+        self.detail_combo.setToolTip(
+            "How finely the volume is simulated. Wider is sharper and asks "
+            "more of the graphics card."
+            if volumetric else
+            "Only the volumetric view has a slab to size."
+        )
 
     def _build_macros(self) -> QtWidgets.QWidget:
         box = QtWidgets.QGroupBox("Adjust")
@@ -382,6 +438,10 @@ class ControlPanel(QtWidgets.QWidget):
         index = self.backend_combo.findData(self.app.backend)
         if index >= 0:
             self.backend_combo.setCurrentIndex(index)
+        index = self.detail_combo.findData(self.app.volume_detail)
+        if index >= 0:
+            self.detail_combo.setCurrentIndex(index)
+        self._sync_detail_enabled()
         self._updating = False
 
     def _current_macros(self) -> Macros:
@@ -447,7 +507,40 @@ class ControlPanel(QtWidgets.QWidget):
         except Exception as exc:
             log.error("could not switch the depth backend: %s", exc)
             QtWidgets.QMessageBox.warning(self, "Could not switch", str(exc))
-            self._load_from_app()
+        self._load_from_app()
+
+    def _on_volume_detail(self) -> None:
+        # Costlier than a backend switch and says so: there is one volumetric
+        # field, so a new size is grown over the top of the current one rather
+        # than beside it. Same shape of question as the reset button's, because
+        # it is the same loss.
+        if self._updating:
+            return
+        wanted = self.detail_combo.currentData()
+        if wanted == self.app.volume_detail:
+            return
+        label = self.detail_combo.currentText()
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Change the level of detail",
+            f"Simulate the volume at {label.lower()}?\n\n"
+            "The current field and its saved state are discarded -- a slab of "
+            "a different size is a different field, so there is nothing to "
+            "carry over. The image settles down and grows back over a few "
+            "minutes.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            self._load_from_app()  # put the combo back
+            return
+        try:
+            self.app.set_volume_detail(wanted)
+            self.app.save_config()
+        except Exception as exc:
+            log.error("could not change the level of detail: %s", exc)
+            QtWidgets.QMessageBox.warning(self, "Could not change", str(exc))
+        self._load_from_app()
 
     def _on_save(self) -> None:
         self.app.config.macros = self._current_macros()
@@ -541,9 +634,16 @@ class ControlPanel(QtWidgets.QWidget):
         self.status_labels["runtime"].setText(
             f"{hours}h {minutes:02d}m {secs:02d}s   ({ticks:,} ticks)"
         )
-        self.status_labels["depth"].setText(
-            f"{self.app.backend}   {engine.geometry.describe()}"
-        )
+        # The running field, not the configured one. A saved slab keeps the
+        # size it grew at, so a size chosen in the config or on the command
+        # line sits in the combo unapplied until there is a new field to apply
+        # it to; saying so here is what stops that looking like a bug.
+        depth = f"{self.app.backend}   {engine.geometry.describe()}"
+        if self.app.backend == "volumetric":
+            wanted = config_module.VOLUME_DETAIL.get(self.app.volume_detail)
+            if wanted is not None and wanted != engine.geometry.width:
+                depth += f"   (reset to grow at {wanted})"
+        self.status_labels["depth"].setText(depth)
         self.status_labels["field"].setText(
             f"density {stats['mean_v']:.3f}   activity {stats['mean_activity']:.5f}"
         )

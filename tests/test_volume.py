@@ -104,6 +104,54 @@ def test_voxels_stay_cubic_when_the_window_is_not_16_by_9():
         assert abs(implied - height / width) < 0.05, (width, height)
 
 
+def test_each_named_slab_size_builds_a_slab_of_that_shape():
+    """The three sizes of `config.VOLUME_DETAIL`, end to end.
+
+    The name reaches `volume.width` through `Config.resolve` and the width
+    reaches the slab through `VolumeGeometry.derive`, and this is the only
+    place both halves are checked together -- that choosing "finest" really
+    does grow a 1024-voxel slab, and that nothing in the rounding quietly
+    lands somewhere else.
+    """
+    expected = {"standard": (512, 288, 48),
+                "fine": (768, 432, 48),
+                "finest": (1024, 576, 48)}
+    for name, dims in expected.items():
+        params = config.Config(volume_detail=name).resolve()
+        geometry = volume_module.VolumeGeometry.derive(2560, 1440, params)
+        assert geometry.dims == dims, name
+        assert geometry.problems() == [], (
+            f"{name} is offered but could not be built: {geometry.problems()}"
+        )
+
+
+def test_a_wider_slab_is_sharper_rather_than_merely_bigger():
+    """Why the width is the knob worth having at all.
+
+    Raising it must leave the depth and the aspect alone, so the voxels stay
+    cubic and a feature -- which is a fixed number of voxels across, since the
+    reaction's scale is in voxels -- covers proportionally fewer display
+    pixels. A size that also grew the depth would cost more and blur the same.
+    """
+    previous = None
+    for name in ("standard", "fine", "finest"):
+        params = config.Config(volume_detail=name).resolve()
+        geometry = volume_module.VolumeGeometry.derive(2560, 1440, params)
+        assert geometry.depth == 48, (
+            f"{name} changed the depth, so the march's step count and the "
+            f"cost of drawing a frame changed with it"
+        )
+        assert abs(geometry.height / geometry.width - 1440 / 2560) < 0.02
+        if previous is not None:
+            assert geometry.width > previous.width
+            # Cost goes with the voxel count, which goes with the square of
+            # the ratio. Worth asserting: a tier that grew linearly would be
+            # a size nobody would be able to see the point of.
+            ratio = geometry.width / previous.width
+            assert abs(geometry.voxels / previous.voxels - ratio ** 2) < 0.05
+        previous = geometry
+
+
 def test_implausible_geometry_is_refused_rather_than_allocated():
     """Geometry off disk decides how much memory a launch tries to take, so it
     is bounds-checked before anything is built from it."""
@@ -440,6 +488,72 @@ def test_the_cli_flag_reaches_the_application():
     assert build_parser().parse_args([]).backend is None
 
 
+def test_the_cli_flag_reaches_the_application_for_the_slab_size():
+    from anastomosis.__main__ import build_parser
+
+    args = build_parser().parse_args(["--volume-detail", "finest"])
+    assert args.volume_detail == "finest"
+    # Absent means "whatever the config says", not "standard" -- otherwise the
+    # flag would silently override a size chosen in the file.
+    assert build_parser().parse_args([]).volume_detail is None
+
+    # The parser spells its choices out rather than importing the config, so
+    # that `--help` costs nothing at startup -- which means they can drift.
+    action = next(
+        a for a in build_parser()._actions if a.dest == "volume_detail")
+    assert tuple(action.choices) == tuple(config.VOLUME_DETAIL), (
+        "the command line offers different sizes from the config"
+    )
+
+
+def test_an_unoffered_slab_size_is_refused_at_the_command_line():
+    """argparse rejects it outright here, rather than warning and carrying on.
+
+    The opposite of the config file's treatment, and deliberately: a typo in a
+    file edited during a running session must not end the session, but a typo
+    in a command that has not started one yet is best reported immediately.
+    """
+    from anastomosis.__main__ import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--volume-detail", "enormous"])
+
+
+def test_a_command_line_slab_size_survives_a_config_reload():
+    """`--volume-detail` is a property of the launch, not of the file.
+
+    Hot reload replaces the whole config from disk, so without re-pinning, a
+    size passed on the command line would come undone the first time the user
+    saved an unrelated slider change -- hours into a session, silently, and
+    only visible at the next reset.
+    """
+    from anastomosis import app as app_module, config as config_module
+
+    app = app_module.Application.__new__(app_module.Application)
+
+    # Pinned on the command line: the file loses, every time.
+    app.options = app_module.AppOptions(volume_detail="finest")
+    app.config = config_module.Config(volume_detail="standard")
+    app._pin_volume_detail()
+    assert app.volume_detail == "finest"
+    assert app.config.volume_detail == "finest"
+
+    app.config = config_module.Config(volume_detail="fine")  # a reload
+    app._pin_volume_detail()
+    assert app.volume_detail == "finest"
+
+    # Not pinned: the file decides, and a reload picks up an edit to it.
+    app.options = app_module.AppOptions(volume_detail=None)
+    app.config = config_module.Config(volume_detail="fine")
+    app._pin_volume_detail()
+    assert app.volume_detail == "fine"
+
+    # And a size off disk is normalised here too, not merely copied.
+    app.config = config_module.Config(volume_detail="enormous")
+    app._pin_volume_detail()
+    assert app.volume_detail == config_module.DEFAULT_VOLUME_DETAIL
+
+
 def test_the_application_builds_the_backend_it_was_asked_for(
     gpu_device, monkeypatch, tmp_path
 ):
@@ -483,6 +597,115 @@ def test_the_application_builds_the_backend_it_was_asked_for(
     app.draw_frame()
     assert app.engine.tick_count > 0
     app.shutdown()
+
+
+def test_changing_the_slab_size_grows_the_new_field_at_the_new_size():
+    """The ordering that makes the setting mean anything.
+
+    `reset_simulation` derives the geometry from the *live* parameters, and
+    those are the ramp's, which only pick up a new target on the next frame.
+    So a size change that merely set the target would reset the field and then
+    grow it at the old width -- the reset visible, the change not, until some
+    later reset happened to pick it up. This asserts the width is in place by
+    the time the reset reads it.
+    """
+    from anastomosis import app as app_module, config as config_module
+
+    app = app_module.Application.__new__(app_module.Application)
+    app.options = app_module.AppOptions(max_fps=30)
+    app.config = config_module.Config(
+        backend="volumetric", volume_detail="standard")
+    app.backend = "volumetric"
+    app.volume_detail = "standard"
+    app.params = app.config.resolve()
+    app.ramp = config_module.ParamRamp(app.params)
+
+    seen = {}
+    app.reset_simulation = lambda: seen.update(width=app.params.volume.width)
+
+    assert app.set_volume_detail("finest")
+    assert seen == {"width": 1024}, (
+        "the field was regrown before the new width reached the parameters"
+    )
+    assert app.volume_detail == "finest"
+    assert app.config.volume_detail == "finest"
+    # And it sticks: the ramp's target carries it, so the next frame does not
+    # ramp the width back down to where it was.
+    assert app.ramp.target.volume.width == 1024
+
+
+def test_choosing_the_size_already_running_does_not_discard_the_field():
+    """A no-op must be a no-op. Reselecting the current size in the panel --
+    or reopening the panel onto it -- would otherwise cost hours of growth."""
+    from anastomosis import app as app_module, config as config_module
+
+    app = app_module.Application.__new__(app_module.Application)
+    app.options = app_module.AppOptions()
+    app.config = config_module.Config(volume_detail="fine")
+    app.backend = "volumetric"
+    app.volume_detail = "fine"
+    app.params = app.config.resolve()
+    app.ramp = config_module.ParamRamp(app.params)
+
+    resets = []
+    app.reset_simulation = lambda: resets.append(1)
+
+    assert app.set_volume_detail("fine") is False
+    assert app.set_volume_detail("768") is False, "the same size, spelled out"
+    assert resets == []
+
+
+def test_a_size_chosen_at_runtime_outlives_the_command_line_flag():
+    """Otherwise the panel's choice would be undone at the next hot reload.
+
+    A launch pinned to one size, then changed in the panel: the pin has to
+    give way, or `_pin_volume_detail` would restore the flag's size the first
+    time the config file was touched, and the field would be regrown at a size
+    the user had already moved away from.
+    """
+    from anastomosis import app as app_module, config as config_module
+
+    app = app_module.Application.__new__(app_module.Application)
+    app.options = app_module.AppOptions(volume_detail="standard")
+    app.config = config_module.Config(volume_detail="standard")
+    app.backend = "volumetric"
+    app.volume_detail = "standard"
+    app.params = app.config.resolve()
+    app.ramp = config_module.ParamRamp(app.params)
+    app.reset_simulation = lambda: None
+
+    assert app.set_volume_detail("fine")
+    app._pin_volume_detail()  # as a hot reload would
+    assert app.volume_detail == "fine"
+
+
+def test_choosing_a_slab_size_under_the_layered_backend_keeps_its_field():
+    """There is no slab to resize, so there is nothing to justify a reset.
+
+    The panel greys the control out under the layered view, so this is not a
+    path a user can walk -- but the method is public, a reset is irreversible,
+    and "discarded hours of growth to apply a setting this backend does not
+    read" is the kind of loss worth making structurally impossible.
+    """
+    from anastomosis import app as app_module, config as config_module
+
+    app = app_module.Application.__new__(app_module.Application)
+    app.options = app_module.AppOptions()
+    app.config = config_module.Config(backend="layered", volume_detail="standard")
+    app.backend = "layered"
+    app.volume_detail = "standard"
+    app.params = app.config.resolve()
+    app.ramp = config_module.ParamRamp(app.params)
+
+    resets = []
+    app.reset_simulation = lambda: resets.append(1)
+
+    assert app.set_volume_detail("finest")
+    assert resets == [], "the layered field was discarded to resize a slab"
+    # Recorded all the same, so it lands when a slab is next grown.
+    assert app.volume_detail == "finest"
+    assert app.config.volume_detail == "finest"
+    assert app.ramp.target.volume.width == 1024
 
 
 def test_switching_backend_keeps_both_fields(gpu_device, monkeypatch, tmp_path):

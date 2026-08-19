@@ -64,6 +64,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--volume-detail", choices=("standard", "fine", "finest"), default=None,
+        help=(
+            "how wide the volumetric slab is: 'standard' (512 voxels across, "
+            "the default), 'fine' (768) or 'finest' (1024). Wider is sharper "
+            "and costs more simulation and memory; the raymarch costs the "
+            "same at all three. Volumetric backend only, and structural -- a "
+            "saved field keeps the size it grew at, so pass --reset to adopt "
+            "a new one. Omit to use the config's setting."
+        ),
+    )
+    parser.add_argument(
         "--write-config", action="store_true",
         help="write a default config file and exit",
     )
@@ -152,6 +163,8 @@ def main(argv: list[str] | None = None) -> int:
             cfg.preset_name = args.preset
         if args.backend:
             cfg.backend = args.backend
+        if args.volume_detail:
+            cfg.volume_detail = args.volume_detail
         config_module.save(cfg, config_path)
         print(f"wrote {config_path}")
         return 0
@@ -177,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         config_path=config_path,
         seed=args.seed,
         backend=args.backend,
+        volume_detail=args.volume_detail,
         ui=not args.no_ui,
         checkpoint=not args.no_checkpoint,
         resume=not args.reset,

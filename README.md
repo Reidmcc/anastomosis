@@ -40,6 +40,7 @@ anastomosis                          # windowed, 1280x720
 anastomosis --fullscreen             # borderless fullscreen
 anastomosis --preset quiet           # start from a named preset
 anastomosis --backend volumetric     # the raymarched slab instead of layers
+anastomosis --volume-detail fine     # a sharper slab, if the card has room
 anastomosis --width 2560 --height 1440
 ```
 
@@ -162,6 +163,41 @@ field, so you can try the other one and come back to find yours where you left
 it. Set it permanently with `backend = "volumetric"` in the config file, or for
 one session with `--backend`.
 
+### How finely the volume is simulated
+
+The lateral coarseness above is the volumetric backend's one real weakness, and
+the **Detail** selector under **Depth** is the knob for it. Three sizes:
+
+| Detail | Slab at 16:9 | Filament width at 1440p | Memory | Simulation cost |
+|---|---|---|---|---|
+| **Standard** | 512 × 288 × 48 | ~5 px | ~650 MB | 1× |
+| **Fine** | 768 × 432 × 48 | ~3.3 px | ~1.5 GB | ~2.3× |
+| **Finest** | 1024 × 576 × 48 | ~2.5 px | ~2.7 GB | ~4× |
+
+Wider is sharper rather than merely bigger: the depth stays at 48 and the height
+follows your window, so the voxels stay cubic and a filament — which is a fixed
+handful of voxels across — lands on proportionally fewer display pixels. If
+1080p looks soft and 1440p softer, this is the setting that answers it.
+
+What it costs is the simulation, and only the simulation. Drawing a frame costs
+the same at all three sizes: the raymarch is one ray per output pixel and its
+step count follows the slab's *depth*, which none of these change. So the extra
+work is the per-tick passes over the volume, which scale with the voxel count —
+the square of the width ratio — along with memory. On the RTX 3080 of DESIGN.md
+§8.1 the standard size sits around 3% of the card's bandwidth, so even the
+finest stays inside roughly a tenth of it.
+
+If **Finest** runs long on your card, the cheapest thing to give back is the
+tick rate — `sim_hz = 14` instead of 20. The interpolator hides it completely,
+which is why the budget governor throttles that and nothing else.
+
+Set it with `volume_detail = "fine"` in the config file, or `--volume-detail`
+for one session. Like the backend it is structural, but unlike the backend it
+cannot keep what it is leaving: there is one volumetric field, and a slab of a
+different width is a different field. So changing it grows a new one from
+seeds — the panel asks first, and the **Depth** status line tells you when a
+saved field is still running at a size you have moved away from.
+
 ## Adjusting it
 
 Eight knobs, all 0–1:
@@ -191,6 +227,7 @@ slow transition rather than a cut.
 ```toml
 preset_name = "default"
 backend = "layered"          # or "volumetric"
+volume_detail = "standard"   # "fine" or "finest"; volumetric only
 
 [macros]
 intensity = 0.5
@@ -277,7 +314,10 @@ unrecoverable:
   divergence-free (checked numerically, because the failure it prevents is
   pigment slowly pooling over hours), that the slab wraps on all three axes and
   carries structure through depth, that the flash-safety bound holds under it
-  too, and that switching backends keeps both fields.
+  too, and that switching backends keeps both fields. Also the three slab
+  sizes: that each grows the shape it names, that a wider one is sharper
+  rather than merely bigger, and that changing size regrows the field at the
+  new width rather than the old.
 
 ## Layout
 

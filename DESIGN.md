@@ -1288,6 +1288,28 @@ absolute terms, so feature-widths per second, which is what the eye reads at thi
 timescale, is the same under both. Memory is the other real cost: ~650 MB of
 `rgba16float` against ~90 MB for the 1440p stack.
 
+**That loss is a budget decision, not a structural one, and it is exposed as a
+setting.** `config.VOLUME_DETAIL` offers the slab at 512, 768 or 1024 voxels
+across — `volume_detail = "standard" | "fine" | "finest"` — and the width is the
+only thing that moves: depth stays at 48 and the height keeps following the
+window, so the voxels stay cubic and every argument above survives unchanged.
+What changes is how many display pixels a filament covers, which at 1440p goes
+from about five to about two and a half.
+
+The asymmetry in what that costs is the reason it is worth offering. Voxel count
+goes with the square of the width, and three things follow it: the per-tick
+passes over the volume, the interpolation pass, and memory — so `finest` is ~4×
+the simulation of `standard`, at ~2.7 GB. The **render** side does not follow it
+at all. The march is one ray per output pixel and its step count is tied to the
+slab's *depth*, so a 1440p frame costs the same at every size, and the 5.3
+Gsamples/s above is unchanged. Against the ~3% of bandwidth the sim costs at the
+standard size, even `finest` leaves the headroom check of §8.1 intact.
+
+Unlike the backend choice this cannot preserve what it replaces: there is one
+volumetric field, and a slab of a different width is not the same field
+presented differently — every voxel of it is a different voxel. So a size change
+is a reset, and is presented to the user as one.
+
 ---
 
 ## 6. Colour

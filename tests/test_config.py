@@ -390,3 +390,114 @@ def test_the_sensing_reach_stays_inside_the_band_it_is_stable_in():
 
     # And the ceiling itself must stay under what was measured to survive.
     assert config.Config().resolve().agents.sensor_reach_max <= 3.7
+
+
+# --------------------------------------------------------------------------
+# The volumetric slab's size -- the three named widths of `VOLUME_DETAIL`
+# --------------------------------------------------------------------------
+
+
+def test_each_named_slab_size_reaches_the_width_it_names():
+    """The name is the interface; `volume.width` is what the geometry reads.
+
+    A tier that resolved to the wrong width would be invisible until somebody
+    grew a field at it and wondered why it looked the same.
+    """
+    for name, width in config.VOLUME_DETAIL.items():
+        params = config.Config(volume_detail=name).resolve()
+        assert params.volume.width == width, (
+            f"volume_detail {name!r} resolved to {params.volume.width}, "
+            f"not the {width} it names"
+        )
+
+
+def test_the_named_sizes_are_the_three_that_were_costed():
+    """Sizes are a promise about GPU cost, so adding one is a deliberate act.
+
+    Each was chosen against a measured budget (DESIGN.md §8.1) and against the
+    others; a fourth appearing here without that work is the thing this
+    catches.
+    """
+    assert config.VOLUME_DETAIL == {
+        "standard": 512, "fine": 768, "finest": 1024,
+    }
+    assert config.DEFAULT_VOLUME_DETAIL == "standard"
+    # The default must be what `VolumeParams` already documents, or a config
+    # written before this setting existed would silently change size.
+    assert (config.VOLUME_DETAIL[config.DEFAULT_VOLUME_DETAIL]
+            == config.VolumeParams().width)
+
+
+def test_every_named_size_is_buildable():
+    """Within the clamps, and within core WebGPU's 3D texture limit.
+
+    `validate` bounds `volume.width` to 2048 -- the guaranteed
+    `maxTextureDimension3D`. A tier above that would be silently shrunk, which
+    is the one failure mode a name cannot make visible.
+    """
+    for name, width in config.VOLUME_DETAIL.items():
+        params = config.Config(volume_detail=name).resolve()
+        assert params.volume.width == width <= 2048
+        # Multiples of 32, so `VolumeGeometry.derive`'s rounding is a no-op and
+        # the width asked for is the width allocated.
+        assert width % 32 == 0
+
+
+@pytest.mark.parametrize(
+    "given,expected",
+    [
+        ("fine", "fine"),
+        ("FINEST", "finest"),
+        ("  standard  ", "standard"),
+        # A bare width, since that is the obvious thing to write next to a key
+        # whose neighbours are numbers of voxels.
+        ("768", "fine"),
+        ("1024", "finest"),
+        # Junk, absence, and a size that is not on offer all fall back.
+        ("enormous", "standard"),
+        ("640", "standard"),
+        ("", "standard"),
+        (None, "standard"),
+    ],
+)
+def test_a_slab_size_off_disk_is_normalised_rather_than_trusted(given, expected):
+    assert config.normalise_volume_detail(given) == expected
+
+
+def test_an_unknown_slab_size_warns_rather_than_failing_the_launch(caplog):
+    """Same reasoning as `normalise_backend`: a typo must not stop the day."""
+    with caplog.at_level("WARNING"):
+        assert config.normalise_volume_detail("gigantic") == "standard"
+    assert "gigantic" in caplog.text
+
+
+def test_an_explicit_width_override_beats_the_named_size():
+    """`[overrides]` is the escape hatch for a size that is not one of three.
+
+    Overrides beat macros everywhere else, and the named size is applied on the
+    macro side of that line deliberately -- so a hand-written `volume.width`
+    still wins.
+    """
+    cfg = config.Config(
+        volume_detail="finest", overrides={"volume.width": 640},
+    )
+    assert cfg.resolve().volume.width == 640
+
+
+def test_the_slab_size_survives_a_toml_roundtrip(tmp_path):
+    """It is structural, so losing it on save would change the next field."""
+    cfg = config.Config(volume_detail="fine", backend="volumetric")
+    path = tmp_path / "config.toml"
+    config.save(cfg, path)
+    loaded = config.load(path)
+    assert loaded.volume_detail == "fine"
+    assert loaded.resolve().volume.width == 768
+
+
+def test_a_config_predating_the_setting_keeps_the_original_size(tmp_path):
+    """An upgrade must not silently quadruple somebody's GPU load."""
+    path = tmp_path / "config.toml"
+    path.write_text('backend = "volumetric"\n[macros]\nintensity = 0.5\n')
+    loaded = config.load(path)
+    assert loaded.volume_detail == config.DEFAULT_VOLUME_DETAIL
+    assert loaded.resolve().volume.width == config.VolumeParams().width
