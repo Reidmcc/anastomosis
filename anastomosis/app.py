@@ -44,9 +44,33 @@ from . import config as config_module
 from . import device as device_module
 from . import engine as engine_module
 from . import events as events_module
+from . import volume as volume_module
 from . import window as window_module
 
 log = logging.getLogger(__name__)
+
+# The two depth backends (DESIGN.md §5), and everything that differs between
+# them from this side: which engine class to build, and which geometry class
+# derives a fresh field's shape. Both present the same interface -- tick,
+# render, resize, read_stats -- so nothing below this table has to know which
+# one is running.
+#
+# Held as module and attribute names rather than as the classes themselves,
+# and resolved when an engine is actually built. Binding the classes here would
+# capture whatever they were at import time, which is one of those decisions
+# that costs nothing until something wants to substitute one -- the suite
+# stands a failing engine in for the real one to check that a launch survives a
+# device that will not allocate the saved geometry.
+BACKEND_CLASSES = {
+    "layered": (engine_module, "Engine", "Geometry"),
+    "volumetric": (volume_module, "VolumeEngine", "VolumeGeometry"),
+}
+
+
+def backend_classes(name: str) -> tuple[type, type]:
+    """``(engine class, geometry class)`` for a backend name."""
+    module, engine_name, geometry_name = BACKEND_CLASSES[name]
+    return getattr(module, engine_name), getattr(module, geometry_name)
 
 # How long a new window size must hold before the output targets follow it.
 # Dragging a window edge reports a new size every frame; coalescing them keeps
@@ -69,6 +93,11 @@ class AppOptions:
     fullscreen: bool = False
     config_path: Path | None = None
     seed: int | None = None
+    # Which depth backend to run. ``None`` takes the config's, which is the
+    # normal case; the CLI flag is for trying the other one without editing a
+    # file. Structural either way -- it decides which engine class exists, so
+    # it takes effect when a field is grown.
+    backend: str | None = None
     ui: bool = True
     telemetry_seconds: float = 60.0
     # Checkpointing. Resuming is the default: the whole point of a mature field
@@ -93,8 +122,13 @@ class Application:
         self.params = resolved
         self.scheduler = events_module.EventScheduler(seed=options.seed)
 
+        self.backend = config_module.normalise_backend(
+            options.backend or self.config.backend)
+        # One saved field per backend, so switching does not destroy the one
+        # switched away from -- see `checkpoint.default_checkpoint_path`.
         self.checkpoint_path = (
-            options.checkpoint_path or checkpoint_module.default_checkpoint_path()
+            options.checkpoint_path
+            or checkpoint_module.default_checkpoint_path(self.backend)
         )
         self._saver = checkpoint_module.BackgroundSaver()
         self._last_checkpoint = time.perf_counter()
@@ -393,12 +427,12 @@ class Application:
         foreign or unbuildable checkpoint is a normal thing to find, not a reason
         to refuse to open.
         """
-        derived = engine_module.Geometry.derive(width, height, self.params)
+        derived = self._derive_geometry(width, height)
         saved = self._saved_checkpoint()
         geometry = derived
 
         if saved is not None:
-            wanted = checkpoint_module.required_geometry(saved)
+            wanted = checkpoint_module.required_geometry(saved, backend=self.backend)
             if wanted is None:
                 saved = None  # unusable; required_geometry has said why
             elif wanted != derived:
@@ -427,10 +461,14 @@ class Application:
         if saved is not None:
             self._restore(saved)
 
-    def _make_engine(
-        self, width: int, height: int, geometry: engine_module.Geometry
-    ) -> engine_module.Engine:
-        return engine_module.Engine(
+    def _derive_geometry(self, width: int, height: int):
+        """The shape a fresh field would have, under the backend in use."""
+        _, geometry_class = backend_classes(self.backend)
+        return geometry_class.derive(width, height, self.params)
+
+    def _make_engine(self, width: int, height: int, geometry):
+        engine_class, _ = backend_classes(self.backend)
+        return engine_class(
             self.device, width, height, self.params,
             seed=self.options.seed, geometry=geometry,
         )
@@ -519,9 +557,7 @@ class Application:
 
         self.scheduler = events_module.EventScheduler(seed=self.options.seed)
         self.engine = self._make_engine(
-            width, height,
-            engine_module.Geometry.derive(width, height, self.params),
-        )
+            width, height, self._derive_geometry(width, height))
         self._accumulator = 0.0
         self._sim_hz_scale = 1.0
         self._frame_times.clear()
@@ -530,6 +566,52 @@ class Application:
         self._checkpoint_saved_at = None
         self.resumed_from = None
         log.info("simulation reset; growing a new field from seeds")
+
+    def switch_backend(self, name: str) -> bool:
+        """Change how depth is drawn, without restarting the process.
+
+        Structural, so it cannot be ramped and cannot be a smooth transition:
+        the two backends do not hold the same kind of state, and there is
+        nothing to interpolate between a stack of sheets and a slab. Like
+        ``reset_simulation`` it is a change the user has explicitly asked for,
+        and like a reset the image comes back up from black at the slew
+        limiter's rate rather than cutting -- the new engine's history buffer
+        starts empty and DESIGN.md §7 bounds how fast it can fill.
+
+        The field being left is checkpointed first and the new backend's own
+        saved field is resumed if there is one, so this is genuinely a switch
+        rather than a discard: going back finds the field where it was left,
+        older by however long the detour took.
+
+        Returns False if the named backend is already the one running.
+        """
+        wanted = config_module.normalise_backend(name)
+        if wanted == self.backend:
+            return False
+
+        # Save what we are leaving before the engine that holds it goes away.
+        self.save_checkpoint(blocking=True)
+
+        self.backend = wanted
+        self.config.backend = wanted
+        self.checkpoint_path = (
+            self.options.checkpoint_path
+            or checkpoint_module.default_checkpoint_path(wanted)
+        )
+        self.scheduler = events_module.EventScheduler(seed=self.options.seed)
+        self.resumed_from = None
+        self._checkpoint_saved_at = None
+
+        width, height = self._size
+        self._start_engine(width, height)
+
+        self._accumulator = 0.0
+        self._sim_hz_scale = 1.0
+        self._frame_times.clear()
+        self._last_time = time.perf_counter()
+        self._last_checkpoint = time.perf_counter()
+        log.info("depth backend is now %s", wanted)
+        return True
 
     # -- shutdown -----------------------------------------------------------
 

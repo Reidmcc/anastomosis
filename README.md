@@ -39,6 +39,7 @@ config file, which is hot-reloaded.
 anastomosis                          # windowed, 1280x720
 anastomosis --fullscreen             # borderless fullscreen
 anastomosis --preset quiet           # start from a named preset
+anastomosis --backend volumetric     # the raymarched slab instead of layers
 anastomosis --width 2560 --height 1440
 ```
 
@@ -112,7 +113,8 @@ anastomosis --checkpoint-interval 60 # save more often than every 5 minutes
 ```
 
 The state lives in `~/.local/state/anastomosis/checkpoint.npz` — about 150 MB at
-1440p, rewritten in place, with the fields the engine recomputes every tick left
+1440p, rewritten in place (the volumetric backend keeps its own,
+`checkpoint-volumetric.npz`), with the fields the engine recomputes every tick left
 out. It records the simulation geometry it was taken at, and the next launch
 builds itself in that shape before loading it, so reopening at a different window
 size — or on another monitor, or after editing the layer count in the config —
@@ -131,6 +133,34 @@ changes while it happens.
 
 A new field, whether from a reset or a first run, comes up through the same
 slew limiter as everything else, so it grows in rather than cutting.
+
+## Two ways of drawing depth
+
+There are two backends, and the **Depth** selector at the top of the control
+panel switches between them.
+
+**Layered** (the default) simulates three independent 2D fields at different
+scales and tempos and composites them back to front, with parallax, focus
+falloff and atmosphere between them. It has by far the finest filament detail —
+the front sheet runs at your full display resolution — and it is the cheaper of
+the two.
+
+**Volumetric** simulates one continuous slab of about seven million voxels and
+raymarches it. Material genuinely passes in front of and behind other material
+rather than living in three discrete sheets, dense structure actually attenuates
+what is behind it, and a single soft light casts shade *into* the network. It is
+laterally coarser — 512 voxels across where the layered front sheet has 2560 —
+and it asks more of the card and a good deal more of its memory.
+
+Everything after the image is formed is identical between them: the same colour
+mapping, the same exposure governor, the same flash-safety limiter, the same
+dither. Every knob below means the same thing under either.
+
+The choice is structural, so it applies to a *new* field rather than the one on
+screen. Switching is not destructive, though: each backend keeps its own saved
+field, so you can try the other one and come back to find yours where you left
+it. Set it permanently with `backend = "volumetric"` in the config file, or for
+one session with `--backend`.
 
 ## Adjusting it
 
@@ -160,6 +190,7 @@ slow transition rather than a cut.
 
 ```toml
 preset_name = "default"
+backend = "layered"          # or "volumetric"
 
 [macros]
 intensity = 0.5
@@ -210,8 +241,8 @@ because that would be plainly visible.
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # ~60s
-pytest -m "not slow"        # skip the Gray-Scott sweeps and GPU soaks
+pytest                      # ~8 min on a software adapter
+pytest -m "not slow"        # ~40s; skips the Gray-Scott sweeps and GPU soaks
 ```
 
 The suite runs headless on a software adapter (Mesa's lavapipe), so it works in
@@ -242,19 +273,26 @@ unrecoverable:
 - `test_shutdown.py` — that closing the window saves the field and really ends
   the process, the last part in a subprocess with a live Qt loop, because a
   session left running behind a closed window leaves no other trace.
+- `test_volume.py` — the volumetric backend: that its flow really is
+  divergence-free (checked numerically, because the failure it prevents is
+  pigment slowly pooling over hours), that the slab wraps on all three axes and
+  carries structure through depth, that the flash-safety bound holds under it
+  too, and that switching backends keeps both fields.
 
 ## Layout
 
 ```
 anastomosis/
   app.py          window, frame pacing, hot reload, budget governor
-  engine.py       GPU resources, pipelines, tick and render
+  backend.py      what the two depth backends share: output chain, safety, plumbing
+  engine.py       the layered 2.5D backend
+  volume.py       the volumetric slab backend
   config.py       parameters, macros, safety ceilings, ramping
   gpu_params.py   GPU struct layout (generates the WGSL, drives the packing)
   events.py       Poisson-arrival slow events
   checkpoint.py   periodic save and restore of the simulation state
   bluenoise.py    void-and-cluster dither mask
-  shaders/        17 WGSL modules
+  shaders/        30 top-level WGSL modules, plus two shared includes
   ui/             Qt control panel
 ```
 
