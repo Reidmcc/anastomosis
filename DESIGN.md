@@ -1829,3 +1829,285 @@ now the thickness -- which has a defensible range and a cost curve but no
 measured answer for where inside that range the image stops improving, since
 that is exactly the judgement a software adapter cannot make.
 The layered path stays the default until that judgement has been made.
+
+---
+
+## 14. Sensory activation — a second mode (proposal, not built)
+
+Everything above serves down-regulation: slow, dark, quiet, an input to settle
+against. Sensory seeking is the other half of stimming — wanting *more* input,
+not less: movement, colour, novelty, things happening. The question this
+section answers is whether the same engine can serve it, and the answer is yes,
+for a structural reason worth stating before any of the tuning:
+
+**The design already separates "never punctuate" from "be calm", and only the
+first is enforced.** The safety stage (§7) bounds the output whatever the
+simulation does; the no-punctuation discipline — ramped parameters, enveloped
+events, no thresholds, no clock — is enforced at stages a second mode would
+not touch. The *calmness*, by contrast, lives entirely in tuning: macro curve
+endpoints chosen gently, presets that are "nowhere near energetic" on purpose,
+a palette that keeps neighbourhoods in one hue family. An activation mode is
+therefore a retuning inside an unchanged safety envelope, not a fork — the
+same relationship to the safety argument that the volumetric backend has to
+the output chain.
+
+### 14.1 What activation is, in this engine's terms
+
+Not flashing. That is excluded by construction and stays excluded; the point
+of building the limiter downstream of everything (§1b) was exactly that a
+regime nobody has tuned yet cannot produce the thing the application must
+never do. The energy has to come from the channels the safety argument
+deliberately leaves free, and it is worth listing them because together they
+are most of what "stimulating" means:
+
+1. **Motion.** The limiter measures change against the motion-compensated
+   previous frame (§7), so honest translation is exempt *by design* — a
+   filament sweeping across the screen costs the luminance budget almost
+   nothing. Faster flow, faster agents, brisker parallax: more stimulation at
+   near-zero spend against the bound.
+2. **Chroma and hue.** `safety.max_chroma_delta` ships at 0.030 against a
+   ceiling of 0.100 — the design's own judgement that chroma change is far
+   less provocative than luminance change, and a budget that is mostly
+   unspent. Colour variety is the request's first ask, and it is the cheapest
+   thing on this list.
+3. **Density of incident.** Event rate, event overlap, shorter envelopes:
+   more of the field's time spent inside something happening (§4.3 already
+   frames the rate knob this way).
+4. **Novelty rate.** Faster morphology drift, faster climate migration —
+   regimes arriving and moving on in minutes rather than tens of minutes.
+
+And one channel it must not come from: **luminance dynamics**. The
+`max_luma_delta` ceiling stays 0.012 in both modes. Activation cannot buy
+energy with brightness swings, and that constraint is what makes the mode
+shippable at all — it is the difference between "energetic" and the thing the
+README promises the application will not do.
+
+### 14.2 Mechanism: per-mode curve tables, not a second engine
+
+Three shapes considered:
+
+- **Just presets.** Insufficient. Presets move within the existing macro
+  ranges, and those ranges were capped gently on purpose (`presets.py`: "even
+  the top preset is gentle"; `tempo` tops out at `sim_hz = 26`,
+  `hue_turns_per_hour = 2.6`). Activation lives beyond the top of several of
+  them, and simply extending the shared ranges would spend most of every
+  slider's travel on territory the regulation user never wants — worse
+  resolution for the primary use to serve the secondary one.
+- **A separate simulation or substrate.** Overkill. Nothing about activation
+  wants different *mechanisms* — it wants the same field moving faster and
+  coloured more variously. Two engines would also mean two of everything §11
+  says must never fork.
+- **`MACRO_CURVES` keyed by mode.** The same eight macros, the same meanings,
+  different endpoints. This is the right shape, and it is small: `resolve()`
+  looks up the active mode's table; `curve_value()` (the slider readouts)
+  takes the mode; everything else is unchanged.
+
+So: a `mode = "regulation" | "activation"` key on `Config`, beside `backend`
+— but with the opposite character, and the difference is the point.
+`backend` is structural: nothing ramps it, and it decides what the engine
+*is*. `mode` is **not structural**: it changes no geometry, allocates
+nothing, and every value it moves is one the ramp already smooths. Switching
+modes is therefore a live transition on the running field, exactly like a
+preset switch — the field you grew stays on screen and changes character over
+seconds. That matters for the use case: the person reaching for activation is
+switching *states*, and being made to regrow a field from seeds at that
+moment would be the tool refusing its purpose.
+
+Presets carry a mode. The existing seven are regulation presets and do not
+move; activation gets its own small set (three to start), and the panel's
+preset list shows the active mode's. One selector, near **Depth** at the top
+of the panel, since it is the other "which application is this" control —
+but unlike Depth it acts on the field you already have.
+
+### 14.3 Where the activation curves go — a first cut
+
+Endpoints to be tuned on real hardware, but the shape and the reasoning can
+be fixed now. Low ends stay at or near the regulation table's — the modes
+overlap rather than abut, so the bottom of activation is recognisably the
+same instrument.
+
+| Macro | Regulation top | Activation top (proposed) | Why / bound |
+|---|---|---|---|
+| tempo → `sim_hz` | 26 | 30 | Budget: sim is ~14 GB/s at 20 Hz (§8.1), so 30 Hz is ~21 GB/s — still ~3% of bandwidth. **Not** `max_fps`: see 14.5. |
+| tempo → `agents.speed` | 1.35 | ~2.2 | Perceptual; bounded by the WCAG-area sweep (14.5). |
+| tempo → `flow.psi_gain` / `field_gain` | 2.10 / 1.30 | ~4.0 / ~2.4 | Same sweep. Advection is unconditionally stable at any speed (§2), so the bound is perceptual and WCAG-area, not numerical. |
+| tempo → `hue_turns_per_hour` | 2.60 | ~8 | A full turn in 7–8 minutes: visible drift rather than a spin. Ramp tau 8 s already smooths changes to it. |
+| palette → `render.hue_spread` | 1.25 | ~2.8 | Most of the circle in play at once; see 14.4. |
+| intensity → `render.chroma_activity_gain` | 8.0 | ~11 | With `c_max` raised toward its 0.22 ceiling (shipped 0.145) and `chroma_floor` up, so quiet regions stay coloured instead of grey. |
+| event_rate → `events.rate_per_hour` | 20 | ~40 | One every ~90 s at the top. Arrival-time only, as ever; envelope changes are separate and deliberate (14.6). |
+| scale | 0.16–0.26 (`du`) | shifted ~15% finer | Busier texture. The §4.9 sensing-ratio invariant and clamp are untouched — the ratio stays ~2.6 across the activation range too, which `test_config.py` already knows how to assert. |
+| brightness, filament_glow, depth, parallax | — | shared table | Nothing about activation wants different luminance architecture, and parallax already reaches a quarter of the screen. |
+
+Two things the table deliberately does not touch: the reaction's `feed`/`kill`
+ranges and clamps (§4.4 measured the live band; activation must not walk
+regions off the map any more than regulation may), and every entry in
+`SAFETY_CEILINGS`, which remains one table serving both modes.
+
+The homeostat may need per-mode *targets* — a faster regime holds a higher
+mean activity, and a controller centred on the regulation band would lean
+against the mode with `corr_decay` for the whole session. Whether it actually
+does is a measurement (run the activation endpoints against the existing
+bands and watch the corrections), and the fix if needed is a small table:
+targets per mode, same controller, same deadband philosophy. Corrections
+still reach only the OU means, so a mode switch cannot make the controller
+step anything.
+
+### 14.4 The one genuinely new mechanism: a polychrome palette
+
+"More varied colours" is the part tuning alone cannot buy. Hue today is
+`anchor + spread × (orientation, species ratio, climate deviation)` — one
+anchor, so however wide the spread, the field is neighbourhoods of one hue
+family with excursions. Activation wants simultaneous *contrasting* families
+— a field that is teal here, ember there, violet in the region arriving from
+the left.
+
+The mechanism that fits the existing architecture: keep one drifting global
+anchor, and let the **climate hue channel choose among K offsets from it**
+(K = 2 or 3, e.g. 0° / +120° / −120°) — the per-region hue becomes
+`anchor + offset(climate_hue) + spread × (local terms)`, where `offset()` is
+a smooth periodic warp of the channel toward the K wells, not a selection.
+No thresholds (the warp is C¹), spatially smooth by inheritance (the climate
+is 64×36, bilinear, diffused — §4.1 "it can never introduce a hard edge"),
+and temporally slow because the channel is the same OU-driven advected field
+it always was. Regions of distinct colour family form, migrate and hand over
+exactly the way regimes already do. In regulation mode the warp gain is zero
+and the mapping is bit-identical to today's.
+
+All of it happens in OkLCh with `L` untouched, so colour variety spends the
+chroma budget and none of the luminance budget. Gamut mapping at constant
+`L` and dither are downstream and unchanged. One thing to measure rather
+than assume: hue *rotation rate* interacts with chroma — at `c_max = 0.145`
+a 120° hue distance is a Δ(a,b) of ~0.25, and a region crossing between
+wells too quickly could spend chroma delta faster than `max_chroma_delta`
+allows, which would surface as the limiter visibly dragging colour. The
+climate's own timescales make this unlikely (the channel moves over minutes),
+but the flash-safety suite's chroma assertions should be run at the
+activation endpoints before the endpoints are trusted.
+
+The second candidate for new machinery already has a design, a build slot
+and a warning label: **trail advection** (§4.7 step 6, "the largest payoff
+for dynamism and the largest risk"). Its natural home is this mode — gain
+zero in regulation, modest in activation — which also answers the question
+§4.7 left open of how to ship it safely: behind a mode nobody is in while
+seeking calm. It stays last in the build order, as §4.7 always said.
+
+### 14.5 Safety analysis — what activation actually risks
+
+The per-pixel bound is not at risk; it is enforced downstream and neither
+mode can reach it. The honest risks are these, each with its measurement:
+
+1. **The WCAG area criterion is the binding constraint on tempo.** The suite
+   asserts fewer than 25% of pixels change by ≥10% in a single frame — at
+   fixed pixels, as WCAG measures, so *honest motion counts against it* even
+   though the limiter rightly permits it. §4.7 already flagged this metric
+   as the one churn moves. This inverts the tuning workflow: the activation
+   tempo endpoints are not chosen and then tested, they are **derived from
+   the sweep** — run the tempo axis (speed, flow gains, sim rate) headless,
+   measure the changing-area fraction, set the curve tops where the margin
+   is still comfortable (say, area ≤ 15% sustained). §4.4-style: measure the
+   map first, then pick the operating point. A translating filament changes
+   pixels only at its edges, so the fraction scales with speed × perimeter
+   density — which couples this sweep to `intensity` and `scale`, and means
+   the sweep must run at the *busy* corner of the mode, not the default.
+2. **The frame-rate arithmetic must be pinned before any of this.** The
+   ceiling argument in §7 is per-frame at 30 FPS: 0.012 → 1.8 flashes/s. At
+   `max_fps = 60` — which `SAFETY_CEILINGS` permits today — the same
+   per-frame delta arithmetic yields 3.6/s, over the WCAG limit. This is a
+   latent issue in the current table, not something activation introduces,
+   but a mode whose whole character says "faster" is how someone finds it.
+   Before the mode ships, the luma-delta ceiling should be expressed as a
+   per-second budget divided by the actual frame rate (or `max_fps`'s
+   ceiling dropped to 30, which the §1 design cap argues for anyway), and
+   `test_ceiling_implies_wcag_margin` extended to assert the pair jointly.
+   Activation itself does not raise the frame rate: rapidity comes from the
+   field moving faster, not from more frames of it.
+3. **The mode switch is a large coordinated parameter movement.** It rides
+   the existing ramp (every path smoothed, hue along the shortest arc,
+   `sim_hz` snapping being invisible by §8's decoupling), so the machinery
+   is already the right machinery — but "switch modes back and forth while
+   asserting the flash bound" belongs in the adversarial suite alongside the
+   existing parameter-slamming tests, because it is precisely the kind of
+   input those tests exist to distrust.
+4. **Trypophobia (§4.7) tightens, not loosens.** Finer scale plus higher
+   intensity is movement *toward* the dense-spot-field geometry. The
+   morphology suite — non-stationarity, size non-uniformity — runs against
+   the activation endpoints too, and the polychrome palette helps here
+   (varied colour breaks the uniformity that makes the pattern a trigger)
+   but is not the mitigation of record; the size-spread mechanisms are.
+5. **Photosensitivity posture is unchanged and must be said.** Same bound,
+   same enforcement, same README caveat, now stated for both modes: the
+   activation mode is more stimulating *within* the same tested envelope,
+   not a relaxation of it.
+
+### 14.6 Events at activation tempo
+
+The rate knob already goes to one-every-three-minutes and stays
+arrival-time-only. What activation additionally wants is **shorter
+envelopes** — at 40/hour with a 45 s attack and 90 s release, events cease
+to be incidents and become weather. Proposal: the activation curve set may
+shorten `attack_seconds` toward ~15 and `release_seconds` toward ~40. That
+leaves the envelope raised-cosine (never a step), the radius under the 25%
+area cap, amplitude untouched, and the effect still arriving through the
+climate's own diffusion and the colour pipeline's lowpasses — every §4.3
+constraint intact except the specific "30–180 s" attack figure, which this
+section deliberately revises for one mode and the soak/heal tests re-verify
+at the fast end (a rift that arrives in 15 s must still heal; §4.7's healing
+measurements were envelope-length-independent in mechanism but should be
+re-run). `max_concurrent` can rise 4 → 6; the cap exists to bound overlap,
+and overlap is the point at this end of the knob.
+
+### 14.7 What does not change — the invariants, gathered
+
+- `SAFETY_CEILINGS`: one table, both modes; `max_luma_delta` ≤ 0.012.
+- The output chain in `backend.py`: limiter, exposure governor, gamut
+  mapping, dither — shared code, untouched, exactly as between the two
+  depth backends.
+- No functions of the clock anywhere new; all added variation is stateful
+  walks and fields, per §3.
+- §4.9's sensing-ratio clamp and §4.4's reaction-band clamps, at every
+  activation endpoint.
+- Ramping: no parameter change steps, mode switches included.
+- Events: enveloped, localised, area-capped, concurrency-capped, applied to
+  climate only, arrival-rate knob moves timing only.
+- The checkpoint format: `mode` is not structural, so one field serves both
+  modes per backend, nothing new is stateful outside existing fields, and a
+  session checkpointed in one mode resumes cleanly into the other. (The
+  polychrome warp is a pure mapping; trail advection adds no state the
+  trail texture does not already carry.)
+
+### 14.8 Build order
+
+Each step lands something usable alone, and the first is deliberately
+invisible:
+
+1. **Mode plumbing.** `mode` on `Config`, `MACRO_CURVES` keyed by mode with
+   the activation table starting as a copy of regulation's, panel selector,
+   preset mode-tagging, ramped switch. Tests: `resolve()` respects mode,
+   ceilings clamp identically in both, switch-slamming holds the flash
+   bound. No visual change yet.
+2. **The two load-bearing measurements**, offline, before any endpoint is
+   trusted: the tempo/WCAG-area sweep (which *sets* the tempo tops), and
+   the frame-rate ceiling fix of 14.5(2) (which is due regardless).
+3. **The activation curve set** for tempo, palette, intensity, scale and
+   event_rate, endpoints from (2); homeostat per-mode targets if the
+   measurement says the controller leans (14.3).
+4. **The polychrome palette warp**, regulation-identical at gain zero, plus
+   the first activation presets.
+5. **Shorter event envelopes and higher concurrency**, with soak and heal
+   tests at the fast end.
+6. **Trail advection** behind an activation-only gain. Last, as §4.7
+   always said.
+
+Steps 1–4 are the mode; 5–6 are its depth.
+
+### 14.9 Open questions for real hardware
+
+The same caveat as §13, sharpened: every endpoint above is an argument, not
+a judgement. Specifically open: whether activation keeps the dark ground
+(the README calls it an identity; a brighter ground is more activating and
+also more fatiguing — the guess here is the ground stays dark and the
+*chroma* carries the mode); whether the volumetric backend wants its own
+activation deltas (a faster slab probably wants more thickness and more
+anisotropy before more speed); and where "energetic" tips into "stressful",
+which is the whole game and needs eyes. The presets are where that judgement
+gets recorded once made.
