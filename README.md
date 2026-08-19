@@ -342,9 +342,14 @@ because that would be plainly visible.
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # ~8 min on a software adapter
-pytest -m "not slow"        # ~40s; skips the Gray-Scott sweeps and GPU soaks
+pytest -m "not slow"          # ~1 min; skips the Gray-Scott sweeps and GPU soaks
+pytest -n 4 --dist worksteal  # everything, ~4 min on a 4-core software adapter
+pytest                        # the same on one core, ~7 min
 ```
+
+The slow tests are almost entirely llvmpipe compute, so they parallelise
+cleanly across workers; `--dist worksteal` keeps the two long volumetric tests
+from serialising behind each other the way per-file distribution would.
 
 The suite runs headless on a software adapter (Mesa's lavapipe), so it works in
 CI without a GPU:
