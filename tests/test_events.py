@@ -71,6 +71,47 @@ def test_a_requested_event_is_shaped_like_a_sampled_one(kind):
     assert (rows, count) == ([], 0)
 
 
+def test_the_arrival_rate_reaches_the_scheduler():
+    """The panel's frequency knob is only real if the stream actually thins.
+
+    `rate_per_hour` is the one thing that knob moves, so this pins both halves
+    of what it promises: the rate is in events per *hour*, and turning it up
+    produces more arrivals rather than merely a different sample.
+    """
+    def spawned(rate: float, hours: int, seed: int) -> int:
+        scheduler = events.EventScheduler(seed=seed)
+        params = _params(rate_per_hour=rate, max_concurrent=8)
+        for _ in range(3600 * hours):
+            scheduler.update(1.0, params)
+        return scheduler.spawned
+
+    rare = spawned(2.0, 10, seed=3)
+    often = spawned(18.0, 10, seed=3)
+    assert rare < often
+
+    # And the unit is arrivals per hour, not per anything else.
+    assert 0.7 * 20 <= rare <= 1.3 * 20
+    assert 0.7 * 180 <= often <= 1.3 * 180
+
+
+def test_the_rate_does_not_change_the_events_it_produces():
+    """Frequency is not amplitude -- what arrives is the same either way.
+
+    This is why the frequency control needs no ceiling of its own: at the top
+    of its travel the field spends more of its time inside an event, and no
+    event is bigger, stronger or longer than it was at the bottom.
+    """
+    def first(rate: float) -> events.ActiveEvent:
+        scheduler = events.EventScheduler(seed=11)
+        return scheduler.trigger("bloom", _params(rate_per_hour=rate))
+
+    slow, fast = first(0.5), first(20.0)
+    assert (slow.radius, slow.peak, slow.duration) == (
+        fast.radius, fast.peak, fast.duration
+    )
+    assert slow.channels == fast.channels
+
+
 def test_a_requested_event_reaches_the_gpu_and_then_expires():
     """It is packed like any other event, and retires on its own."""
     # A rate low enough that the automatic stream cannot land inside the long

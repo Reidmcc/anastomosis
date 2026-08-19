@@ -24,6 +24,128 @@ def test_macros_span_their_declared_range():
             )
 
 
+def test_every_macro_drives_something():
+    """A knob on the panel that reaches no primitive is a knob that lies."""
+    from dataclasses import fields
+
+    for f in fields(config.Macros):
+        assert f.name in config.MACRO_CURVES, (
+            f"macro {f.name!r} has no curve, so moving it would do nothing"
+        )
+
+
+def test_curve_value_agrees_with_resolve():
+    """The panel reads slider positions through this; it must not drift.
+
+    `curve_value` exists so the control panel can say what a position means
+    without copying the curve's constants, which is only worth anything if it
+    stays the same function `resolve` applies.
+    """
+    for macro_name, curves in config.MACRO_CURVES.items():
+        for path, _lo, _hi, _gamma in curves:
+            for step in range(0, 11):
+                value = step / 10.0
+                resolved = config.Config(
+                    macros=config.Macros(**{macro_name: value})
+                ).resolve()
+                assert config.curve_value(macro_name, path, value) == pytest.approx(
+                    config.get_path(resolved, path)
+                ), f"{macro_name} -> {path} at {value}"
+
+
+def test_curve_value_rejects_a_path_its_macro_does_not_drive():
+    with pytest.raises(KeyError):
+        config.curve_value("event_rate", "render.l_max", 0.5)
+
+
+# --- event rate ------------------------------------------------------------
+
+
+def test_the_event_rate_is_its_own_knob():
+    """`intensity` no longer moves it; `event_rate` does, and monotonically.
+
+    The two were one control, which meant asking for a denser network also
+    asked for more interruptions. Separating them is only real if intensity
+    has genuinely let go of the rate.
+    """
+    quiet = config.Config(macros=config.Macros(intensity=0.0)).resolve()
+    busy = config.Config(macros=config.Macros(intensity=1.0)).resolve()
+    assert quiet.events.rate_per_hour == pytest.approx(busy.events.rate_per_hour)
+
+    rates = [
+        config.Config(macros=config.Macros(event_rate=step / 20.0))
+        .resolve().events.rate_per_hour
+        for step in range(21)
+    ]
+    assert rates == sorted(rates)
+    assert rates[0] < rates[-1]
+
+
+def test_the_event_rate_knob_spans_a_useful_range_of_intervals():
+    """Rare enough to be a background, frequent enough to be company."""
+    low = config.Config(macros=config.Macros(event_rate=0.0)).resolve()
+    high = config.Config(macros=config.Macros(event_rate=1.0)).resolve()
+
+    slowest_minutes = 60.0 / low.events.rate_per_hour
+    fastest_minutes = 60.0 / high.events.rate_per_hour
+    assert 60.0 <= slowest_minutes <= 240.0, (
+        f"the slow end is one every {slowest_minutes:.0f} min, which is either "
+        "not restful or not distinguishable from off"
+    )
+    assert 2.0 <= fastest_minutes <= 6.0, (
+        f"the fast end is one every {fastest_minutes:.0f} min"
+    )
+
+
+def test_the_centre_of_the_event_rate_knob_is_the_designed_interval():
+    """DESIGN.md 4.3 specifies a mean inter-arrival of about eight minutes.
+
+    That is the setting the field was tuned at, so it has to be what an
+    untouched slider and an untouched config give -- and where the hand lands
+    when someone drags the knob back to the middle.
+    """
+    for macros in (config.Macros(), presets.get("default")):
+        params = config.Config(macros=macros).resolve()
+        minutes = 60.0 / params.events.rate_per_hour
+        assert 7.0 <= minutes <= 9.0, f"{minutes:.1f} min at the centre detent"
+
+
+def test_the_event_rate_moves_nothing_but_the_rate():
+    """Frequency is not amplitude. Nothing that shapes an event may move.
+
+    This is what makes the knob safe to expose without a ceiling of its own:
+    at the top of its travel the field spends more of its time inside an
+    event, but no event is bigger, stronger or faster than it was.
+    """
+    from dataclasses import fields as dataclass_fields
+
+    low = config.Config(macros=config.Macros(event_rate=0.0)).resolve()
+    high = config.Config(macros=config.Macros(event_rate=1.0)).resolve()
+    for f in dataclass_fields(config.EventParams):
+        if f.name == "rate_per_hour":
+            continue
+        assert getattr(low.events, f.name) == getattr(high.events, f.name), (
+            f"the event rate knob moved events.{f.name}"
+        )
+    assert low.render == high.render and low.agents == high.agents
+
+
+def test_presets_keep_the_arrival_rate_they_had():
+    """The rate used to come from `intensity`; presets must not have shifted.
+
+    Each preset implied an arrival rate through its intensity, and someone
+    returning to `quiet` after this change should find the same one. These are
+    the rates the old curve produced -- lerp(2.5, 14.0, intensity ** 1.3).
+    """
+    for name in presets.names():
+        macros = presets.get(name)
+        was = 2.5 + 11.5 * (macros.intensity**1.3)
+        now = config.Config(macros=macros).resolve().events.rate_per_hour
+        assert now == pytest.approx(was, rel=0.05), (
+            f"preset {name} went from {was:.2f} to {now:.2f} events/hour"
+        )
+
+
 def test_overrides_beat_macros():
     cfg = config.Config(
         macros=config.Macros(filament_glow=1.0),
@@ -156,6 +278,33 @@ def test_out_of_range_macro_in_file_is_clamped(tmp_path):
     loaded = config.load(path)
     assert loaded.macros.intensity == 1.0
     assert loaded.macros.brightness == 0.0
+
+
+def test_a_file_predating_the_event_rate_keeps_the_rate_it_implied(tmp_path):
+    """Upgrading must not change how often an existing setup is interrupted.
+
+    Before the split, `intensity` drove the arrival rate; a file that turned
+    the intensity down was asking to be left alone, and reading it as the
+    default event rate would nearly double the interruptions on a setup
+    someone had already settled on.
+    """
+    path = tmp_path / "legacy.toml"
+    path.write_text("[macros]\nintensity = 0.24\nbrightness = 0.22\n")
+    params = config.Config(macros=config.load(path).macros).resolve()
+    was = 2.5 + 11.5 * (0.24**1.3)
+    assert params.events.rate_per_hour == pytest.approx(was, rel=0.02)
+
+
+def test_an_explicit_event_rate_is_never_second_guessed(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text("[macros]\nintensity = 0.24\nevent_rate = 0.9\n")
+    assert config.load(path).macros.event_rate == pytest.approx(0.9)
+
+
+def test_a_file_that_sets_no_intensity_gets_the_default_event_rate(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text("[macros]\nbrightness = 0.5\n")
+    assert config.load(path).macros.event_rate == config.Macros().event_rate
 
 
 def test_save_is_atomic(tmp_path):
