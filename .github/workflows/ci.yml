@@ -46,10 +46,22 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # apt on the hosted runners will block forever rather than fail: the
+      # image runs its own background package activity, and a job that starts
+      # while that holds the dpkg lock simply waits. Lock::Timeout turns that
+      # into an error with a legible message, DEBIAN_FRONTEND and
+      # NEEDRESTART_MODE stop the two prompts that otherwise wait on a tty
+      # nobody is attached to, and the step timeout means a hang costs six
+      # minutes and points here rather than burning the whole job budget and
+      # reporting only that the job timed out. The variables go on the sudo
+      # command line because sudo drops them from the surrounding environment.
       - name: Install the software Vulkan driver
+        timeout-minutes: 6
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
+          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
+            apt-get -o DPkg::Lock::Timeout=300 update
+          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
+            apt-get -o DPkg::Lock::Timeout=300 install --no-install-recommends -y \
             mesa-vulkan-drivers libegl1 libgl1 libxkbcommon0 libdbus-1-3
 
       - name: Install the package
@@ -92,10 +104,22 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # apt on the hosted runners will block forever rather than fail: the
+      # image runs its own background package activity, and a job that starts
+      # while that holds the dpkg lock simply waits. Lock::Timeout turns that
+      # into an error with a legible message, DEBIAN_FRONTEND and
+      # NEEDRESTART_MODE stop the two prompts that otherwise wait on a tty
+      # nobody is attached to, and the step timeout means a hang costs six
+      # minutes and points here rather than burning the whole job budget and
+      # reporting only that the job timed out. The variables go on the sudo
+      # command line because sudo drops them from the surrounding environment.
       - name: Install the software Vulkan driver
+        timeout-minutes: 6
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
+          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
+            apt-get -o DPkg::Lock::Timeout=300 update
+          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
+            apt-get -o DPkg::Lock::Timeout=300 install --no-install-recommends -y \
             mesa-vulkan-drivers libegl1 libgl1 libxkbcommon0 libdbus-1-3
 
       - name: Install the package
