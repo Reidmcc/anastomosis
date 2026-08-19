@@ -31,6 +31,8 @@ reduction is the one the full-size slab runs.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 
@@ -290,6 +292,154 @@ def test_the_field_has_real_structure_through_depth(gpu_device):
 
 
 # ---------------------------------------------------------------------------
+# How thick the slab is
+# ---------------------------------------------------------------------------
+
+
+def test_the_thickness_is_capped_at_the_shorter_lateral_axis():
+    """The knob's ceiling is structural, not a fact about the panel.
+
+    Past the shorter lateral axis the shape is not a slab, and the cap lives in
+    `derive` so that a hand-edited config is held to the same range the control
+    panel offers rather than being allowed to ask for something the panel
+    cannot even express.
+    """
+    params = config.Config().resolve()
+    params.volume.depth = 4096
+    geometry = volume_module.VolumeGeometry.derive(2560, 1440, params)
+    assert geometry.depth == geometry.max_depth == min(
+        geometry.width, geometry.height)
+
+    low, high = volume_module.depth_limits(2560, 1440, params)
+    assert (low, high) == (volume_module.MIN_DEPTH, geometry.max_depth)
+
+
+def test_the_thickness_is_the_whole_of_what_the_slab_costs():
+    """Memory is linear in the thickness, which is what makes it the knob that
+    decides what this backend spends -- and what the panel quotes before the
+    user commits to a setting."""
+    params = config.Config().resolve()
+    thin = volume_module.VolumeGeometry.derive(2560, 1440, params)
+    params.volume.depth = 4 * thin.depth
+    thick = volume_module.VolumeGeometry.derive(2560, 1440, params)
+
+    assert thick.depth == 4 * thin.depth
+    ratio = thick.field_bytes / thin.field_bytes
+    assert 3.9 < ratio < 4.1, f"four times the slab cost {ratio:.2f} times as much"
+    # The documented figure for the default slab, which is the number the
+    # design's memory budget (§5.1, §8.1) is written against.
+    assert 0.6e9 < thin.field_bytes < 0.75e9
+
+
+def _render_values(monkeypatch, gpu_device, params):
+    """What `_write_render_params` packs, for a slab of this configuration."""
+    captured: dict = {}
+    real = volume_module.gpu_params.pack
+
+    def spy(dtype, values):
+        if dtype is volume_module.gpu_params.RENDER_DTYPE:
+            captured.update(values)
+        return real(dtype, values)
+
+    # Scoped, so that a second call wraps the real packer rather than the spy
+    # the first one left in place.
+    with monkeypatch.context() as patched:
+        patched.setattr(volume_module.gpu_params, "pack", spy)
+        engine = _engine(gpu_device, params)
+        engine._write_render_params(params, frac=0.0, frame_dt=1 / 30.0)
+    assert captured, "the render block was not packed"
+    return captured, engine.geometry
+
+
+def test_the_march_stays_calibrated_as_the_slab_thickens(
+    gpu_device, monkeypatch
+):
+    """Moving the thickness must change how much material a ray crosses, and
+    nothing else.
+
+    Two of the march's lengths used to be fractions of the slab's depth, which
+    was harmless while the depth was fixed and is not once it is a knob: held as
+    fractions, a slab six times deeper would fade six times as much of its crisp
+    near face and send its shadow rays six times as far on the same six steps.
+    Both are now lengths in voxels -- calibrated against a filament, which is
+    what they are actually about -- so they come out the same absolute size at
+    every thickness.
+    """
+    vol = config.VolumeParams()
+    seen = []
+    for depth in (16, 32):
+        params = _params(depth=depth, steps=64)
+        values, geometry = _render_values(monkeypatch, gpu_device, params)
+        assert geometry.depth == depth
+        seen.append(values)
+
+        # The window, in voxels of the slab it is fading.
+        assert values["depth_window"] * depth == pytest.approx(
+            vol.depth_window_voxels, rel=1e-6)
+        # The shadow reach, in voxels: a world length over the lateral extent,
+        # which spans `width` cubic voxels.
+        assert values["shadow_reach"] * geometry.width == pytest.approx(
+            vol.shadow_voxels, rel=1e-6)
+        # One step per slice, since the ceiling is well above both.
+        assert values["march_steps"] == depth
+
+    assert seen[0]["shadow_reach"] == pytest.approx(seen[1]["shadow_reach"])
+    assert seen[1]["slab_depth"] == pytest.approx(2.0 * seen[0]["slab_depth"]), (
+        "a slab twice as deep must be twice as thick in world units, which is "
+        "what puts more material in front of the far face")
+
+
+def test_the_march_step_count_has_a_ceiling(gpu_device, monkeypatch):
+    """One step per slice up to `volume.steps`, and no further: the count is
+    what the march costs, so a thick slab must not be able to spend without
+    limit."""
+    params = _params(depth=32, steps=8)
+    values, _geometry = _render_values(monkeypatch, gpu_device, params)
+    assert values["march_steps"] == 8
+
+
+def test_the_slab_holds_the_viewpoint_to_the_swing_its_thickness_earns(
+    gpu_device, monkeypatch
+):
+    """Parallax is thickness times the tangent of the viewing angle.
+
+    Which is the geometry underneath every complaint that this backend looks
+    flat: 48 voxels against 512 is a sheet of paper, and swinging the viewpoint
+    further does not find more depth in a sheet of paper -- it finds the same
+    sheet seen edge-on, with the march tracing a long oblique smear through it.
+    So the drift's amplitude is held to what the slab justifies, which is also
+    what makes the two knobs compound: a deeper slab does not merely have more
+    material in it, it has room for the viewpoint to move.
+    """
+    reaches = {}
+    for depth in (16, 48):
+        params = _params(depth=depth)
+        params.render.parallax = 1.0  # far past anything a slab could earn
+        values, geometry = _render_values(monkeypatch, gpu_device, params)
+        thickness = geometry.depth / geometry.width
+        limit = volume_module.PARALLAX_MAX_TANGENT * thickness
+        # The offset riding on it is bounded by one, so the shear the shader
+        # gets can never exceed the amplitude it was given.
+        for axis in ("cam_shear_x", "cam_shear_y"):
+            assert abs(values[axis]) <= limit + 1e-6, (
+                f"a {geometry.depth}-deep slab swung to {values[axis]:.3f}, "
+                f"past the {limit:.3f} its thickness earns")
+        reaches[geometry.depth] = limit
+
+    assert reaches[48] > reaches[16], (
+        "a thicker slab did not earn a wider swing, so the thickness and "
+        "parallax knobs do not compound")
+
+    # And a request inside what the slab earns is passed through untouched.
+    params = _params(depth=48)
+    params.render.parallax = 0.01
+    values, geometry = _render_values(monkeypatch, gpu_device, params)
+    limit = volume_module.PARALLAX_MAX_TANGENT * geometry.depth / geometry.width
+    assert 0.01 < limit, "the fixture needs a request the slab can honour"
+    assert abs(values["cam_shear_x"]) <= 0.01 + 1e-6
+
+
+# ---------------------------------------------------------------------------
 # Safety, under the new backend
 # ---------------------------------------------------------------------------
 
@@ -535,6 +685,135 @@ def test_switching_backend_keeps_both_fields(gpu_device, monkeypatch, tmp_path):
     assert app.engine.tick_count == layered_ticks, (
         "the layered field was not waiting where it was left")
     assert not app.switch_backend("layered"), "switching to the current one is a no-op"
+    app.shutdown()
+
+
+def test_the_thickness_knob_grows_a_new_slab(gpu_device, monkeypatch, tmp_path):
+    """Changing the thickness is a reset, and says so.
+
+    A slab of a different depth is a differently shaped field: nothing resamples
+    one into the other, and a launch that found the old checkpoint would rebuild
+    the old thickness from it. So the setting is written to the config, the
+    saved state goes, and a new field is grown -- and asking for the thickness
+    already running does none of that.
+    """
+    from rendercanvas.offscreen import RenderCanvas, loop as offscreen_loop
+    from anastomosis import app as app_module, device as device_module
+
+    device, info = gpu_device
+    monkeypatch.setattr(
+        device_module, "request_device", lambda *a, **k: (device, info))
+    monkeypatch.setattr(app_module.Application, "_start_hot_reload", lambda self: None)
+    monkeypatch.setattr(
+        app_module.Application, "_make_canvas",
+        lambda self: (
+            RenderCanvas(size=OUT_SIZE, update_mode="manual"), offscreen_loop, False),
+    )
+
+    from anastomosis import config as config_module
+
+    config_path = tmp_path / "config.toml"
+    checkpoint_path = tmp_path / "checkpoint.npz"
+    config_module.save(
+        config_module.Config(
+            backend="volumetric",
+            overrides={
+                "volume.width": 64, "volume.depth": 16, "volume.steps": 8,
+                "volume.psi_scale": 4, "volume.climate_width": 8,
+                "volume.climate_height": 6, "volume.climate_depth": 4,
+            },
+        ),
+        config_path,
+    )
+    app = app_module.Application(app_module.AppOptions(
+        width=OUT_SIZE[0], height=OUT_SIZE[1], ui=False,
+        config_path=config_path, checkpoint_path=checkpoint_path,
+        checkpoint_seconds=0.0,
+    ))
+    app.setup()
+    assert app.engine.geometry.depth == 16
+    low, high = app.volume_depth_limits()
+    assert (low, high) == (volume_module.MIN_DEPTH, app.engine.geometry.max_depth)
+
+    for _ in range(3):
+        app.draw_frame()
+    assert app.engine.tick_count > 0
+    assert app.save_checkpoint(blocking=True) and checkpoint_path.exists()
+
+    # The thickness it is already running at is not a reset.
+    assert app.set_volume_depth(16) == 16
+    assert app.engine.tick_count > 0, "an unchanged thickness discarded the field"
+
+    assert app.set_volume_depth(32) == 32
+    assert app.engine.geometry.depth == 32
+    assert app.engine.tick_count == 0, "a fresh field, not the old one reshaped"
+    assert app.config.overrides["volume.depth"] == 32
+    assert not checkpoint_path.exists(), (
+        "the saved field is of the old shape and would rebuild it on the next "
+        "launch")
+    # A new field resets the pacing clock, so a tick needs a tick's worth of
+    # real time to have passed rather than just another frame.
+    time.sleep(1.5 / app.params.sim_hz)
+    app.draw_frame()
+    assert app.engine.tick_count > 0, "the new slab is not ticking"
+
+    # Past the ceiling is held to the ceiling rather than refused: the slider
+    # cannot ask for it, but the method is reachable from elsewhere.
+    assert app.set_volume_depth(10_000) == high
+    assert app.engine.geometry.depth == high
+    app.draw_frame()  # the thickest slab this window allows still renders
+    app.shutdown()
+
+
+def test_the_thickness_knob_survives_the_layered_backend(
+    gpu_device, monkeypatch, tmp_path
+):
+    """The panel can carry a setting for a field that does not exist yet.
+
+    Under the layered backend there is no slab to rebuild, so the thickness is
+    recorded and lands the next time one is grown -- which is what switching to
+    the volumetric backend does.
+    """
+    from rendercanvas.offscreen import RenderCanvas, loop as offscreen_loop
+    from anastomosis import app as app_module, device as device_module
+
+    device, info = gpu_device
+    monkeypatch.setattr(
+        device_module, "request_device", lambda *a, **k: (device, info))
+    monkeypatch.setattr(app_module.Application, "_start_hot_reload", lambda self: None)
+    monkeypatch.setattr(
+        app_module.Application, "_make_canvas",
+        lambda self: (
+            RenderCanvas(size=OUT_SIZE, update_mode="manual"), offscreen_loop, False),
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    from anastomosis import config as config_module
+
+    config_path = tmp_path / "config.toml"
+    config_module.save(
+        config_module.Config(overrides={
+            "render.layers": 1,
+            "volume.width": 64, "volume.depth": 16, "volume.steps": 8,
+            "volume.psi_scale": 4, "volume.climate_width": 8,
+            "volume.climate_height": 6, "volume.climate_depth": 4,
+        }),
+        config_path,
+    )
+    app = app_module.Application(app_module.AppOptions(
+        width=OUT_SIZE[0], height=OUT_SIZE[1], ui=False,
+        config_path=config_path, checkpoint_seconds=0.0,
+    ))
+    app.setup()
+    assert app.backend == "layered"
+    layered = app.engine
+
+    assert app.set_volume_depth(32) == 32
+    assert app.engine is layered, "the layered field was rebuilt over a slab knob"
+    assert app.volume_slab().depth == 32
+
+    assert app.switch_backend("volumetric")
+    assert app.engine.geometry.depth == 32
     app.shutdown()
 
 

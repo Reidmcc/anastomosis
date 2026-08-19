@@ -398,13 +398,28 @@ class VolumeParams:
     Memory is the one place the slab is genuinely more expensive than the
     layers: at the default size a field is about 650 MB of rgba16float, against
     roughly 90 MB for the 1440p layered stack. That is comfortable on the
-    target card (DESIGN.md §8.1) and the size is a knob for anything smaller.
+    target card (DESIGN.md §8.1), and it is also why ``depth`` -- the knob the
+    control panel exposes -- is the parameter that decides what this backend
+    costs. Everything below that is calibrated against a *filament*, in voxels,
+    rather than against the slab's thickness, so that moving it changes how
+    much material a ray passes through and nothing else.
     """
 
     # --- Slab geometry (structural: changing it needs a new field) --------
     # Lateral width in voxels. The height follows the window's aspect, so the
     # voxels stay cubic and a 16:9 display gets exactly the 512x288 of §5.1.
     width: int = 512
+    # Thickness in voxels, and the one piece of the slab's geometry the control
+    # panel can move. It is a knob rather than a constant because depth is the
+    # entire point of this backend and forty-eight voxels of it is a subtle
+    # effect: a ray crosses one or two filaments, so there is not much
+    # occlusion for the eye to read. The ceiling is the shorter of the two
+    # lateral axes -- past that this is not a slab, and `VolumeGeometry.derive`
+    # enforces it. What thickness costs is memory, linearly: about 13 MB per
+    # slice at the default 512x288, so the 288 ceiling is about 3.9 GB against
+    # the default's 650 MB. What it buys stops arriving somewhere short of that
+    # ceiling, when the near material has become opaque enough to hide the far
+    # face -- see DESIGN.md §5.1.
     depth: int = 48
     base_scale: float = 1.0  # fraction of `width` actually allocated
     # Agents per voxel, against 0.27 per cell in the plane. Not a like-for-like
@@ -436,20 +451,34 @@ class VolumeParams:
     depth_agent: float = 0.45
 
     # --- Raymarch ---------------------------------------------------------
-    # 48 steps, one per slice: ample for parallax and occlusion given that the
-    # far field is fogged and blurred anyway (§5.1).
-    steps: int = 48
+    # A *ceiling* on the march, which otherwise takes one step per slice --
+    # ample for parallax and occlusion given that the far field is fogged and
+    # blurred anyway (§5.1). At the 48-deep default the two are the same
+    # number and this changes nothing; past 160 slices the step grows longer
+    # than a voxel, which the march's static jitter turns into fixed noise
+    # rather than into banding, and which the depth-of-field blur is already
+    # doing much worse to at that end of the slab. Render cost is linear in it,
+    # so this is the value to lower first if a thick slab will not hold the
+    # frame budget.
+    steps: int = 160
     # How far off orthographic the rays are. Small on purpose: a
     # near-orthographic camera keeps ray coherence excellent, and the depth cue
     # this application wants comes from occlusion and attenuation rather than
     # from perspective.
     converge: float = 0.055
-    # The fraction of the slab's depth each face fades over. Material leaving
-    # the near face reappears at the far one -- the domain is toroidal in all
-    # three axes, exactly as it is in two under the layered backend -- and this
-    # window is what makes that arrival and departure a fade rather than a
-    # step.
-    depth_window: float = 0.18
+    # How far each face fades over, in voxels. Material leaving the near face
+    # reappears at the far one -- the domain is toroidal in all three axes,
+    # exactly as it is in two under the layered backend -- and this window is
+    # what makes that arrival and departure a fade rather than a step.
+    #
+    # In voxels rather than as a fraction of the thickness, because what has to
+    # be smooth is material's *arrival*, and that happens at a rate set by how
+    # fast the material moves and how large it is -- neither of which knows how
+    # deep the slab is. Held as a fraction, a thick slab would dim its whole
+    # crisp near face to hide a seam that a few voxels already hide. 8.6 voxels
+    # is what the 0.18 of the depth this used to be came to at the 48-deep slab
+    # it was chosen on.
+    depth_window_voxels: float = 8.6
 
     # --- The single soft light -------------------------------------------
     # Direction the light comes *from*, in slab coordinates. Slightly above,
@@ -466,7 +495,15 @@ class VolumeParams:
     light_ambient: float = 0.55
     shadow_steps: int = 6
     shadow_density: float = 1.8
-    shadow_reach: float = 0.45  # shadow ray length, in slab depths
+    # How far the shadow ray probes, in voxels -- filament-relative rather than
+    # slab-relative, for the same reason the face window is. Self-shadowing is
+    # interior shading of a structure about six voxels across, so the useful
+    # reach is a few filament widths whatever the slab's thickness; measured in
+    # slab depths it would grow with the thickness and six steps would be
+    # sampling a reach they cannot resolve, which is blotches rather than
+    # shading. 21.6 voxels is what the 0.45 slab depths this used to be came to
+    # at the 48-deep slab it was calibrated on.
+    shadow_voxels: float = 21.6
 
 
 @dataclass
@@ -492,8 +529,25 @@ class RenderParams:
     # screen distance.
     tempo_falloff: float = 0.70
 
+    # How far the viewpoint drifts, as a fraction of the field's lateral
+    # extent. A *maximum* rather than a typical value: the walk behind it is
+    # bounded, and sits at about half of this most of the time.
+    #
+    # Under the layered backend this offsets each sheet by a different amount,
+    # which is what separates them; under the volumetric one it is the whole of
+    # the camera's motion. Either way it is the only depth cue here that comes
+    # from the scene *moving*: everything else on this list -- the focus
+    # falloff, the fog, the dimming, the desaturation -- is a function of
+    # normalised depth, so it says the same thing about the far face however
+    # far away that face actually is. Which makes this the one that carries
+    # depth the others cannot describe, and the one worth raising first if a
+    # display makes the image look flat.
     parallax: float = 0.020
-    parallax_drift: float = 0.00035
+    # Seconds; how long the drift takes to change its mind. Slow enough to read
+    # as weather rather than as sway, and floored in `validate` for the same
+    # reason -- a short one would turn the strongest depth cue here into the
+    # kind of coordinated global movement DESIGN.md 4.2 exists to prevent.
+    parallax_tau: float = 75.0
     dof_radius: float = 3.2  # cells, at the backmost layer
     fog_amount: float = 0.42  # atmospheric attenuation at the backmost layer
     depth_dim: float = 0.55  # luminance retained at the backmost layer
@@ -545,6 +599,19 @@ class Macros:
     brightness: float = 0.35
     filament_glow: float = 0.45
     depth: float = 0.60
+    # How far the viewpoint swings, and how briskly. Its own knob rather than
+    # a part of `depth` for the same reason `event_rate` is not part of
+    # `intensity`: the two are different questions. Everything `depth` moves is
+    # a shading trick applied to a *normalised* depth -- how much the far face
+    # is fogged, dimmed, desaturated and blurred -- and says the same thing
+    # whatever is actually back there. This one is the only cue that comes from
+    # the scene moving, and it is the one that answers "is there really
+    # something behind that". Split out so it can be turned up on a display
+    # where the shading tricks are not enough on their own.
+    #
+    # Defaulted high while the mechanism is being judged on real hardware --
+    # see `load`, and lower it once it has been.
+    parallax: float = 0.60
     # How often the scheduler's own events arrive. Its own knob rather than a
     # part of `intensity`, because the two are not the same question: a dense,
     # busy field that is left alone for an hour at a time is a coherent thing
@@ -610,11 +677,30 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("render.extinction", 1.9, 3.6, 1.0),
     ],
     "depth": [
-        ("render.parallax", 0.006, 0.038, 1.0),
         ("render.dof_radius", 1.2, 5.4, 1.0),
         ("render.fog_amount", 0.18, 0.62, 1.0),
         ("render.depth_dim", 0.78, 0.38, 1.0),
         ("render.depth_desat", 0.72, 0.30, 1.0),
+    ],
+    # How far the viewpoint swings and how fast, together, because they are one
+    # question: more parallax means both more travel and more of it per second,
+    # and a knob that moved only the travel would take four times as long to
+    # show twice as much.
+    #
+    # The travel reaches a quarter of the screen's width between the near and
+    # far material, which is a great deal -- far past anything that would be
+    # called restrained, and deliberately so. The old range topped out at 0.038
+    # and was chosen against a mechanism that did not work (see
+    # `Backend._update_parallax`), so it is not evidence of anything. The
+    # volumetric backend holds itself to whatever fraction of this its slab is
+    # thick enough to justify; see `volume.py`.
+    "parallax": [
+        ("render.parallax", 0.0, 0.25, 1.0),
+        # Seconds. Shorter is faster, so this runs the other way. The fast end
+        # is 60 rather than something brisker because the travel is doing the
+        # work: at the top of this knob the viewpoint crosses a quarter of the
+        # screen, and it does not also need to hurry.
+        ("render.parallax_tau", 150.0, 60.0, 1.0),
     ],
     # Mean arrival rate of the scheduler's own events, and nothing else: this
     # knob moves *when* perturbations come, never what they do when they get
@@ -857,21 +943,38 @@ def validate(params: Params) -> Params:
     params.agents.found_period = max(2, min(20_000, int(params.agents.found_period)))
     params.agents.found_site_cells = max(
         64, min(1 << 24, int(params.agents.found_site_cells)))
+    # The viewpoint's drift has to stay a drift. The flash bound does not
+    # depend on this -- the limiter is per-pixel and holds whatever the camera
+    # does -- but a time constant of a second or two would make the whole image
+    # sway, which is the coordinated global motion of DESIGN.md 4.2 rather than
+    # the parallax this is for.
+    params.render.parallax_tau = min(max(params.render.parallax_tau, 8.0), 3600.0)
+    # And it has to stay on the screen. Beyond a whole screen width between the
+    # near and far material there is nothing left that reads as one scene.
+    params.render.parallax = min(max(params.render.parallax, 0.0), 1.0)
 
     # The slab's own structural values. The ceilings are core WebGPU's
-    # guaranteed maxTextureDimension3D (2048) with room to spare, and the
-    # floors are what the passes need to be meaningful at all: a slab one voxel
-    # deep is the layered backend with extra steps, and a march of a couple of
-    # steps cannot resolve occlusion.
+    # guaranteed maxTextureDimension3D (2048), and the floors are what the
+    # passes need to be meaningful at all: a slab one voxel deep is the layered
+    # backend with extra steps, and a march of a couple of steps cannot resolve
+    # occlusion. The thickness gets the full 2048 here because the bound that
+    # actually applies to it is relative -- no deeper than the shorter lateral
+    # axis -- and `VolumeGeometry.derive` is where that can be known.
     volume = params.volume
     volume.width = max(32, min(2048, int(volume.width)))
-    volume.depth = max(8, min(512, int(volume.depth)))
+    volume.depth = max(8, min(2048, int(volume.depth)))
     volume.climate_width = max(4, min(256, int(volume.climate_width)))
     volume.climate_height = max(4, min(256, int(volume.climate_height)))
     volume.climate_depth = max(2, min(64, int(volume.climate_depth)))
     volume.psi_scale = max(1, min(32, int(volume.psi_scale)))
     volume.steps = max(8, min(256, int(volume.steps)))
     volume.shadow_steps = max(0, min(32, int(volume.shadow_steps)))
+    # Both are lengths in voxels. The floor on the window is what keeps the
+    # toroidal seam a fade: at zero it is a step, which is exactly the
+    # punctuation §7 exists to prevent.
+    volume.depth_window_voxels = min(
+        max(float(volume.depth_window_voxels), 1.0), 4096.0)
+    volume.shadow_voxels = min(max(float(volume.shadow_voxels), 0.0), 4096.0)
     return params
 
 
@@ -1030,6 +1133,22 @@ def load(path: str | Path) -> Config:
             setattr(macros, key, min(1.0, max(0.0, float(value))))
         else:
             log.warning("unknown macro %r in %s, ignoring", key, path)
+
+    if "parallax" not in table and "depth" in table:
+        # A file written before the viewpoint drift became a knob of its own.
+        # Unlike the event-rate split, there is nothing here to carry across:
+        # `depth` did drive `render.parallax`, but over a range chosen against
+        # a walk that never moved (see `Backend._update_parallax`), so whatever
+        # the old file says about parallax is a description of a setting that
+        # did nothing. Inheriting it would be preserving a bug's configuration.
+        # The new default stands instead, and says so, because a knob appearing
+        # at a value the file did not ask for should not be silent.
+        log.info(
+            "%s predates the parallax macro; the viewpoint drift starts at "
+            "%.2f, which is deliberately strong -- the mechanism it drives was "
+            "inert until now and wants judging on a real display",
+            path, macros.parallax,
+        )
 
     if "event_rate" not in table and "intensity" in table:
         macros.event_rate = _event_rate_from_intensity(macros.intensity)

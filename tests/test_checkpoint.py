@@ -20,6 +20,7 @@ import json
 import time
 
 import numpy as np
+import panelstub
 import pytest
 
 from anastomosis import (
@@ -320,6 +321,40 @@ def test_the_feature_size_walk_is_restored_rather_than_recentred(gpu_device):
         engine.tick(params)
         resumed.tick(params)
     assert resumed._du_walk == engine._du_walk
+
+
+def test_a_resumed_viewpoint_carries_on_from_where_it_was(gpu_device):
+    """The camera drift is saved as an offset, and the states behind it are not.
+
+    That is deliberate -- the offset is the part that was on screen, and the
+    walk and the lag that produced it are derivable from it. But it means a
+    resumed engine has an offset with nothing driving it, and the failure mode
+    if the deriving is skipped is not a jump: it is a viewpoint frozen exactly
+    where it stopped, for the rest of the session. Nothing about a still image
+    looks wrong, so it is asserted here rather than looked for.
+    """
+    params = _params()
+    engine = _make_engine(gpu_device, params, seed=3)
+    for _ in range(200):
+        engine._update_parallax(params, 1.0 / 30.0, len(engine.layers))
+    was = [list(pair) for pair in engine._parallax]
+    assert max(abs(x) for pair in was for x in pair) > 1e-3, (
+        "the fixture should have drifted somewhere")
+    snapshot = checkpoint.capture(engine, sim_hz=params.sim_hz)
+
+    resumed = _make_engine(gpu_device, params, seed=808)
+    assert checkpoint.restore(resumed, snapshot)
+    assert resumed._parallax == was
+
+    resumed._update_parallax(params, 1.0 / 30.0, len(resumed.layers))
+    moved = [
+        abs(now - before)
+        for pair, old in zip(resumed._parallax, was)
+        for now, before in zip(pair, old)
+    ]
+    assert max(moved) > 0.0, "the resumed viewpoint is frozen where it stopped"
+    # Continuing, not restarting: one frame moves it by a frame's worth.
+    assert max(moved) < 0.05, "the resumed viewpoint jumped rather than carried on"
 
 
 def test_a_walk_state_this_build_cannot_use_is_not_fatal(gpu_device):
@@ -701,28 +736,17 @@ def test_opting_out_writes_nothing(gpu_device, monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class _StubApp:
-    """Just enough of Application for the panel to talk to."""
+class _StubApp(panelstub.PanelApp):
+    """The shared panel stand-in, counting what this module watches."""
 
     def __init__(self):
-        self.config = config.Config()
-        self.params = self.config.resolve()
-        self.scheduler = events.EventScheduler(seed=1)
-        self.engine = None
-        self._frame_times = [0.01]
-        self._sim_hz_scale = 1.0
+        super().__init__()
         self.resets = 0
         self.fullscreen_toggles = 0
-
-    def apply_macros(self, macros):
-        self.config.macros = macros
 
     def toggle_fullscreen(self) -> bool:
         self.fullscreen_toggles += 1
         return False
-
-    def save_config(self):
-        pass
 
     def checkpoint_status(self):
         return "saved 3m ago"
@@ -780,6 +804,10 @@ def test_the_panel_reports_the_saved_state(monkeypatch):
 
     class Engine:
         tick_count = 1200
+        # The status line names the shape the field is actually running at, so
+        # a stand-in engine has to have one.
+        geometry = engine_module.Geometry.derive(
+            *panelstub.SIZE, config.Config().resolve())
 
         def read_stats(self):
             return {"mean_v": 0.12, "mean_activity": 0.0012}

@@ -162,6 +162,28 @@ field, so you can try the other one and come back to find yours where you left
 it. Set it permanently with `backend = "volumetric"` in the config file, or for
 one session with `--backend`.
 
+### How thick the slab is
+
+Under **Volumetric**, the **Thickness** slider below the selector sets how many
+voxels deep the slab is — from 8 up to however many the shorter of its other two
+axes has, which is 288 on a 16:9 display. The default 48 is a slab a ray passes
+one or two filaments through, so the depth cues are all present but quiet; more
+depth means more material between you and the far face, and so more occlusion,
+more shading and more atmosphere.
+
+Two things to know before moving it. It is what this view's memory is spent on,
+linearly — about 650 MB at the default and about 3.9 GB at the ceiling — and the
+line under the slider prices whatever it is pointing at. And the returns flatten
+before the ceiling does: past some thickness the near structure is opaque enough
+that the far face is no longer contributing anything you can see, and where that
+happens depends on **Intensity**, since that is what decides how much material
+there is. Somewhere in the low hundreds is where it is worth looking first.
+
+Changing it grows a new field — a slab of a different depth is a differently
+shaped field, and unlike a backend switch there is nothing to come back to — so
+the button beside the slider asks first, and the image settles down and grows
+back over a few minutes. The setting is saved, so the next launch opens at it.
+
 ## Adjusting it
 
 Eight knobs, all 0–1:
@@ -174,11 +196,43 @@ Eight knobs, all 0–1:
 | **Palette** | Where the colour range sits on the hue circle |
 | **Brightness** | Overall level and the background |
 | **Filament glow** | How luminous the filaments are against the ground |
-| **Depth** | Parallax, focus falloff, and atmosphere |
+| **Depth** | Focus falloff, atmosphere, and how far the back fades |
+| **Parallax** | How far the viewpoint drifts, and how briskly |
 | **How often** | How frequently events arrive on their own — under **Events**, not with the rest |
 
 Presets: `default`, `quiet`, `dense`, `deep`, `ember`, `luminous`, `current`.
 All of them keep a dark ground.
+
+**Parallax** is the one to reach for if either view looks flat. Everything
+**Depth** moves is a shading trick applied to a *normalised* depth — how much
+the far material is fogged, dimmed, desaturated and blurred — so it says the
+same thing about the back of the scene however far back that actually is.
+Parallax is the only cue that comes from the scene *moving*, and it is what
+lets you see past the near material rather than being told it is nearer.
+
+The readout is what you get: the share of the screen's width that the near
+material slides against the far material. At the top of the knob that is a
+quarter of the width, spent at about 8 px/s on a 1440p display. It cannot
+flicker at any setting — the drift is a random walk behind a lag, so
+consecutive frames move in the same direction, and what you see is a slow pan
+rather than a shake.
+
+**Under the volumetric view, the slab's thickness caps it, and that is the
+thing worth understanding.** Parallax is thickness times the tangent of the
+viewing angle. The default slab is 48 voxels deep against 512 wide — a sheet of
+paper — and there is only so much depth to be had by walking around a sheet of
+paper. Swinging further does not find more; it finds the same sheet seen
+edge-on. So the two knobs compound, and neither does much alone:
+
+| Thickness | Parallax at max | Near/far travel at 1440p |
+|---|---|---|
+| 48 (default) | held to 8% | ~170 px |
+| 96 | held to 15% | ~350 px |
+| 144 | 22% | ~520 px |
+| 288 | 25% | ~580 px |
+
+If the parallax readout stops rising as you drag it, the Thickness slider is
+what is holding it. **Turn both up together.**
 
 Every change — slider, preset switch, or file edit — is **ramped, never stepped**,
 so adjusting something can't itself produce a visual jolt. Switching presets is a
@@ -201,6 +255,9 @@ event_rate = 0.5
 # Pin individual primitives by dotted path; these beat the macros.
 "render.filament_luma" = 0.42
 "reaction.feed" = 0.019
+"volume.depth" = 96          # what the Thickness slider writes
+"render.parallax" = 0.30     # viewpoint drift, as a fraction of screen width
+"render.parallax_tau" = 60   # seconds; how long it takes to change its mind
 ```
 
 There are around 70 primitive parameters underneath the macros; the field names
@@ -277,7 +334,9 @@ unrecoverable:
   divergence-free (checked numerically, because the failure it prevents is
   pigment slowly pooling over hours), that the slab wraps on all three axes and
   carries structure through depth, that the flash-safety bound holds under it
-  too, and that switching backends keeps both fields.
+  too, that switching backends keeps both fields, and that changing the slab's
+  thickness grows a new field without moving anything the march is calibrated
+  with.
 
 ## Layout
 
