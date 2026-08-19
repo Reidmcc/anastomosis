@@ -20,7 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 # The control panel and the render window share one Qt event loop.
 ui = ["PySide6>=6.6"]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-xdist>=3.5"]
 
 [project.scripts]
 anastomosis = "anastomosis.__main__:main"

@@ -16,7 +16,14 @@ import pytest
 import wgpu
 
 import morphology
-from anastomosis import config, engine as engine_module, events, gpu_params, shaders
+from anastomosis import (
+    checkpoint,
+    config,
+    engine as engine_module,
+    events,
+    gpu_params,
+    shaders,
+)
 
 MASK32 = 0xFFFFFFFF
 
@@ -724,10 +731,24 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     distance = np.hypot((xs + 0.5) / size - 0.5, (ys + 0.5) / size - 0.5)
     inside = distance < radius * 0.5
 
+    # The two arms are identical for the first `warm` ticks -- same seed, and
+    # no event rows reach the engine before then -- so that stretch is run once
+    # and forked through the checkpoint machinery, which test_checkpoint.py
+    # holds to bit-identical continuation.
+    warm_params = config.Config().resolve()
+    warm_params.render.layers = 1
+    warmed = engine_module.Engine(device, size, size, warm_params, seed=13)
+    for _ in range(warm):
+        warmed.tick(warm_params, [])
+    snapshot = checkpoint.capture(warmed)
+
     def run(with_event: bool) -> dict[str, tuple[float, float]]:
         params = config.Config().resolve()
         params.render.layers = 1
         engine = engine_module.Engine(device, size, size, params, seed=13)
+        assert checkpoint.restore(engine, snapshot), (
+            "the warmed field does not fit the engine it was captured from"
+        )
         event = events.ActiveEvent(
             x=0.5, y=0.5, radius=radius, peak=params.events.strength,
             channels=events.EVENT_KINDS["rift"],
@@ -751,9 +772,9 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
             return means[0], means[1]
 
         marks: dict[str, tuple[float, float]] = {}
-        for tick in range(warm + attack + hold + release + recover):
+        for tick in range(warm, warm + attack + hold + release + recover):
             rows: list[dict] = []
-            if with_event and tick >= warm:
+            if with_event:
                 event.elapsed = tick - warm
                 if not event.finished:
                     scheduler.active = [event]
