@@ -1888,8 +1888,8 @@ Steps 1–6 produce something already usable for its purpose.
 
 Built and verified headless against a software adapter (Mesa lavapipe), so every
 shader compiles and the full tick/render sequence runs in CI without a GPU. The
-suite is 259 tests and takes about eight minutes there: 248 pass and 11 skip for
-want of a display. The checkpoint-determinism check that this section previously
+suite is 269 tests and takes eight to fourteen minutes there depending on the
+machine: 258 pass and 11 skip for want of a display. The checkpoint-determinism check that this section previously
 recorded as failing on that adapter passes on the llvmpipe build measured here;
 it was never explained, so treat that as an observation about one adapter build
 rather than as a fix.
