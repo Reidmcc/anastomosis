@@ -170,6 +170,46 @@ class AgentParams:
     # 11% and the hubs survive *better* than at 1.2. If this is ever lowered,
     # cap_return in the telemetry must stay clear of its clamp.
     deposit_cap: float = 1.2
+    # Sensing saturation -- the missing half of the capacity, and the reason
+    # the layer produced knots instead of a network at all (DESIGN.md 4.7,
+    # "the network that was never there"). The capacity bounds what a hub can
+    # *store*; nothing bounded what it could *attract*: sensed trail was
+    # unbounded, so a hub at ten times filament level out-competed every
+    # strand in sensor range forever, and grown from scratch the layer reached
+    # a stable field of round milling knots with no filaments anywhere --
+    # which was the persistent-dot complaint, on every build tried back to
+    # PR #16. What the sensors read is therefore clamped, so a healthy
+    # filament is exactly as attractive as any hub -- and inside a saturated
+    # plateau the three sensors tie, which reads as "keep going", so agents
+    # drive straight out of a knot instead of orbiting it.
+    #
+    # Measured against an uncapped control (same seed, 320x180 and 128x128,
+    # 4000 ticks): the trail becomes an anastomosing network -- strands,
+    # junctions, closed loops, stable for the whole run -- with total mass
+    # identical to the control and its p99/mean concentration down from ~16
+    # to ~5. The obvious parameter-space alternative (higher turn rate and
+    # jitter) was tried and is much worse: sparse lone strands plus knots.
+    #
+    # The value is a *multiple of the equilibrium mean trail*, which is
+    # exactly `density * deposit / trail_decay` (each backend packs the
+    # absolute cap in `_physics_values`, from its own agent density). An
+    # absolute cap cannot be right at more than one point of the intensity
+    # macro, and the failure at the quiet end is distinctive: with density
+    # and deposit at their low ends an absolute cap sits far above the level
+    # any filament can sustain, the plateau survives only at knot cores, and
+    # the layer draws *rings* -- agents orbiting the rim of their own
+    # saturated deposit. Anchored to the equilibrium mean, the quiet end
+    # grows the same wispy network as the default (p99/mean ~5.0 against an
+    # uncapped 13-19, with the ring state at ~10) and the dense end holds
+    # (~4.7-5.0 against an uncapped 14-16). At 3.3 the
+    # absolute cap is ~0.30 at defaults: about twice the level a trafficked
+    # filament equilibrates to, comfortably under the knot level of 1+.
+    #
+    # Zero disables. The packed absolute value is also floored well clear of
+    # `starve_threshold`: `recent` is an EMA of sensed -- and therefore
+    # capped -- values, so a cap near the threshold would read the whole
+    # population as starving and it would respawn forever.
+    sense_cap: float = 3.3
     # How much of the velocity field the trail rides -- DESIGN.md 4.7 step 6,
     # at last. Pigment is advected at 1.0; the trail at this fraction, so the
     # network is carried and sheared by the same flow that carries the colour,
@@ -1156,6 +1196,15 @@ def validate(params: Params) -> Params:
     params.agents.found_period = max(2, min(20_000, int(params.agents.found_period)))
     params.agents.found_site_cells = max(
         64, min(1 << 24, int(params.agents.found_site_cells)))
+    # The sensing cap is a ratio to the equilibrium mean trail; the absolute
+    # value -- and the liveness floor that keeps it clear of the starve
+    # threshold -- is computed where it is packed, in `_physics_values`. Here
+    # only the ratio's own sanity: zero (or below) stays zero, which disables
+    # the cap outright, and a huge ratio is indistinguishable from disabled
+    # but would still pack a live clamp, so it is bounded.
+    agents = params.agents
+    agents.sense_cap = 0.0 if agents.sense_cap <= 0.0 else min(
+        agents.sense_cap, 100.0)
     # The viewpoint's drift has to stay a drift. The flash bound does not
     # depend on this -- the limiter is per-pixel and holds whatever the camera
     # does -- but a time constant of a second or two would make the whole image

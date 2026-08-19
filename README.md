@@ -27,9 +27,10 @@ Four things it will not do, by construction:
   the reaction settles into a lattice of same-sized spots, and the agents pile
   into round stationary knots. Both are counteracted at the source. Feature
   size is measured and steered — it differs from region to region, and the
-  field's overall scale is held to a setpoint that keeps moving — while
-  deposits saturate where the network is already strong, so the knots dissolve
-  back into filaments, and the whole network rides the flow instead of sitting
+  field's overall scale is held to a setpoint that keeps moving — and what the
+  agents *sense* saturates, so a knot can never out-attract a filament: the
+  agents spread into an anastomosing network instead of orbiting their own
+  strongest deposit, and the whole network rides the flow instead of sitting
   still. See `DESIGN.md` §4.7.
 
 `DESIGN.md` explains the architecture and the reasoning. This file is how to run

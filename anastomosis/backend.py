@@ -494,7 +494,7 @@ class Backend:
     # -- parameter packing --------------------------------------------------
 
     def _physics_values(
-        self, params: Params, feature: float, tempo: float
+        self, params: Params, feature: float, tempo: float, agent_density: float
     ) -> dict:
         """Every physical parameter the shaders read, at one feature/tempo scale.
 
@@ -502,10 +502,26 @@ class Backend:
         decide what the simulation *is* -- how agents sense and steer, where the
         reaction sits on the Gray-Scott map, how far the climate deviates -- and
         a macro has to mean the same thing whichever way the result is put on
-        screen. The two callers add only their own dimensions and identity.
+        screen. The two callers add only their own dimensions and identity --
+        and their agent density, which is the one physical number they do not
+        share (`agents.density` per cell against `volume.density` per voxel)
+        and which the sensing cap's absolute value is anchored to.
         """
         a, r, f = params.agents, params.reaction, params.flow
         c, ho, pg = params.climate, params.homeostat, params.pigment
+
+        # The sensing cap, made absolute. `sense_cap` is a multiple of the
+        # equilibrium mean trail, which is exactly deposit-per-texel-per-tick
+        # over decay; anchoring here is what lets one ratio hold across the
+        # intensity macro and across both backends (see AgentParams). The
+        # floor is a liveness bound: `recent` is an EMA of sensed -- and
+        # therefore capped -- values, so a cap near `starve_threshold` reads
+        # the whole population as starving and it respawns forever.
+        sense_cap = 0.0
+        if a.sense_cap > 0.0:
+            equilibrium = agent_density * a.deposit / max(a.trail_decay, 1e-6)
+            sense_cap = max(
+                a.sense_cap * equilibrium, max(0.02, 4.0 * a.starve_threshold))
 
         # Homeostat slew per tick from its time constant in seconds.
         homeo_rate = 1.0 - math.exp(
@@ -545,6 +561,7 @@ class Backend:
             "income_rate": a.income_rate,
             "prune_gain": a.prune_gain,
             "deposit_cap": a.deposit_cap,
+            "sense_cap": sense_cap,
             "trail_advect": a.trail_advect,
             "starve_threshold": a.starve_threshold,
             "max_age": a.max_age,

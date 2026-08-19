@@ -61,6 +61,12 @@ SIM_FIELDS: list[Field] = [
     # "no capacity limit", and the measured consequence is a network holding
     # half its mass in its top 2% of texels: the white hubs. Zero disables.
     ("deposit_cap", "f32"),
+    # Sensing saturation: ceiling on the trail value the agents' sensors can
+    # read. The capacity above bounds what a hub stores; this bounds what it
+    # can *attract* -- unbounded sensing is what collapsed the layer into
+    # stationary knots instead of a network (DESIGN.md 4.7, "the network that
+    # was never there"). Zero disables.
+    ("sense_cap", "f32"),
     # Fraction of the velocity field the trail is advected by (pigment gets
     # 1.0). Zero disables, and the pass is then texel-exact.
     ("trail_advect", "f32"),
