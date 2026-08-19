@@ -231,3 +231,52 @@ def test_the_thickness_row_is_dead_under_the_layered_backend(monkeypatch):
     assert not panel.thickness_apply.isEnabled()
     assert panel.thickness_note.text() == control_panel.THICKNESS_FOR_LAYERED
     panel.close()
+
+
+# ---------------------------------------------------------------------------
+# The parallax readout
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "reach, expected",
+    [
+        (0.0, "still"),
+        (0.002, "still"),
+        (0.075, "8% of width"),
+        (0.25, "25% of width"),
+    ],
+)
+def test_the_parallax_readout_reads_as_english(reach, expected):
+    """A share of the screen's width, because that is what is on offer: the
+    near material slides this far against the far material."""
+    assert control_panel.describe_parallax(reach) == expected
+
+
+def test_the_parallax_readout_stops_where_the_slab_does(monkeypatch):
+    """The readout is the effective travel, not the requested one.
+
+    Under the volumetric backend a thin slab holds the viewpoint down, and a
+    control that kept climbing while nothing on screen changed would be lying.
+    Stopping is the panel saying "the Thickness slider is what is holding this",
+    which it says better than a tooltip can.
+    """
+    app, panel = _thickness_panel(monkeypatch, None, backend="volumetric")
+    slider = panel.sliders[control_panel.PARALLAX_MACRO]
+
+    slider.setValue(control_panel.SLIDER_STEPS)
+    thin = panel._parallax_reach(1.0)
+    asked = config.curve_value(
+        control_panel.PARALLAX_MACRO, control_panel.PARALLAX_PATH, 1.0)
+    assert thin < asked, "a 48-deep slab let the whole swing through"
+
+    app.set_volume_depth(288)
+    assert panel._parallax_reach(1.0) > thin, (
+        "a deeper slab did not unlock more of the travel")
+    assert panel._parallax_reach(1.0) == pytest.approx(asked)
+
+    # The layered backend has no slab to be held by.
+    other, other_panel = _thickness_panel(monkeypatch, None, backend="layered")
+    assert other_panel._parallax_reach(1.0) == pytest.approx(asked)
+    panel.close()
+    other_panel.close()

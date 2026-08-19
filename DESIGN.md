@@ -1214,12 +1214,44 @@ the layered path.
   stays at 49 px of 50. What is left is about 0.6 px/s, which is what the
   parallax actually is.
 
+  What that fix did *not* settle is whether the amount of parallax on offer was
+  ever enough to see, since the range it moved over — 0.006 to 0.038 of the
+  screen's width — was chosen against a mechanism that did not work and is
+  therefore not evidence of anything. It is now its own macro, split out of
+  `depth` exactly as `event_rate` was split out of `intensity` and for the same
+  reason: the two answer different questions. Everything left under `depth` is
+  a shading trick applied to a *normalised* depth and says the same thing about
+  the far face however far away it is; parallax is the only cue that comes from
+  the scene moving. The new knob reaches a quarter of the screen's width at
+  about 8 px/s, and a config written before the split takes the new default
+  rather than inheriting the old one — there is nothing to carry across from a
+  setting that did nothing.
+
+  **And the volumetric backend holds itself to what its slab has earned.**
+  Parallax is thickness times the tangent of the viewing angle, which is the
+  geometry underneath the whole complaint that a thin slab reads flat: 48 voxels
+  against 512 is a sheet of paper, and there is not much depth to be found by
+  walking around a sheet of paper. Swinging further does not buy more depth, it
+  buys the same slab seen edge-on — a long oblique smear through it, with a path
+  length (and so an optical depth) that grows with the swing. So the drift's
+  amplitude is scaled — not clipped, which would put a corner in the viewpoint's
+  path — to `PARALLAX_MAX_TANGENT` (0.8, about 39°) times the thickness. At the
+  default slab that caps the travel at about 8% of the width; at 144 voxels deep
+  it is 22%. The thickness knob and the parallax knob therefore compound, and
+  the control panel's readout reports the *effective* travel so that a knob
+  which has stopped doing anything visibly stops moving.
+
   The safety stage is deliberately not told about the viewpoint. It reprojects
   its history through the screen-space velocity of the *material* (§7), so a
   moving camera leaves an uncompensated residual — 0.02 px per frame against
   material moving several, three orders of magnitude below anything the limiter
-  responds to. It would begin to matter at around a pixel a frame, which needs
-  `render.parallax` near 1: the whole frame width of drift.
+  responds to. At the top of the parallax knob it is 0.3 px per frame, which is
+  the same argument with less margin — and still not a visible artefact, because
+  a rate limiter tracking a steadily moving edge settles at a constant lag
+  rather than suppressing the motion: the displayed edge trails the true one by
+  the sub-pixel offset at which demand equals budget. What is bounded here is
+  the *rate* of change, and a smooth pan is exactly the case that costs it
+  nothing.
 - **Depth-of-field**: per-layer blur radius increases with distance. Because the
   layers are separate render targets this is one cheap separable blur each, not a
   gather.
@@ -1560,7 +1592,8 @@ card, so the depth-backend decision can be made on aesthetics rather than cost.
 | Tempo | sim rate, flow strength, drift rates |
 | Palette | hue anchor, hue rotation rate, chroma cap |
 | Brightness | luminance ceiling and exposure target |
-| Depth | parallax strength, layer separation, DOF, atmospheric falloff |
+| Depth | layer separation, DOF, atmospheric falloff |
+| Parallax | how far the viewpoint drifts, and how briskly |
 | Event rate | mean arrival interval of the slow events, and nothing else (§4.3) |
 
 Event rate was originally folded into intensity, and separating them is the one

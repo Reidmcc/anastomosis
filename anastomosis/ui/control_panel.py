@@ -24,6 +24,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from .. import config as config_module
 from .. import events as events_module
 from .. import presets as presets_module
+from .. import volume as volume_module
 from .. import window as window_module
 from ..config import Macros
 
@@ -41,6 +42,30 @@ NOTE_IDLE = "Ask for a perturbation. It builds over a minute or two."
 NOTE_AT_CAP = (
     "As many events are running as the settings allow; the buttons come back "
     "as they fade."
+)
+
+# The viewpoint drift, which is shown as the travel it produces rather than as
+# a bare 0..1. What the number means is "how far the near material slides
+# against the far material, across the width of the screen", which is a thing
+# somebody can want; "0.60" is not.
+#
+# It is also the readout that tells you when the slab is the limit rather than
+# the knob: under the volumetric backend the drift is held to what the
+# thickness justifies (`volume.PARALLAX_MAX_TANGENT`), so on a thin slab the
+# percentage stops climbing part-way along the travel. That is the control
+# saying "make the slab deeper", and it says it better than a tooltip can.
+PARALLAX_MACRO = "parallax"
+PARALLAX_PATH = "render.parallax"
+
+PARALLAX_TIP = (
+    "How far the viewpoint drifts, and how briskly.\n"
+    "The only depth cue here that comes from the scene moving rather than "
+    "from how it is shaded -- everything under Depth describes the far "
+    "material, where this one lets you see past the near material to it.\n"
+    "Under the volumetric view the slab's thickness caps it: parallax is "
+    "thickness times the viewing angle, and a thin slab seen from far enough "
+    "off-axis is just a slab seen edge-on. If the readout stops rising as you "
+    "drag, the Thickness slider above is what is holding it."
 )
 
 # The one macro that does not live in the "Adjust" group: how often events
@@ -76,7 +101,8 @@ MACRO_LABELS: list[tuple[str, str, str]] = [
     ("palette", "Palette", "Where the colour range sits on the hue circle"),
     ("brightness", "Brightness", "Overall level and the background"),
     ("filament_glow", "Filament glow", "How luminous the filaments are"),
-    ("depth", "Depth", "Parallax, focus falloff, and atmosphere"),
+    ("depth", "Depth", "Focus falloff, atmosphere, and how far the back fades"),
+    ("parallax", "Parallax", PARALLAX_TIP),
 ]
 
 # One entry per kind in ``events.EVENT_KINDS``, in the order the buttons should
@@ -134,6 +160,18 @@ def describe_slab(geometry) -> str:
         f"{geometry.width} x {geometry.height} x {geometry.depth} voxels, "
         f"about {describe_bytes(geometry.field_bytes)}"
     )
+
+
+def describe_parallax(reach: float) -> str:
+    """Plain language for how far the viewpoint travels.
+
+    As a share of the screen's width, because that is the thing the eye is
+    actually being offered: the near material slides this far against the far
+    material, and everything else about the number is arithmetic.
+    """
+    if reach < 0.005:
+        return "still"
+    return f"{reach * 100:.0f}% of width"
 
 
 def describe_interval(rate_per_hour: float) -> str:
@@ -276,7 +314,9 @@ class ControlPanel(QtWidgets.QWidget):
             slider.setTracking(True)
 
             value = QtWidgets.QLabel("0.00")
-            value.setMinimumWidth(38)
+            # Wide enough for the longest readout in the column, so that
+            # dragging one slider does not shift the others sideways.
+            value.setMinimumWidth(88)
             value.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
 
             grid.addWidget(caption, row, 0)
@@ -449,7 +489,24 @@ class ControlPanel(QtWidgets.QWidget):
             return describe_interval(
                 config_module.curve_value(EVENT_RATE_MACRO, EVENT_RATE_PATH, value)
             )
+        if name == PARALLAX_MACRO:
+            return describe_parallax(self._parallax_reach(value))
         return f"{value:.2f}"
+
+    def _parallax_reach(self, value: float) -> float:
+        """How far the viewpoint will actually travel at this slider position.
+
+        The curve says what was asked for; the slab may say less. Reporting the
+        second is the point -- a control whose readout stops moving is telling
+        the user something true about why, and one that keeps climbing while
+        nothing on screen changes is lying to them.
+        """
+        asked = config_module.curve_value(PARALLAX_MACRO, PARALLAX_PATH, value)
+        if self.app.backend != "volumetric":
+            return asked
+        slab = self.app.volume_slab()
+        thickness = slab.depth / max(slab.width, 1)
+        return min(asked, volume_module.PARALLAX_MAX_TANGENT * thickness)
 
     def _load_from_app(self) -> None:
         self._updating = True

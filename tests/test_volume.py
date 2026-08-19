@@ -398,6 +398,47 @@ def test_the_march_step_count_has_a_ceiling(gpu_device, monkeypatch):
     assert values["march_steps"] == 8
 
 
+def test_the_slab_holds_the_viewpoint_to_the_swing_its_thickness_earns(
+    gpu_device, monkeypatch
+):
+    """Parallax is thickness times the tangent of the viewing angle.
+
+    Which is the geometry underneath every complaint that this backend looks
+    flat: 48 voxels against 512 is a sheet of paper, and swinging the viewpoint
+    further does not find more depth in a sheet of paper -- it finds the same
+    sheet seen edge-on, with the march tracing a long oblique smear through it.
+    So the drift's amplitude is held to what the slab justifies, which is also
+    what makes the two knobs compound: a deeper slab does not merely have more
+    material in it, it has room for the viewpoint to move.
+    """
+    reaches = {}
+    for depth in (16, 48):
+        params = _params(depth=depth)
+        params.render.parallax = 1.0  # far past anything a slab could earn
+        values, geometry = _render_values(monkeypatch, gpu_device, params)
+        thickness = geometry.depth / geometry.width
+        limit = volume_module.PARALLAX_MAX_TANGENT * thickness
+        # The offset riding on it is bounded by one, so the shear the shader
+        # gets can never exceed the amplitude it was given.
+        for axis in ("cam_shear_x", "cam_shear_y"):
+            assert abs(values[axis]) <= limit + 1e-6, (
+                f"a {geometry.depth}-deep slab swung to {values[axis]:.3f}, "
+                f"past the {limit:.3f} its thickness earns")
+        reaches[geometry.depth] = limit
+
+    assert reaches[48] > reaches[16], (
+        "a thicker slab did not earn a wider swing, so the thickness and "
+        "parallax knobs do not compound")
+
+    # And a request inside what the slab earns is passed through untouched.
+    params = _params(depth=48)
+    params.render.parallax = 0.01
+    values, geometry = _render_values(monkeypatch, gpu_device, params)
+    limit = volume_module.PARALLAX_MAX_TANGENT * geometry.depth / geometry.width
+    assert 0.01 < limit, "the fixture needs a request the slab can honour"
+    assert abs(values["cam_shear_x"]) <= 0.01 + 1e-6
+
+
 # ---------------------------------------------------------------------------
 # Safety, under the new backend
 # ---------------------------------------------------------------------------

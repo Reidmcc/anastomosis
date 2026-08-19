@@ -599,6 +599,19 @@ class Macros:
     brightness: float = 0.35
     filament_glow: float = 0.45
     depth: float = 0.60
+    # How far the viewpoint swings, and how briskly. Its own knob rather than
+    # a part of `depth` for the same reason `event_rate` is not part of
+    # `intensity`: the two are different questions. Everything `depth` moves is
+    # a shading trick applied to a *normalised* depth -- how much the far face
+    # is fogged, dimmed, desaturated and blurred -- and says the same thing
+    # whatever is actually back there. This one is the only cue that comes from
+    # the scene moving, and it is the one that answers "is there really
+    # something behind that". Split out so it can be turned up on a display
+    # where the shading tricks are not enough on their own.
+    #
+    # Defaulted high while the mechanism is being judged on real hardware --
+    # see `load`, and lower it once it has been.
+    parallax: float = 0.60
     # How often the scheduler's own events arrive. Its own knob rather than a
     # part of `intensity`, because the two are not the same question: a dense,
     # busy field that is left alone for an hour at a time is a coherent thing
@@ -664,11 +677,30 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("render.extinction", 1.9, 3.6, 1.0),
     ],
     "depth": [
-        ("render.parallax", 0.006, 0.038, 1.0),
         ("render.dof_radius", 1.2, 5.4, 1.0),
         ("render.fog_amount", 0.18, 0.62, 1.0),
         ("render.depth_dim", 0.78, 0.38, 1.0),
         ("render.depth_desat", 0.72, 0.30, 1.0),
+    ],
+    # How far the viewpoint swings and how fast, together, because they are one
+    # question: more parallax means both more travel and more of it per second,
+    # and a knob that moved only the travel would take four times as long to
+    # show twice as much.
+    #
+    # The travel reaches a quarter of the screen's width between the near and
+    # far material, which is a great deal -- far past anything that would be
+    # called restrained, and deliberately so. The old range topped out at 0.038
+    # and was chosen against a mechanism that did not work (see
+    # `Backend._update_parallax`), so it is not evidence of anything. The
+    # volumetric backend holds itself to whatever fraction of this its slab is
+    # thick enough to justify; see `volume.py`.
+    "parallax": [
+        ("render.parallax", 0.0, 0.25, 1.0),
+        # Seconds. Shorter is faster, so this runs the other way. The fast end
+        # is 60 rather than something brisker because the travel is doing the
+        # work: at the top of this knob the viewpoint crosses a quarter of the
+        # screen, and it does not also need to hurry.
+        ("render.parallax_tau", 150.0, 60.0, 1.0),
     ],
     # Mean arrival rate of the scheduler's own events, and nothing else: this
     # knob moves *when* perturbations come, never what they do when they get
@@ -917,6 +949,9 @@ def validate(params: Params) -> Params:
     # sway, which is the coordinated global motion of DESIGN.md 4.2 rather than
     # the parallax this is for.
     params.render.parallax_tau = min(max(params.render.parallax_tau, 8.0), 3600.0)
+    # And it has to stay on the screen. Beyond a whole screen width between the
+    # near and far material there is nothing left that reads as one scene.
+    params.render.parallax = min(max(params.render.parallax, 0.0), 1.0)
 
     # The slab's own structural values. The ceilings are core WebGPU's
     # guaranteed maxTextureDimension3D (2048), and the floors are what the
@@ -1098,6 +1133,22 @@ def load(path: str | Path) -> Config:
             setattr(macros, key, min(1.0, max(0.0, float(value))))
         else:
             log.warning("unknown macro %r in %s, ignoring", key, path)
+
+    if "parallax" not in table and "depth" in table:
+        # A file written before the viewpoint drift became a knob of its own.
+        # Unlike the event-rate split, there is nothing here to carry across:
+        # `depth` did drive `render.parallax`, but over a range chosen against
+        # a walk that never moved (see `Backend._update_parallax`), so whatever
+        # the old file says about parallax is a description of a setting that
+        # did nothing. Inheriting it would be preserving a bug's configuration.
+        # The new default stands instead, and says so, because a knob appearing
+        # at a value the file did not ask for should not be silent.
+        log.info(
+            "%s predates the parallax macro; the viewpoint drift starts at "
+            "%.2f, which is deliberately strong -- the mechanism it drives was "
+            "inert until now and wants judging on a real display",
+            path, macros.parallax,
+        )
 
     if "event_rate" not in table and "intensity" in table:
         macros.event_rate = _event_rate_from_intensity(macros.intensity)

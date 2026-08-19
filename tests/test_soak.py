@@ -218,34 +218,88 @@ def test_the_viewpoint_drift_actually_uses_its_travel():
         "how far the viewpoint roams depends on the frame rate")
 
 
-def test_the_viewpoint_drifts_without_ever_shimmering():
-    """The travel above has to be spent slowly, or it is per-pixel noise.
+def _raw_walk(fps: float, seconds: float, tau: float, seed: int = 5):
+    """The same Ornstein-Uhlenbeck process, without the lag after it.
+
+    The control for the test below: this is what `_update_parallax` would
+    produce if the walk drove the viewpoint directly.
+    """
+    dt = 1.0 / fps
+    theta = 1.0 - math.exp(-dt / tau)
+    sigma = math.sqrt(1.0 - (1.0 - theta) ** 2)
+    rng = np.random.default_rng(seed)
+    out = np.empty(int(seconds * fps))
+    walk = 0.0
+    for i in range(out.size):
+        walk = walk * (1.0 - theta) + rng.normal() * sigma
+        out[i] = math.tanh(0.55 * walk)
+    return out
+
+
+def test_the_viewpoint_pans_rather_than_shaking():
+    """However far the viewpoint travels, it has to spend that travel smoothly.
 
     An Ornstein-Uhlenbeck process is smooth in its envelope and *white* in its
-    increments, which is fine for an amplitude and disastrous for a position:
-    the raw walk moves the image about half a pixel per frame, at random, which
-    is the temporal noise this application exists not to produce. The lag the
-    walk reaches the viewpoint through is what fixes that, and this is the
-    number it was chosen against.
+    increments. That is fine for an amplitude and disastrous for a position:
+    driven directly, the walk moves the image in a new random direction every
+    frame, which is the per-pixel temporal noise this application exists not to
+    produce, however slowly the envelope wanders.
 
-    Expressed in pixels of a 1440p display, since a fraction of the field's
-    extent says nothing about whether the eye can see it.
+    So the property is not "the viewpoint moves less than N pixels a frame" --
+    that is a fact about the amplitude the user asked for, and they are allowed
+    to ask for a lot. It is that consecutive steps agree with each other: a pan
+    has a direction that persists, and a shake does not. The lag the walk
+    reaches the viewpoint through is what buys that, and the contrast with the
+    same walk without it is the measurement.
+
+    Checked at the top of the knob, which is the worst case for it.
+    """
+    params = config.Config(macros=config.Macros(parallax=1.0)).resolve()
+    for fps in (30.0, 60.0):
+        step = np.diff(_parallax_series(fps, 1200.0, params))
+        assert np.abs(step).sum() > 0.0, "the viewpoint did not move at all"
+        coherence = float(np.corrcoef(step[:-1], step[1:])[0, 1])
+        assert coherence > 0.95, (
+            f"consecutive steps agree only at {coherence:.3f} at {fps} Hz; "
+            "the viewpoint is shaking rather than panning"
+        )
+
+        raw = np.diff(_raw_walk(fps, 1200.0, params.render.parallax_tau))
+        raw_coherence = float(np.corrcoef(raw[:-1], raw[1:])[0, 1])
+        assert raw_coherence < 0.5, (
+            "the control is supposed to be the rough version; if the bare walk "
+            f"is already smooth ({raw_coherence:.3f}) this test proves nothing"
+        )
+
+
+def test_the_viewpoint_travels_at_a_speed_someone_could_watch():
+    """Fast enough to read as parallax within a few seconds of looking, slow
+    enough that it is never what the eye goes to first.
+
+    Both ends matter and both have been wrong. Below about a pixel a second the
+    cue is there in the numbers and not in the room -- which is where this
+    started, at a hundredth of that. Much above ten and the viewpoint stops
+    being something the image happens to be seen from and becomes a thing that
+    is moving, which is not what an ambient field is for.
+
+    In pixels of a 1440p display per second, and independent of the frame rate:
+    the same drift seen twice as often moves half as far each time.
     """
     width = 2560.0
-    params = config.Config().resolve()
-    for fps in (30.0, 60.0):
-        series = _parallax_series(fps, 1200.0, params)
-        step = np.abs(np.diff(series)) * params.render.parallax * width
-        assert step.max() < 0.5, (
-            f"the viewpoint jumped {step.max():.2f} px in one frame at {fps} Hz")
-        assert step.mean() < 0.05, (
-            f"the viewpoint moves {step.mean():.3f} px per frame at {fps} Hz, "
-            "which is a shake rather than a drift")
-        # ... and the speed that leaves is a property of the walk, not of the
-        # frame rate: the same drift seen twice as often moves half as far each
-        # time.
-        assert 0.2 < step.mean() * fps < 3.0, (
-            f"the viewpoint travels {step.mean() * fps:.2f} px/s at {fps} Hz")
+    for macro, floor, ceiling in ((0.0, 0.0, 0.05), (0.6, 1.0, 6.0), (1.0, 3.0, 15.0)):
+        params = config.Config(macros=config.Macros(parallax=macro)).resolve()
+        speeds = {}
+        for fps in (30.0, 60.0):
+            series = _parallax_series(fps, 1200.0, params)
+            step = np.abs(np.diff(series)) * params.render.parallax * width
+            speeds[fps] = step.mean() * fps
+            assert floor <= speeds[fps] <= ceiling, (
+                f"at parallax {macro:.1f} the viewpoint travels "
+                f"{speeds[fps]:.2f} px/s at {fps} Hz"
+            )
+        if macro > 0.0:
+            assert abs(speeds[30.0] - speeds[60.0]) < 0.5 * max(speeds.values()), (
+                "how fast the viewpoint travels depends on the frame rate")
 
 
 def test_the_feature_size_band_is_used_but_not_camped_on():

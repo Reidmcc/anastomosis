@@ -196,23 +196,43 @@ Eight knobs, all 0–1:
 | **Palette** | Where the colour range sits on the hue circle |
 | **Brightness** | Overall level and the background |
 | **Filament glow** | How luminous the filaments are against the ground |
-| **Depth** | Parallax, focus falloff, and atmosphere |
+| **Depth** | Focus falloff, atmosphere, and how far the back fades |
+| **Parallax** | How far the viewpoint drifts, and how briskly |
 | **How often** | How frequently events arrive on their own — under **Events**, not with the rest |
 
 Presets: `default`, `quiet`, `dense`, `deep`, `ember`, `luminous`, `current`.
 All of them keep a dark ground.
 
-**Depth** is the one to reach for if either view looks flat. Most of what it
-moves is atmospheric — focus falloff, fog, how much contrast and colour the far
-material keeps — but it also sets how far the viewpoint drifts, which is the
-only cue in the piece that comes from the scene moving rather than from how it
-is shaded. At the default that drift is about 30 px of travel at 1440p, spent at
-under a pixel a second, and at the top of the knob roughly twice that. If it is
-still too subtle on your display, raise `"render.parallax"` past the 0.038 the
-knob reaches — it is a fraction of the screen's width, so 0.08 is an eighth of
-the frame between the near and far material. It cannot flicker: the drift is a
-random walk behind a lag, and it moves the image about a fiftieth of a pixel per
-frame.
+**Parallax** is the one to reach for if either view looks flat. Everything
+**Depth** moves is a shading trick applied to a *normalised* depth — how much
+the far material is fogged, dimmed, desaturated and blurred — so it says the
+same thing about the back of the scene however far back that actually is.
+Parallax is the only cue that comes from the scene *moving*, and it is what
+lets you see past the near material rather than being told it is nearer.
+
+The readout is what you get: the share of the screen's width that the near
+material slides against the far material. At the top of the knob that is a
+quarter of the width, spent at about 8 px/s on a 1440p display. It cannot
+flicker at any setting — the drift is a random walk behind a lag, so
+consecutive frames move in the same direction, and what you see is a slow pan
+rather than a shake.
+
+**Under the volumetric view, the slab's thickness caps it, and that is the
+thing worth understanding.** Parallax is thickness times the tangent of the
+viewing angle. The default slab is 48 voxels deep against 512 wide — a sheet of
+paper — and there is only so much depth to be had by walking around a sheet of
+paper. Swinging further does not find more; it finds the same sheet seen
+edge-on. So the two knobs compound, and neither does much alone:
+
+| Thickness | Parallax at max | Near/far travel at 1440p |
+|---|---|---|
+| 48 (default) | held to 8% | ~170 px |
+| 96 | held to 15% | ~350 px |
+| 144 | 22% | ~520 px |
+| 288 | 25% | ~580 px |
+
+If the parallax readout stops rising as you drag it, the Thickness slider is
+what is holding it. **Turn both up together.**
 
 Every change — slider, preset switch, or file edit — is **ramped, never stepped**,
 so adjusting something can't itself produce a visual jolt. Switching presets is a
@@ -236,8 +256,8 @@ event_rate = 0.5
 "render.filament_luma" = 0.42
 "reaction.feed" = 0.019
 "volume.depth" = 96          # what the Thickness slider writes
-"render.parallax" = 0.08     # viewpoint drift, as a fraction of screen width
-"render.parallax_tau" = 75   # seconds; how long it takes to change its mind
+"render.parallax" = 0.30     # viewpoint drift, as a fraction of screen width
+"render.parallax_tau" = 60   # seconds; how long it takes to change its mind
 ```
 
 There are around 70 primitive parameters underneath the macros; the field names

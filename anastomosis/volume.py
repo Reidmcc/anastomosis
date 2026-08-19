@@ -89,6 +89,20 @@ MAX_AGENTS_PER_VOXEL = 4
 # of extra work.
 MIN_DEPTH = 8
 
+# The steepest the camera is allowed to look through the slab, as a tangent:
+# 0.8 is about 39 degrees off the slab's normal.
+#
+# Parallax is thickness times the tangent of the viewing angle, which is the
+# geometric fact underneath every complaint that a thin slab looks flat -- 48
+# voxels against 512 is a sheet of paper, and there is only so much depth to be
+# had by walking around a sheet of paper. Swinging the viewpoint further does
+# not buy more depth: it buys the same slab seen edge-on, with the march
+# tracing a long oblique smear through it and the near and far faces sliding
+# past each other faster than anything in between can explain. So the drift's
+# amplitude is held to what the current thickness justifies, which is also what
+# makes the thickness knob and the parallax knob compound rather than compete.
+PARALLAX_MAX_TANGENT = 0.8
+
 # What one voxel of slab costs on the card: eleven `rgba16float` volumes --
 # three ping-pong pairs and five singles, see `Slab` -- plus the u32 deposit
 # accumulator. Thickness is paid for exactly here, linearly, which is why the
@@ -798,6 +812,14 @@ class VolumeEngine(Backend):
         zoom_x, zoom_y = aspect_correction(
             self.width, self.height, geometry.width, geometry.height)
 
+        # Voxels are cubic, so the slab's world thickness is just its aspect
+        # against the lateral extent.
+        slab_depth = geometry.depth / max(geometry.width, 1)
+        # Scaled rather than clipped: clipping the drift where it ran past the
+        # limit would put a corner in the viewpoint's path, and a corner in a
+        # motion is exactly the punctuation nothing here is allowed to be.
+        reach = min(render.parallax, PARALLAX_MAX_TANGENT * slab_depth)
+
         values = self._common_render_values(params, frac, frame_dt)
         values.update(
             layer_count=1,
@@ -809,12 +831,10 @@ class VolumeEngine(Backend):
             march_steps=min(vol.steps, geometry.depth),
             shadow_steps=vol.shadow_steps,
             zoom_x=zoom_x, zoom_y=zoom_y,
-            cam_shear_x=drift[0] * render.parallax,
-            cam_shear_y=drift[1] * render.parallax,
+            cam_shear_x=drift[0] * reach,
+            cam_shear_y=drift[1] * reach,
             converge=vol.converge,
-            # Voxels are cubic, so the slab's world thickness is just its
-            # aspect against the lateral extent.
-            slab_depth=geometry.depth / max(geometry.width, 1),
+            slab_depth=slab_depth,
             # A length in voxels on this side, a fraction of the depth on the
             # shader's -- which is the coordinate the march has. The shader
             # clamps it, so a window wider than the slab is a fully faded slab
