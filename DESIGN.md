@@ -1630,10 +1630,11 @@ Steps 1–6 produce something already usable for its purpose.
 
 Built and verified headless against a software adapter (Mesa lavapipe), so every
 shader compiles and the full tick/render sequence runs in CI without a GPU. The
-suite is 199 tests and takes about seven minutes there: 190 pass, 8 skip for
-want of a display, and one -- the checkpoint-determinism check -- currently
-fails on that adapter, on `main` as much as on any branch, and is not yet
-explained.
+suite is 259 tests and takes about eight minutes there: 248 pass and 11 skip for
+want of a display. The checkpoint-determinism check that this section previously
+recorded as failing on that adapter passes on the llvmpipe build measured here;
+it was never explained, so treat that as an observation about one adapter build
+rather than as a fix.
 
 **Complete:** all 30 WGSL modules; the three-system substrate with agents, trail,
 reaction, curl-noise flow and pigment advection; the climate field and the
@@ -1678,9 +1679,15 @@ worth being explicit about. Its invariants are checked and hold -- the flow is
 divergence-free to the storage precision, the slab wraps on all three axes with
 no accumulation at the faces, the depth axis carries structure of its own, the
 homeostat keeps mean V in band over a long run, and the flash-safety bound holds
-through the ray march exactly as it does through the compositor. But §5.1's own
-warning that a volume "makes every parameter harder to reason about" is
-unaddressed by any of that. The numbers a slab needs are not the numbers a sheet
+through the ray march exactly as it does through the compositor. One statement
+about the *image* survives too, and it is the only one: over 700 frames the
+exposure governor settles the mean image lightness on its target under the slab
+as it does under the stack (0.153 against a target of 0.156), with the exposure
+multiplier well inside its bounds -- so the march is handing the output stage
+something it can work with, rather than a field too sparse or too dense for the
+knobs the two backends share to mean the same thing. But §5.1's own warning that
+a volume "makes every parameter harder to reason about" is unaddressed by any of
+that. The numbers a slab needs are not the numbers a sheet
 needs, and the ones most likely to want moving once someone has watched it are
 the agent density (a filament network occupies a much smaller fraction of a
 volume than of a plane), the depth anisotropy, and the light's ambient floor.

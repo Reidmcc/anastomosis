@@ -41,12 +41,33 @@
 @group(0) @binding(5) var noise_tex: texture_2d<f32>;
 @group(0) @binding(6) var samp: sampler;
 
-// The layered backend applies `extinction` once per layer and ships with three
-// layers, so normalising by the slab's thickness and multiplying by that count
-// makes the total attenuation through the volume match what the same setting
-// gives through the stack. Without it the `filament_glow` macro would mean two
-// different things depending on which backend was running.
-const LAYERED_EQUIVALENT: f32 = 3.0;
+// `extinction` reaches this shader as optical depth per unit density *per
+// filament*, because that is the only reading under which the `filament_glow`
+// macro means the same thing here as it does in the compositor: there,
+// `1 - exp(-density * extinction)` is applied once to a whole layer, i.e. once
+// to whatever structure the pixel is looking through. Here the ray crosses that
+// structure in several steps, so the per-length coefficient has to be the one
+// that accumulates to `extinction` across a filament's width.
+//
+// Normalising by the *slab's* thickness instead -- so that a ray crossing the
+// whole depth at density one accumulates `extinction` -- is the obvious
+// alternative and is the wrong reading. A filament occupies a few voxels of
+// forty-eight, so under that rule it would pick up about an eighth of the
+// optical depth the same setting gives it in the compositor, and
+// `filament_glow` would mean two different things depending on which backend
+// was running. The exposure governor would hide most of the difference by
+// lifting the whole image, ground included, which is the wrong correction
+// applied to the wrong thing.
+//
+// Six voxels is the width of a Gray-Scott feature at the default `scale`,
+// taken as the full width of a filament rather than as the trail's diffusion
+// sigma. It is a single number standing in for something that varies with the
+// `scale` macro and with the climate, so it is an approximation on purpose --
+// the alternative is a per-voxel feature-size estimate, and nothing here needs
+// that precision. Expressed in voxels rather than as a fraction of the depth
+// so that changing `volume.depth` alters how much material a ray passes
+// through -- which it should -- without also altering how opaque any of it is.
+const FEATURE_VOXELS: f32 = 6.0;
 
 // Once this little light is still getting through, everything left behind is
 // bounded by it, and the ground is added with whatever transmittance remains --
@@ -109,8 +130,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // and the tilt adds its own small amount of path length.
     let ray_world = vec3<f32>(shear, render.slab_depth);
     let step_len = length(ray_world) * inv_steps;
-    let sigma = render.extinction * LAYERED_EQUIVALENT
-        / max(render.slab_depth, 1e-4);
+    // Optical depth per unit density per unit world length. Voxels are cubic,
+    // so one voxel is `1 / vol_w` of world.
+    let sigma = render.extinction * vol_dims.x / FEATURE_VOXELS;
 
     // World units per unit of normalised volume coordinate, for the shadow
     // ray: the lateral axes span 1 and h/w, the depth axis d/w.

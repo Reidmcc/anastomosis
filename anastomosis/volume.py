@@ -440,10 +440,12 @@ class VolumeEngine(Backend):
     def _make_output_targets(self, width: int, height: int) -> None:
         """The shared window-sized resources, plus the march's motion output.
 
-        The safety stage reprojects its history through a *screen-space*
-        velocity field (DESIGN.md §7). The layered backend has one already --
-        its front layer's velocity is a screen-sized 2D field -- and a volume
-        does not, so the march accumulates one along each ray. That makes it a
+        The safety stage reprojects its history through a velocity field
+        (DESIGN.md §7). The layered backend hands it the front layer's, which
+        is already a 2D texture in the plane the limiter works in; a volume has
+        no such thing, so the march accumulates one along each ray -- each
+        sample's lateral velocity, weighted by how much that sample contributes
+        to the pixel, in output pixels per tick. Being per-pixel makes it a
         window-sized resource, which is to say part of a resize.
         """
         super()._make_output_targets(width, height)

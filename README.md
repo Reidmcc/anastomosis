@@ -241,8 +241,8 @@ because that would be plainly visible.
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # ~60s
-pytest -m "not slow"        # skip the Gray-Scott sweeps and GPU soaks
+pytest                      # ~8 min on a software adapter
+pytest -m "not slow"        # ~40s; skips the Gray-Scott sweeps and GPU soaks
 ```
 
 The suite runs headless on a software adapter (Mesa's lavapipe), so it works in

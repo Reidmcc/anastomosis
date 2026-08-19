@@ -622,3 +622,40 @@ def test_a_resize_rebuilds_only_the_presentation(gpu_device, offscreen_target):
     image = engine.read_final_rgba()
     assert image.shape == (128, 160, 4)
     assert np.isfinite(image).all()
+
+
+@pytest.mark.slow
+def test_the_exposure_governor_reaches_its_target_through_the_march(
+    gpu_device, offscreen_target
+):
+    """The one perceptual claim about this backend a test can actually make.
+
+    How the slab *looks* needs a real GPU and a pair of eyes (DESIGN.md §13).
+    What can be checked is that the ray march hands the output stage something
+    the governor can work with at all: a volume too sparse to register would
+    show up as the exposure saturating near its ceiling with the image still
+    dark, and one too dense would pin it at the floor. Either would mean the
+    knobs the two backends share do not mean the same thing under both.
+
+    The governor's time constant is measured in seconds by design, so this
+    needs several hundred frames to be a statement about the settled level
+    rather than about the fade-in.
+    """
+    params = _params(width=96, depth=24, climate_width=12, climate_height=8,
+                     climate_depth=4, steps=24)
+    engine = _engine(gpu_device, params, seed=8, size=(160, 96))
+    view, fmt = offscreen_target(160, 96)
+
+    for _ in range(700):
+        engine.tick(params)
+        engine.render(params, frac=0.5, target_view=view, target_format=fmt)
+
+    stats = engine.read_stats()
+    settled = stats["img_sum_l"] / max(stats["img_count"], 1.0)
+    target = params.safety.exposure_target
+    assert abs(settled - target) < 0.03 * max(target, 1e-6) + 0.02, (
+        f"mean image lightness settled at {settled:.4f} against a target of "
+        f"{target:.4f}")
+    assert 0.05 < stats["exposure"] < 12.0, (
+        f"the governor is at {stats['exposure']:.2f}, near one of its bounds; "
+        "the march is handing it an image it can only just correct")
