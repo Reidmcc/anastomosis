@@ -1373,7 +1373,13 @@ card, so the depth-backend decision can be made on aesthetics rather than cost.
 **Secondary-display specifics:**
 
 - Borderless windowed fullscreen, never exclusive fullscreen — exclusive mode can
-  stall the compositor on the other display and steal focus.
+  stall the compositor on the other display and steal focus. `rendercanvas` has no
+  fullscreen API of its own, so this reaches past it to the native window
+  (`anastomosis/window.py`): Qt's `showFullScreen`, which is a window state and never
+  a mode change, and for glfw an undecorated window sized to the monitor it is
+  already on — deliberately *not* `set_window_monitor`, which is the exclusive path.
+  Toggled with **F11**, from the render window or the control panel, and exactly
+  reversible: leaving restores the frame the window had, maximised included.
 - Never take input focus or capture the cursor.
 - `PresentMode::Fifo` (vsync). At 60 Hz, 30 FPS is exactly every other vsync. At 144
   Hz, 30 is not an integer divisor (144/30 = 4.8) — `rendercanvas`'s `max_fps` will

@@ -30,7 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--fps", type=int, default=30,
         help="frame rate cap (default: 30)",
     )
-    parser.add_argument("--fullscreen", action="store_true")
+    parser.add_argument(
+        "--fullscreen", action="store_true",
+        help="start borderless fullscreen; F11 toggles it at any time",
+    )
     parser.add_argument(
         "--no-vsync", action="store_true",
         help="disable vsync; normally leave this on",

@@ -219,9 +219,14 @@ class _StubApp:
         self._frame_times = [0.01]
         self._sim_hz_scale = 1.0
         self.requested: list[str] = []
+        self.fullscreen_toggles = 0
 
     def apply_macros(self, macros):
         self.config.macros = macros
+
+    def toggle_fullscreen(self) -> bool:
+        self.fullscreen_toggles += 1
+        return False
 
     def save_config(self):
         pass

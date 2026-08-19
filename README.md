@@ -42,10 +42,14 @@ anastomosis --preset quiet           # start from a named preset
 anastomosis --width 2560 --height 1440
 ```
 
-Drag the window to your secondary display and go fullscreen there. It uses
-borderless windowed fullscreen rather than exclusive, deliberately: exclusive
-fullscreen can stall the compositor on your *other* monitor and steal focus,
-which would defeat the point.
+Drag the window to your secondary display and press **F11** to go fullscreen
+there; F11 again brings the window back exactly as it was. `--fullscreen` does
+the same thing at launch. It uses borderless windowed fullscreen rather than
+exclusive, deliberately: exclusive fullscreen can stall the compositor on your
+*other* monitor and steal focus, which would defeat the point.
+
+F11 works from the control panel too, so you do not have to click on the
+visual — and therefore give it focus — just to toggle it.
 
 Resizing the window — dragging an edge, maximising, going fullscreen — does not
 interrupt the simulation. The field keeps running with everything it has grown,
