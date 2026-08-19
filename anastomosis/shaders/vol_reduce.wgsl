@@ -36,6 +36,7 @@ fn reduce_tiles(
     @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
     let dims = vec3<u32>(params.dims_x, params.dims_y, params.dims_z);
+    let idims = vec3<i32>(dims);
     var sample = vec4<f32>(0.0);
     var flux = vec4<f32>(0.0);
     if (gid.x < dims.x && gid.y < dims.y && gid.z < dims.z) {
@@ -49,7 +50,28 @@ fn reduce_tiles(
         let t = textureLoad(trail_tex, p, 0);
         let trail = max(finite_or(t.r, 0.0), 0.0);
         let prune_relative = clamp(finite_or(t.b, 0.0), 0.0, 8.0);
-        flux = vec4<f32>(trail, trail * prune_relative, 0.0, 0.0);
+
+        // |grad V| for the feature-size loop, as in reduce.wgsl but over three
+        // axes. The length scale it feeds is in voxels, and the controller
+        // regulates it against a reference it takes from the field itself, so
+        // nothing here has to know that a voxel is five display pixels wide
+        // where a layered cell is one.
+        let vxp = finite_or(
+            textureLoad(reaction_cur, wrap_texel3(p + vec3<i32>(1, 0, 0), idims), 0).g, 0.0);
+        let vxm = finite_or(
+            textureLoad(reaction_cur, wrap_texel3(p - vec3<i32>(1, 0, 0), idims), 0).g, 0.0);
+        let vyp = finite_or(
+            textureLoad(reaction_cur, wrap_texel3(p + vec3<i32>(0, 1, 0), idims), 0).g, 0.0);
+        let vym = finite_or(
+            textureLoad(reaction_cur, wrap_texel3(p - vec3<i32>(0, 1, 0), idims), 0).g, 0.0);
+        let vzp = finite_or(
+            textureLoad(reaction_cur, wrap_texel3(p + vec3<i32>(0, 0, 1), idims), 0).g, 0.0);
+        let vzm = finite_or(
+            textureLoad(reaction_cur, wrap_texel3(p - vec3<i32>(0, 0, 1), idims), 0).g, 0.0);
+        let grad = length(vec3<f32>(
+            (vxp - vxm) * 0.5, (vyp - vym) * 0.5, (vzp - vzm) * 0.5));
+
+        flux = vec4<f32>(trail, trail * prune_relative, grad, 0.0);
     }
 
     tile[lid] = sample;

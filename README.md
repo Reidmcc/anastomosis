@@ -7,7 +7,7 @@ where the name comes from — inside a slowly breathing medium whose colour drif
 with what the simulation is actually doing. It is designed to run for days on a
 secondary display while you get on with something else on your main one.
 
-Three things it will not do, by construction:
+Four things it will not do, by construction:
 
 - **It will not flash.** The output stage enforces a hard per-pixel rate limit on
   lightness, in Oklab, measured against the motion-compensated previous frame.
@@ -18,6 +18,15 @@ Three things it will not do, by construction:
 - **It will not settle.** The governing parameters are themselves a slowly
   drifting spatial field, regulated by a loose, slow homeostat. The system is
   never solving the same equation twice.
+- **It will not become a field of identical dots.** That is a separate promise
+  from the one above, and a harder one: a field can be alive by every measure
+  the homeostat takes and still be the same picture it was an hour ago, because
+  none of those measures can see how the material is *arranged*. Left alone,
+  what it arranges itself into is a dense array of similar-sized round
+  features, which some people find actively unpleasant to look at. So feature
+  size is measured too, and steered — it differs from region to region, and the
+  field's overall size is held to a setpoint that keeps moving. See
+  `DESIGN.md` §4.7.
 
 `DESIGN.md` explains the architecture and the reasoning. This file is how to run
 it.

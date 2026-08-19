@@ -11,6 +11,8 @@ is stored as rgba16float, so agreement is asserted to roughly f16 precision.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 import wgpu
@@ -477,3 +479,179 @@ def test_blue_noise_is_blue():
         f"mask is not blue: high/low frequency power ratio is {high / low:.1f}"
     )
     assert mask.min() >= 0.0 and mask.max() < 1.0
+
+
+# --------------------------------------------------------------------------
+# The feature-size measurement -- DESIGN.md §4.7 step 5
+# --------------------------------------------------------------------------
+
+
+def _measure_ell_on_gpu(device, v):
+    """`stats.ell` as the reduce and homeostat passes compute it, for a given V.
+
+    Both passes, because the length scale is a ratio of two sums taken in the
+    first and divided in the second, and it is the ratio that has to be right.
+    The controller around it is switched off with zero gains: this is a test of
+    the measurement, and a test of the measurement should not be able to fail
+    because of the loop.
+    """
+    size = v.shape[0]
+    tiles = ((size + 15) // 16, (size + 15) // 16)
+
+    usage = (
+        wgpu.TextureUsage.TEXTURE_BINDING
+        | wgpu.TextureUsage.STORAGE_BINDING
+        | wgpu.TextureUsage.COPY_SRC
+        | wgpu.TextureUsage.COPY_DST
+    )
+
+    def make_texture(array):
+        texture = device.create_texture(
+            size=(size, size, 1), format=wgpu.TextureFormat.rgba16float, usage=usage
+        )
+        device.queue.write_texture(
+            {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
+            np.ascontiguousarray(array.astype(np.float16)),
+            {"offset": 0, "bytes_per_row": size * 8, "rows_per_image": size},
+            (size, size, 1),
+        )
+        return texture
+
+    field = np.zeros((size, size, 4), dtype=np.float32)
+    field[..., 1] = v
+    reaction = make_texture(field)
+    trail = make_texture(np.zeros_like(field))
+
+    values = {
+        "dims_x": size, "dims_y": size,
+        # Zero gains: the corrections stay where they are and only the
+        # measurement is written.
+        "gain_p": 0.0, "gain_i": 0.0, "homeo_rate": 0.0,
+        "ell_rate": 0.0, "ell_ref_rate": 0.0, "ell_corr_limit": 0.0,
+        "deadband": 1.0, "target_mass": 1.0,
+        "target_variance": 1.0, "target_activity": 1.0,
+    }
+    params_buf = device.create_buffer_with_data(
+        data=gpu_params.pack(gpu_params.SIM_DTYPE, values).tobytes(),
+        usage=wgpu.BufferUsage.STORAGE,
+    )
+    partials_buf = device.create_buffer(
+        size=gpu_params.PARTIAL_SIZE * tiles[0] * tiles[1],
+        usage=wgpu.BufferUsage.STORAGE,
+    )
+    stats_buf = device.create_buffer_with_data(
+        data=np.zeros(1, dtype=gpu_params.STATS_DTYPE).tobytes(),
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC,
+    )
+
+    def compute(name, entry_point):
+        module = device.create_shader_module(code=shaders.load(name), label=name)
+        return device.create_compute_pipeline(
+            layout=wgpu.enums.AutoLayoutMode.auto,
+            compute={"module": module, "entry_point": entry_point},
+        )
+
+    def buffer(buf):
+        return {"buffer": buf, "offset": 0, "size": buf.size}
+
+    reduce_pipeline = compute("reduce.wgsl", "reduce_tiles")
+    final_pipeline = compute("homeostat.wgsl", "reduce_final")
+
+    encoder = device.create_command_encoder()
+    cpass = encoder.begin_compute_pass()
+    cpass.set_pipeline(reduce_pipeline)
+    cpass.set_bind_group(0, device.create_bind_group(
+        layout=reduce_pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": buffer(params_buf)},
+            {"binding": 1, "resource": reaction.create_view()},
+            {"binding": 2, "resource": reaction.create_view()},
+            {"binding": 3, "resource": trail.create_view()},
+            {"binding": 4, "resource": buffer(partials_buf)},
+        ],
+    ))
+    cpass.dispatch_workgroups(tiles[0], tiles[1], 1)
+    cpass.set_pipeline(final_pipeline)
+    cpass.set_bind_group(0, device.create_bind_group(
+        layout=final_pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": buffer(params_buf)},
+            {"binding": 1, "resource": buffer(partials_buf)},
+            {"binding": 2, "resource": buffer(stats_buf)},
+        ],
+    ))
+    cpass.dispatch_workgroups(1, 1, 1)
+    cpass.end()
+    device.queue.submit([encoder.finish()])
+
+    return np.frombuffer(
+        device.queue.read_buffer(stats_buf), dtype=gpu_params.STATS_DTYPE
+    )[0]
+
+
+@pytest.mark.parametrize("du", [0.14, 0.2097, 0.38])
+def test_the_length_scale_matches_numpy(gpu_device, du):
+    """The measure the feature-size controller is closed on.
+
+    This is the one homeostat input that is not invariant under rearrangement,
+    which is the whole reason it was added -- so it is also the one whose
+    arithmetic has to agree with the offline sweeps that chose the du band. Any
+    other discretisation of the gradient is a different quantity, and every
+    figure in DESIGN.md §4.7 would then be quoting a scale the shader does not
+    use.
+
+    Run across the band rather than at one point, because the thing being
+    checked is a ratio, and a ratio can agree at one value by luck.
+    """
+    device, _ = gpu_device
+    params = config.Config().resolve().reaction
+
+    u, v = R.seed_field(96, blobs=8, seed=5)
+    for _ in range(1200):
+        u, v = R.gray_scott_step(
+            u, v, params.feed, params.kill,
+            du=du, dv=params.dv * du / params.du, dt=params.dt,
+        )
+
+    # Rounded to what the texture can hold, so this compares the arithmetic
+    # rather than the storage format.
+    stored = v.astype(np.float16).astype(np.float32)
+    stats = _measure_ell_on_gpu(device, v)
+    expected = M.length_scale(stored)
+
+    assert stats["ell"] == pytest.approx(expected, rel=0.02), (
+        f"the GPU length scale ({stats['ell']:.4f}) disagrees with "
+        f"morphology.length_scale ({expected:.4f}) at du = {du}"
+    )
+    assert stats["mean_grad_v"] == pytest.approx(
+        M.gradient_magnitude(stored).mean(), rel=0.02
+    )
+
+
+def test_the_length_scale_follows_the_diffusion_rate(gpu_device):
+    """The plant the controller assumes: ell rises with du, as roughly sqrt.
+
+    The loop's gain is sized against that exponent, and its sign is the whole
+    of its stability, so it is worth asserting rather than remembering. A run
+    that measured the exponent as negative would make the controller a positive
+    feedback that drives `du` to a bound.
+    """
+    device, _ = gpu_device
+    params = config.Config().resolve().reaction
+
+    measured = {}
+    for du in (0.14, 0.38):
+        u, v = R.seed_field(96, blobs=8, seed=5)
+        for _ in range(1200):
+            u, v = R.gray_scott_step(
+                u, v, params.feed, params.kill,
+                du=du, dv=params.dv * du / params.du, dt=params.dt,
+            )
+        measured[du] = float(_measure_ell_on_gpu(device, v)["ell"])
+
+    exponent = math.log(measured[0.38] / measured[0.14]) / math.log(0.38 / 0.14)
+    assert 0.3 < exponent < 0.8, (
+        f"ell goes as du^{exponent:.2f} (ell {measured[0.14]:.2f} -> "
+        f"{measured[0.38]:.2f}); the feature-size loop's gain is sized for "
+        f"about 0.5, and a different exponent changes how fast it settles"
+    )

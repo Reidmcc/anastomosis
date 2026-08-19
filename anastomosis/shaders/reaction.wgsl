@@ -104,8 +104,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // and only 0.57 below -- so an additive deviation spends its downside
     // against the floor long before it has used its upside. Geometric, the
     // same deviation costs 1% of texels at the clamp where additive costs 5%,
-    // for the same spread of feature size. `params.du` already carries the
-    // global walk, and both terms being geometric means they compose.
+    // for the same spread of feature size.
     //
     // The bounds are a survival floor and a stability ceiling, not a stylistic
     // range: under du_min the reaction thins toward collapse (mean V 0.015 at
@@ -118,8 +117,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // dv/du *ratio* moves mass hard (0.36 -> 0.64 takes mean V from 0.144 to
     // 0.084), while the pair scaled together barely moves it at all. That is
     // the whole reason this lever was chosen over kill.
+    //
+    // `stats.corr_du` is the feature-size controller's global correction and
+    // `params.du` the base the scale macro sets; the climate texel is the
+    // per-region deviation on top. All three are geometric, so they compose
+    // exactly rather than interacting -- and `dv` riding on the result holds
+    // the dv/du ratio through every one of them, which is what keeps the whole
+    // mechanism clear of mass and so of the exposure governor.
+    let du_global = params.du * exp(stats.corr_du);
     let du_local = clamp(
-        params.du * exp(params.range_du * cc.x),
+        du_global * exp(params.range_du * cc.x),
         params.du_min, params.du_max);
     let dv_local = params.dv * (du_local / max(params.du, 1e-6));
 

@@ -298,7 +298,7 @@ def test_the_morphology_climate_is_part_of_a_current_checkpoint(gpu_device):
 
 
 def test_the_feature_size_walk_is_restored_rather_than_recentred(gpu_device):
-    """The walk on the reaction's diffusion rate is engine state like any other.
+    """The walk on the feature-size setpoint is engine state like any other.
 
     Dropping it would put a resumed field back at the middle of its band and let
     it wander somewhere else from there -- a slow change in feature size that no
@@ -308,18 +308,18 @@ def test_the_feature_size_walk_is_restored_rather_than_recentred(gpu_device):
     engine = _make_engine(gpu_device, params, seed=3)
     for _ in range(20):
         engine.tick(params)
-    assert engine._du_walk != 0.0, "the fixture should have walked somewhere"
+    assert engine._ell_walk != 0.0, "the fixture should have walked somewhere"
     snapshot = checkpoint.capture(engine, sim_hz=params.sim_hz)
 
     resumed = _make_engine(gpu_device, params, seed=808)
     assert checkpoint.restore(resumed, snapshot)
-    assert resumed._du_walk == engine._du_walk
+    assert resumed._ell_walk == engine._ell_walk
     # And the stream it is driven by, so the walk continues rather than starting
     # a different path from the same point.
     for _ in range(5):
         engine.tick(params)
         resumed.tick(params)
-    assert resumed._du_walk == engine._du_walk
+    assert resumed._ell_walk == engine._ell_walk
 
 
 def test_a_walk_state_this_build_cannot_use_is_not_fatal(gpu_device):
@@ -329,12 +329,12 @@ def test_a_walk_state_this_build_cannot_use_is_not_fatal(gpu_device):
     engine.tick(params)
     snapshot = checkpoint.capture(engine, sim_hz=params.sim_hz)
     snapshot.meta["engine"]["walk_rng"] = {"bit_generator": "NotARealGenerator"}
-    snapshot.meta["engine"]["du_walk"] = "not a number"
+    snapshot.meta["engine"]["ell_walk"] = "not a number"
 
     resumed = _make_engine(gpu_device, params, seed=808)
     assert checkpoint.restore(resumed, snapshot)
     assert resumed.tick_count == engine.tick_count
-    assert resumed._du_walk == 0.0
+    assert resumed._ell_walk == 0.0
     resumed.tick(params)  # and the fresh stream still drives it
 
 
@@ -925,3 +925,59 @@ def test_the_checkpoint_lives_in_the_state_directory(monkeypatch, tmp_path):
     assert checkpoint.default_checkpoint_path() == (
         tmp_path / "anastomosis" / "checkpoint.npz"
     )
+
+
+def test_a_checkpoint_from_before_the_feature_size_loop_is_readable(gpu_device):
+    """The stats block got wider; a file written before that must still load.
+
+    It is the one array saved as a raw blob rather than as a named field per
+    quantity, so its size is all a reader has to go on -- and an exact-size
+    check would mean every widening of the block silently threw away every
+    field written before it. For a few bytes of controller state that a fresh
+    field re-derives within a minute, that is the wrong trade: the hours of
+    field are the expensive part.
+
+    What the restore must do with the missing bytes is start the loop
+    unseeded, which is exactly what a fresh field does.
+    """
+    params = _params()
+    engine = _make_engine(gpu_device, params)
+    for _ in range(3):
+        engine.tick(params)
+    snapshot = checkpoint.capture(engine, sim_hz=params.sim_hz)
+
+    meta = json.loads(json.dumps(snapshot.meta))
+    meta["version"] = 4
+    meta["engine"]["du_walk"] = meta["engine"].pop("ell_walk")
+    arrays = dict(snapshot.arrays)
+    arrays["stats"] = arrays["stats"][: checkpoint.STATS_BYTES_BEFORE_ELL]
+    old = checkpoint.Checkpoint(meta=meta, arrays=arrays)
+
+    assert not checkpoint.compatibility_problems(engine, old), (
+        "a version 4 file is being refused over the width of its stats block"
+    )
+    resumed = _make_engine(gpu_device, params, seed=7)
+    assert checkpoint.restore(resumed, old)
+    assert resumed.tick_count == engine.tick_count
+    # The walk comes back under its old name -- it is the same bounded,
+    # unit-variance state, only what it multiplies has changed.
+    assert resumed._ell_walk == engine._ell_walk
+
+    stats = resumed.read_stats()
+    assert stats["ell_samples"] == 0.0 and stats["corr_du"] == 0.0, (
+        "the feature-size loop resumed with state a version 4 file cannot have "
+        "carried"
+    )
+
+
+def test_a_truncated_stats_block_is_refused(gpu_device):
+    """The floor is a floor, not an absence of checking.
+
+    Short of what its own version wrote, the blob is damaged rather than merely
+    old, and uploading it would put arbitrary bytes into the controller state
+    of a run meant to last for days.
+    """
+    engine = _make_engine(gpu_device, _params())
+    snapshot = checkpoint.capture(engine, sim_hz=20.0)
+    snapshot.arrays["stats"] = snapshot.arrays["stats"][:40]
+    assert checkpoint.compatibility_problems(engine, snapshot)

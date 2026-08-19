@@ -84,13 +84,17 @@ from . import volume as volume_module
 
 log = logging.getLogger(__name__)
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 # Version 1 recorded the *window* size where version 2 records the simulation's
 # own, which are the same number unless that session was resized after starting.
 # Version 3 adds the morphology climate pair and the feature-size walk, both of
 # which postdate version 2 and neither of which an older file can carry.
 # Version 4 names the backend that wrote the file; anything older predates the
 # volumetric slab and can only have come from the layered one.
+# Version 5 widens the stats buffer for the feature-size loop (DESIGN.md 4.7
+# step 5) and renames the walk it drives; an older file's shorter stats blob is
+# zero-extended, which starts the loop's reference unseeded and so takes it
+# from the first live measurement, exactly as a fresh field does.
 # Reading them costs a few lines and saves anyone upgrading their mature field.
 OLDEST_READABLE_VERSION = 1
 
@@ -115,6 +119,15 @@ FIELDS_SINCE = {"climate_c": 3}
 # The version the backend key first appeared in. A file without it is layered,
 # because nothing else existed yet.
 BACKEND_SINCE = 4
+
+# The stats buffer is a raw byte blob rather than a named array per field, so
+# its *size* is the only thing a reader can check it against -- and that size
+# has changed, which makes it the one array whose expected shape is a function
+# of the version. Versions 1-4 wrote the 20-field block that predates the
+# feature-size loop. Recorded as a number rather than derived, because the
+# point of the entry is to describe a layout this build no longer has.
+STATS_BYTES_BEFORE_ELL = 80
+STATS_ELL_SINCE = 5
 
 # Rewritten from scratch every tick before anything reads them, so they are not
 # saved. Named here so the tests can check that this stays true.
@@ -242,9 +255,11 @@ def capture(engine, scheduler=None, sim_hz: float = 0.0) -> Checkpoint:
             "frame_count": int(engine.frame_count),
             "seed": int(engine.seed),
             "hue_phase": float(engine.hue_phase),
-            # The global feature-size walk: its value, and the position of the
-            # stream that drives it (see `_walk_rng_state`).
-            "du_walk": float(engine._du_walk),
+            # The feature-size setpoint walk: its value, and the position of
+            # the stream that drives it (see `_walk_rng_state`). Named
+            # `du_walk` before version 5, when it drove the diffusion rate
+            # directly rather than the setpoint a controller drives it to.
+            "ell_walk": float(engine._ell_walk),
             "walk_rng": _walk_rng_state(engine),
             "parallax": [
                 [float(x), float(y)] for x, y in (engine._parallax or [])
@@ -685,18 +700,31 @@ def checkpoint_backend(checkpoint: Checkpoint) -> str:
     return str(checkpoint.meta.get("backend") or config_module.DEFAULT_BACKEND)
 
 
+def stats_bytes_for(version: int) -> int:
+    """How many bytes of stats block a file of this version is expected to hold.
+
+    The stats buffer is the one array saved as a raw blob rather than as a named
+    field per quantity, so its size is the only handle a reader has on it -- and
+    unlike every texture here, that size is a function of the build rather than
+    of the geometry.
+    """
+    if version >= STATS_ELL_SINCE:
+        return gpu_params.STATS_DTYPE.itemsize
+    return STATS_BYTES_BEFORE_ELL
+
+
 def _expected_arrays(
     geometry, version: int = FORMAT_VERSION, backend: str | None = None
 ) -> dict[str, tuple[int, ...]]:
     """Array name -> required shape, for a given simulation geometry.
 
     Version-aware, because a field that did not exist when the file was written
-    cannot be in it and must not be demanded of it.
+    cannot be in it and must not be demanded of it. The stats blob is not here;
+    it is checked against a minimum rather than an exact size, so it has its own
+    handling in :func:`_usable_geometry`.
     """
     layout = layout_for(backend or config_module.DEFAULT_BACKEND)
-    expected: dict[str, tuple[int, ...]] = {
-        "stats": (gpu_params.STATS_DTYPE.itemsize,),
-    }
+    expected: dict[str, tuple[int, ...]] = {}
     expected.update(layout.expected_arrays(geometry, version))
     return expected
 
@@ -739,6 +767,20 @@ def _usable_geometry(
 
     # The file must actually hold what its own metadata claims, since that is
     # what the arrays are uploaded against.
+    #
+    # The stats blob is checked against a floor rather than an exact size. Short
+    # of what its own version wrote it is truncated and unusable; longer than
+    # that it is a file from a build that had more to say, and `_fit_stats`
+    # takes the part this one understands. Requiring an exact match would mean
+    # every widening of the block threw away every field written before it, for
+    # a few bytes of controller state that a fresh field re-derives in a minute.
+    stats = checkpoint.arrays.get("stats")
+    required = stats_bytes_for(version)
+    if stats is None:
+        problems.append("missing stats")
+    elif stats.size < required:
+        problems.append(f"stats is {stats.size} bytes, expected at least {required}")
+
     for name, shape in _expected_arrays(geometry, version, saved_backend).items():
         array = checkpoint.arrays.get(name)
         if array is None:
@@ -806,23 +848,41 @@ def _write_texture3(device, texture, data: np.ndarray) -> None:
     )
 
 
+def _fit_stats(saved: np.ndarray) -> bytes:
+    """The saved stats blob at this build's width, zero-padded if it is older."""
+    payload = np.asarray(saved, dtype=np.uint8).reshape(-1)
+    width = gpu_params.STATS_DTYPE.itemsize
+    if payload.size >= width:
+        return payload[:width].tobytes()
+    return np.pad(payload, (0, width - payload.size)).tobytes()
+
+
 def _restore_walk(engine, saved: dict[str, Any]) -> None:
-    """Put the global feature-size walk back where it was.
+    """Put the feature-size setpoint walk back where it was.
 
     Its value is accumulated state like any other: dropping it would restart the
-    reaction's diffusion rate at the middle of its band and drift away from the
-    saved field's feature size over the following minutes. The stream position
-    goes back with it so the walk continues rather than merely resembling itself.
+    setpoint at the middle of its band and drift away from the saved field's
+    feature size over the following minutes. The stream position goes back with
+    it so the walk continues rather than merely resembling itself.
+
+    A file written before version 5 carries the same walk under its old name,
+    when it scaled the diffusion rate directly rather than the setpoint the
+    controller now drives it to. The units are identical -- a bounded,
+    unit-variance OU state -- so the old value is still the right place to
+    resume from; what it multiplies is `ell_walk` rather than `du_walk` now.
 
     Both halves are untrusted input, and neither is worth failing a restore over:
     a value that is not a finite number falls back to the walk's own centre, and
     a stream state this build cannot use leaves the fresh stream in place.
     """
+    raw = saved.get("ell_walk")
+    if raw is None:
+        raw = saved.get("du_walk")
     try:
-        walk = float(saved.get("du_walk") or 0.0)
+        walk = float(raw or 0.0)
     except (TypeError, ValueError):
         walk = 0.0
-    engine._du_walk = max(-2.0, min(2.0, walk)) if math.isfinite(walk) else 0.0
+    engine._ell_walk = max(-2.0, min(2.0, walk)) if math.isfinite(walk) else 0.0
 
     state = saved.get("walk_rng")
     if not isinstance(state, dict) or not state:
@@ -853,7 +913,13 @@ def restore(engine, checkpoint: Checkpoint, scheduler=None) -> bool:
     device = engine.device
     layout_for(engine.name).restore_arrays(engine, checkpoint.arrays)
 
-    device.queue.write_buffer(engine.stats_buf, 0, checkpoint.arrays["stats"].tobytes())
+    # Zero-extended if it came from a build with a narrower block. Zero is the
+    # right filler for every field the widening added: the feature-size loop's
+    # sample counter is then zero, so it seeds its reference from the first live
+    # measurement of the restored field rather than from whatever a shorter file
+    # implied.
+    device.queue.write_buffer(
+        engine.stats_buf, 0, _fit_stats(checkpoint.arrays["stats"]))
 
     saved = checkpoint.meta.get("engine") or {}
     engine.tick_count = int(saved.get("tick_count", 0))

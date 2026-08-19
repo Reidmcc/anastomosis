@@ -13,6 +13,18 @@
 //   * A long time constant. The controller must be far slower than anything
 //     visible, or it becomes itself a source of coordinated global change,
 //     which is precisely the punctuation the brief forbids.
+//
+// The feature-size loop at the bottom is deliberately none of that, and the
+// difference is worth being explicit about because it looks like a
+// contradiction. Mass, variance and activity are quantities the field is
+// *allowed* to wander in; defending them tightly would flatten the regional
+// variety the climate field exists to create, so they get a wide deadband and
+// a slow hand. Feature size is not being defended -- its setpoint is itself
+// walking, and the loop's job is to make sure the texture follows it rather
+// than sitting in whatever attractor the reaction found. So it has no deadband
+// and a much shorter time constant. A deadband there would be a licence to
+// freeze, which is the failure this whole mechanism exists to catch
+// (DESIGN.md 4.7 step 5).
 
 //!include common.wgsl
 
@@ -35,6 +47,29 @@ var<workgroup> flux_totals: array<vec4<f32>, 256>;
 // this is an accounting measurement, not a control output, and lagging it would
 // reintroduce exactly the mass bias it exists to remove.
 const PRUNE_RETURN_RATE: f32 = 0.05;
+
+// The field is too thin for the length scale to mean anything below this: `ell`
+// is a ratio of two means that both go to zero together, and on a field that
+// has been extinguished it is 0/0. The mass loop is what matters then, and it
+// is unaffected; this one holds its output until there is a field to measure.
+const ELL_LIVE_FLOOR: f32 = 1e-4;
+
+// Mature ticks the feature-size reference is averaged over before it becomes
+// the slow exponential its time constant asks for. It has to start fast: its
+// first value is otherwise its value for the next half hour, and the
+// controller spends that half hour driving `du` to a bound chasing a baseline
+// taken before the field had a texture. It has to *stop* being fast just as
+// firmly -- a reference that keeps converging quickly tracks the modulation it
+// is supposed to be the baseline for, and the loop cancels itself. 600 ticks
+// is half a minute at the default rate, long enough to average the field's own
+// jitter and far short of the walk that rides on top of it.
+//
+// The counter it is compared against runs for the life of the session and is
+// an f32, so past 2^24 ticks -- about ten days at the default rate -- it stops
+// incrementing exactly. That is harmless and deliberate rather than merely
+// tolerated: by then its only remaining job is to keep this comparison false,
+// which a saturated counter does perfectly well.
+const ELL_SEED_SAMPLES: f32 = 600.0;
 
 // Relative error with a deadband: zero inside the band, and continuous at the
 // edges so the controller never switches on abruptly.
@@ -102,6 +137,70 @@ fn reduce_final(@builtin(local_invocation_index) lid: u32) {
     stats.prune_return = mix(stats.prune_return, measured_return, PRUNE_RETURN_RATE);
 
     let err_mass = banded_error(params.target_mass, mean_v, params.deadband);
+
+    // --- Feature size -----------------------------------------------------
+    //
+    // The one measure here that is not invariant under rearrangement, which is
+    // why it is the one that can tell a live field from a frozen picture of
+    // one. Everything in this block is in logarithms: `du` acts on the length
+    // scale as roughly its square root -- measured on a running engine, a
+    // x1.43 correction moved ell from 2.39 to 2.97 -- so a multiplicative
+    // correction is the natural actuator, and a walk symmetric in log is
+    // symmetric in what it does to the texture.
+    let mean_grad = flux.z / count;
+    let ell = mean_v / max(mean_grad, 1e-9);
+    stats.mean_grad_v = mean_grad;
+    stats.ell = ell;
+
+    // Steered only while the field is one whose feature size means anything,
+    // and `err_mass` is already the test for that: zero exactly when mass sits
+    // inside the deadband above. A field still growing into its band has a
+    // length scale that is going to change for reasons that have nothing to do
+    // with this loop, and a field a dieback has just emptied has one that says
+    // more about what is left than about what the texture is doing. Outside
+    // the band the correction simply holds, which is the right thing for an
+    // integrator whose measurement has stopped being informative.
+    //
+    // It doubles as this loop's NaN quarantine (DESIGN.md 4.6), and that is
+    // load-bearing rather than incidental: comparisons against NaN are false,
+    // so a poisoned reduction skips the block entirely and `corr_du` keeps its
+    // last good value. It matters more here than for the corrections above
+    // because this one is applied through an `exp`, so a NaN that reached the
+    // accumulator would not merely be a wrong diffusion rate.
+    if (err_mass == 0.0 && mean_v > ELL_LIVE_FLOOR && mean_grad > 0.0) {
+        let ln_ell = log(max(ell, 1e-6));
+        // The demanded modulation, subtracted here and added back below. This
+        // is what the reference is *not* allowed to absorb; see
+        // ReactionParams.ell_ref_tau_seconds.
+        let natural = ln_ell - params.ell_offset;
+
+        // A running mean for the first ELL_SEED_SAMPLES ticks, an exponential
+        // one after that: exact adoption of the first measurement, 1/n
+        // convergence while the reference is being established, and the
+        // configured time constant from then on. Both halves matter; see the
+        // constant.
+        let n = stats.ell_samples + 1.0;
+        stats.ell_samples = n;
+        var ref_rate = params.ell_ref_rate;
+        if (n <= ELL_SEED_SAMPLES) {
+            ref_rate = 1.0 / n;
+        }
+
+        // Pure integral, and pure integral on purpose: it is the accumulated
+        // correction that *is* the actuator, so the controller has no
+        // steady-state error against a slowly moving setpoint and its output
+        // is slew-limited by construction. Clamping the accumulator rather
+        // than its effect is the anti-windup.
+        let ell_err = (stats.ell_ref + params.ell_offset) - ln_ell;
+        stats.corr_du = clamp(
+            stats.corr_du + params.ell_rate * ell_err,
+            -params.ell_corr_limit, params.ell_corr_limit);
+
+        // Updated after the error is taken, so one tick's reference is the one
+        // the same tick's setpoint was built from.
+        stats.ell_ref = stats.ell_ref + ref_rate * (natural - stats.ell_ref);
+    }
+
     let err_var = banded_error(params.target_variance, var_v, params.deadband);
     let err_activity = banded_error(params.target_activity, mean_activity, params.deadband);
 

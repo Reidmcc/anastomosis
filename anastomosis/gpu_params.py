@@ -112,6 +112,7 @@ SIM_FIELDS: list[Field] = [
     ("activity_gain", "f32"),
     ("density_from_v", "f32"),
     ("density_from_trail", "f32"),
+    ("v_needs_trail", "f32"),
     # Generic blur pass control (reused by trail diffuse and DOF)
     ("blur_radius", "f32"),
     ("blur_dir_x", "f32"),
@@ -133,6 +134,17 @@ SIM_FIELDS: list[Field] = [
     ("gain_i", "f32"),
     ("integral_limit", "f32"),
     ("homeo_rate", "f32"),
+    # The feature-size loop (DESIGN.md 4.7 step 5). `ell_offset` is the log
+    # deviation the setpoint walk is asking for *this* tick, which is the only
+    # part of the mechanism that lives on the host: the walk is accumulated
+    # state, so it belongs with the hue phase and the parallax drift rather
+    # than in a shader. The three rates are per-tick forms of the time
+    # constants in `ReactionParams`, computed against `sim_hz` the same way
+    # `homeo_rate` is, so the tempo macro cannot change how the loop behaves.
+    ("ell_offset", "f32"),
+    ("ell_rate", "f32"),
+    ("ell_ref_rate", "f32"),
+    ("ell_corr_limit", "f32"),
     # Volumetric slab only (DESIGN.md §5.1).
     #
     # `depth_flow` weights the *lateral* components of the flow's vector
@@ -271,11 +283,12 @@ EVENT_FIELDS: list[Field] = [
 # never packed on the host -- only its size is, to allocate the buffer -- so it
 # is written as a pair of vec4s rather than derived from a scalar field list.
 # The second vec4 carries the trail flux balance the pruning term needs
-# centred; see reduce.wgsl and DESIGN.md §4.7.
+# centred, and the gradient sum the feature-size loop needs; see reduce.wgsl
+# and DESIGN.md §4.7.
 PARTIAL_WGSL = """\
 struct Partial {
     field: vec4<f32>,  // sum V, sum V^2, sum |dV/dt|, count
-    flux: vec4<f32>,   // sum trail, sum trail*deficit, spare, spare
+    flux: vec4<f32>,   // sum trail, sum trail*deficit, sum |grad V|, spare
 };"""
 
 # Two vec4s. std430 gives a vec4 16-byte alignment and this struct holds
@@ -356,6 +369,21 @@ STATS_FIELDS: list[Field] = [
     # prune term is a net mass sink that the homeostat cancels through
     # corr_decay.
     ("prune_return", "f32"),
+    # The feature-size loop, DESIGN.md 4.7 step 5. `ell` is the characteristic
+    # length scale `mean V / mean |grad V|` in cells -- the one measure of the
+    # field that is *not* invariant under rearrangement, which is why the
+    # controller was blind to a frozen texture without it. `ell_ref` is the
+    # slow reference it is regulated against, in logarithms, and `corr_du` is
+    # the accumulated log multiplier on the diffusion rate that the loop uses
+    # to get there. `ell_samples` counts the ticks that reference has averaged,
+    # which is what lets it converge fast when it is new and slowly once it is
+    # established -- a fresh field must not spend its first half hour dragging
+    # `corr_du` toward a reference taken before it had a texture to measure.
+    ("mean_grad_v", "f32"),
+    ("ell", "f32"),
+    ("ell_ref", "f32"),
+    ("corr_du", "f32"),
+    ("ell_samples", "f32"),
     # Image statistics, used by the exposure governor.
     ("img_sum_l", "f32"),
     ("img_max_l", "f32"),
