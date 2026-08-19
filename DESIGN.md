@@ -1381,6 +1381,16 @@ arithmetic error: 0.03 permits 4.5 flashes/second, *above* the WCAG limit rather
 than below it. The test that encodes this criterion caught it, which is the entire
 reason for expressing the property numerically instead of describing it in prose.
 
+**A second discrepancy in the same arithmetic, found while planning §14 and not
+yet fixed.** All of the figures above are in Oklab `L`; WCAG's are in relative
+luminance, which `L` is roughly the cube root of. The conversion factor is
+`3L²`, so at the default `l_max` the luma limiter alone gives 1.83 flashes/s
+rather than 1.5, and the chroma limiter — which is not luminance-neutral for
+chromatic colours — permits as much relative-luminance change again. §14.3 has
+the measurements, and the fix: a clamp in relative luminance alongside the ones
+in Oklab. The area criterion asserted in the suite is unaffected and is what
+holds the line in the meantime.
+
 ### One non-obvious implementation constraint
 
 The safety stage stores its output and reads it back as the next frame's history,
@@ -1692,3 +1702,403 @@ needs, and the ones most likely to want moving once someone has watched it are
 the agent density (a filament network occupies a much smaller fraction of a
 volume than of a plane), the depth anisotropy, and the light's ambient floor.
 The layered path stays the default until that judgement has been made.
+
+---
+
+## 14. A second mode: activation (proposed, not built)
+
+Everything above this section is built. This one is a plan.
+
+### 14.1 What the mode is for
+
+The application as it stands answers one question: what to look at when there is
+too much input. There is a second question it does not answer, asked by the same
+people and often on the same day — what to look at when there is too *little*.
+Under-stimulation, shutdown, the inability to start; a state where a slow dark
+field of closely-related colours is not calming, it is simply absent.
+
+Sensory activation is not the same as "more intense". Turning `intensity` up
+gives a denser network of the same colours moving at the same speed, and turning
+`tempo` up moves it faster without giving the eye anything new to find. The
+axis activation actually wants is **variety** — colours that differ from each
+other across the field and over time — with **rate** a distant second. That is a
+different mapping of the same eight knobs onto the same primitives, which is
+what makes it a mode rather than a different application.
+
+The three constructional promises are unchanged and non-negotiable under it: it
+does not flash, it does not loop, it does not settle. §14.3 is about the first
+of those, and it is the part of this plan with real engineering in it.
+
+### 14.2 Why the existing knobs cannot reach it
+
+The `palette` macro is the whole of the colour interface, and it drives exactly
+one primitive: `render.hue_spread`, over 0.55–1.25. Follow that through to what
+lands on screen.
+
+Regional hue in `advect.wgsl` is `range_hue * climate_b.w * hue_spread`. With
+`range_hue` at 1.15 rad and the climate's *realised* amplitude at s.d. ~0.11 with
+extremes near ±0.44 (measured off a running engine — see the note on
+`ClimateParams.range_du`), the palette knob at its maximum gives a regional hue
+deviation with a standard deviation of **9°** and extremes of **±36°**. The
+entire field lives inside roughly a 70° arc of the hue circle. That is an
+analogous palette by construction, and it is exactly right for regulation; it is
+also the reason no setting of the current knobs produces varied colour.
+
+The two mechanisms that could widen it are both present and both dialled to be
+inert:
+
+- **Age marbling.** `pigment.hue_inject_mix` is 0.010 per tick, so material
+  re-adopts the current anchor with a time constant of 100 ticks — five seconds
+  at 20 Hz. The anchor rotates at `hue_turns_per_hour` 1.33, which is 0.0023
+  rad/s, so material five seconds apart in age differs in hue by **0.7°**. The
+  comment on that field says low values make structures of different ages
+  chromatically distinct. The mechanism is real; at these values its output is
+  under a degree.
+- **Orientation.** `pigment.hue_from_orientation` at 0.55 spans ±99° as the
+  local gradient turns, which is wide — but it is tied to the direction of
+  `∇V`, so it is high-spatial-frequency detail along a filament's flanks. It
+  reads as iridescence on structure, not as regions of different colour.
+
+So the fine scale is already polychromatic and the regional and temporal scales
+are not, and it is the latter two the eye reads as "varied colours". Widening
+the existing curves to reach activation is not an option: the current spans are
+the useful travel for regulation, and stretching them to cover both would spend
+most of the slider on settings the regulation user does not want — the same
+argument the `event_rate` gamma is set by (§9).
+
+### 14.3 Where the safety budget actually is, and a correction
+
+Before anything is spent, it is worth knowing what the currency is. Working
+through it turned up a discrepancy in the *statement* of §7's guarantee that
+should be fixed regardless of whether this mode is ever built.
+
+**The guarantee is in Oklab L. WCAG is in relative luminance.** §7 reasons that
+`max_luma_delta = 0.01` at 30 FPS gives a 10% excursion in ≥333 ms and therefore
+1.5 flashes/second against a limit of 3. That arithmetic treats a step of 0.01 in
+Oklab L as 1% of the quantity WCAG measures, and it is not. Relative luminance
+`Y` is linear; Oklab `L` is roughly its cube root, so `dY/dL = 3L²` and the
+conversion factor grows with lightness. Sampled over the in-gamut region (a
+direct evaluation of the transform in `common.wgsl`, not an approximation):
+
+| Configuration | max \|dY/dL\| | ΔY per frame | pair of 10% Y | flashes/s |
+|---|---|---|---|---|
+| defaults, `l_max` 0.62, luma only | 1.22 | 0.0122 | 547 ms | **1.83** |
+| defaults + `max_chroma_delta` 0.030 | — | 0.0243 | 274 ms | **3.65** |
+| user ceilings, `l_max` 0.9, `Δ` 0.012, luma only | 2.55 | 0.0306 | 218 ms | **4.58** |
+| user ceilings + `max_chroma_delta` 0.100 | — | 0.1257 | 53 ms | **18.9** |
+
+Three things follow.
+
+1. At the shipped defaults the luma limiter alone gives 1.83 flashes/s, not the
+   1.5 the document claims. Still comfortably under WCAG's 3, but the margin is
+   smaller than stated, and the statement is the thing this project has said it
+   would express numerically rather than in prose.
+2. **The chroma limiter is a luminance lever, and nobody counted it.** Oklab `L`
+   is not luminance for chromatic colours: `|dY/da|` reaches 0.315 inside the
+   default gamut, so `max_chroma_delta = 0.030` permits up to 0.0121 of `Y` per
+   frame — as much again as the luma limiter allows. At the worst point in the
+   default gamut (L = 0.62, C = 0.121, h = 171°) the two together permit 0.0243
+   per frame, which is 3.65 flashes/second: over the WCAG limit, in the worst
+   corner, at the shipped defaults.
+3. The combination of user-settable ceilings is worse than either alone, and
+   `max_chroma_delta`'s ceiling of 0.100 is the single loosest value in
+   `SAFETY_CEILINGS`.
+
+Two mitigations are already in place and neither is an accident. The rows above
+are adversarial worst cases: they require a pixel parked at the worst point of
+the gamut, driving both chroma channels at their full limit, coherently, over
+more than a quarter of the screen. What actually holds the line is the **area**
+criterion, which the suite asserts empirically — fewer than 25% of pixels ever
+change by ≥10% in one frame, so the general flash threshold cannot be met
+whatever the per-pixel rate. That test is doing more of the work than §7 implies.
+It also inherits the same unit problem: it thresholds the change in Oklab `L` at
+0.10, and at `l_max` = 0.62 a 10% excursion in `Y` is a change of only 0.082 in
+`L`.
+
+**The fix, which is a prerequisite for this mode rather than a consequence of
+it.** Add a relative-luminance clamp to `safety.wgsl`, after the Oklab step is
+computed and before it is applied. Given `previous` and the bounded `step`,
+binary-search a scale `s ∈ [0, 1]` such that
+`|Y(previous + s·step) − Y(previous)| ≤ max_luminance_delta`, and apply
+`s·step`. This is the same shape as the gamut-mapping bisection two lines below
+it, terminates for the same reason (`s = 0` always satisfies the bound), scales
+`L`, `a` and `b` together so it cannot alter hue or introduce a step of its own,
+and costs one extra Oklab→linear conversion per pixel in a shader that already
+does one.
+
+With `max_luminance_delta = 0.010` — 1% of maximum relative luminance per frame
+— a 10% excursion needs 10 frames and an opposing pair 667 ms: **1.5 pairs per
+second**, which is the number §7 has always claimed, now in the units WCAG uses,
+and unconditionally rather than at one point of the gamut. The existing Oklab
+clamps stay: they bound *perceived* lightness change, which is the perceptual
+quantity and the one the image should be graded against. The new clamp bounds
+the photic one.
+
+**This is what pays for the mode.** Once the luminance cost of a chroma step is
+measured rather than assumed, `max_chroma_delta` can rise — 0.030 to 0.060 is the
+proposal — and fast hue change at bounded luminance is the least provocative
+rapid change available to us. The safety work is not a tax on activation; it is
+the thing that makes activation affordable.
+
+**The red flash threshold**, which activation is what puts in play. WCAG's second
+criterion is a pair of opposing transitions involving a saturated red — one state
+with `R/(R+G+B) ≥ 0.8` — where the states differ by more than 0.2 of maximum
+relative luminance. Saturated-red states *are* reachable in this palette and
+always have been: at `c_max` 0.145 they exist up to L = 0.415, with relative
+luminance up to 0.063, and at 0.220 up to L = 0.60 and Y = 0.19. So the criterion
+cannot be retired by claiming the palette never goes there. It is retired by the
+rate: 0.2 of `Y` at 0.010 per frame is 20 frames, a pair 1.33 s, **0.75 per
+second** against a limit of 3. Note that this argument is only available *after*
+the clamp above — under the current bound, at the ceilings, the same pair takes
+436 ms (2.3 per second), and 106 ms once the chroma ceiling is in play (9.4 per
+second).
+
+The whole derivation above is arithmetic over the colour transform, so it belongs
+in `tests/reference.py` beside `lightness()` and in an assertion, not in a
+one-off script and a table in a document.
+
+### 14.4 What activation spends, and why those axes are the cheap ones
+
+The limiter compares against the *motion-compensated* previous frame. That single
+design choice decides where a mode like this should shop, and the rule falls out
+of it directly:
+
+> Change that arrives as motion is exempt by construction. Change that arrives
+> coherently across the field is not.
+
+Concretely:
+
+- **Colour carried on the material is free.** Hue lives in the pigment field and
+  is advected with it. When a differently-coloured filament moves into a pixel,
+  reprojection puts the previous frame's matching material under it and the
+  limiter sees nothing to bound. Age marbling and regional hue spread are
+  therefore the cheapest variety available, and they are precisely the two
+  mechanisms §14.2 found dialled to inert.
+- **Motion is free.** Faster flow, faster agents, a higher sim rate. This is what
+  "more rapid change" should mostly mean here.
+- **Events are nearly free.** They act on the climate, and reach the image
+  through diffusion, the reaction, the pigment lowpass and the exposure
+  governor. More of them, arriving sooner, is a field that spends more of its
+  time inside something happening (§4.3).
+- **Global hue rotation is cheap against the limiter and expensive against
+  monotony.** At 9 turns/hour the anchor moves 5×10⁻⁴ rad per frame, which at
+  C = 0.15 is a step of 8×10⁻⁵ in `(a, b)` — three orders of magnitude under the
+  chroma limit. The reason to keep it moderate is not safety; it is that a fast
+  global rotation is one coordinated thing happening to everything at once, which
+  is the failure §4.2 exists to prevent. Raise it, but raise regional spread
+  further.
+- **Brightness is what activation must not buy from.** `filament_luma`,
+  `background_luma`, `l_max` and `exposure_target` all spend directly against the
+  bound in §14.3, they are the axes photosensitivity guidance is actually about,
+  and a bright field is the one that becomes unpleasant after an hour rather than
+  after a day. The activate table should move them least of anything.
+
+### 14.5 Mode as a second curve table
+
+`Config` gains `mode: str = "regulate"`, with `MODES = ("regulate", "activate")`
+and a `normalise_mode()` mirroring `normalise_backend()` — an unrecognised value
+is a typo, and the safe thing to open with is the mode the application already
+was.
+
+`MACRO_CURVES` becomes the base table, and `MODE_CURVES["activate"]` is a
+**delta over it**, keyed by `(macro, path)`, so the activate table restates only
+the primitives whose span actually differs and a change to a shared curve is made
+once. `Config.resolve()` and `curve_value()` both take the mode.
+
+Presets become per-mode — `PRESETS[mode][name]` — with `presets.names(mode)` and
+`presets.get(mode, name)`. A `preset_name` that does not exist in the current
+mode falls back to that mode's default with a warning, same posture as everything
+else read off disk.
+
+**Mode is perceptual, not structural, and this is the load-bearing distinction
+against `backend`.** Switching depth backends grows a new field, because the two
+do not hold the same kind of state. Switching mode must not: it is a change of
+parameters, it goes through `ParamRamp` exactly as a preset switch does, and the
+field on screen carries straight through it. That gives a hard invariant, and it
+is testable through the front door:
+
+> No curve in any mode's table may touch a structural path — `agents.density`,
+> `render.layers`, `render.base_scale`, `render.scale_falloff`,
+> `flow.psi_scale`, `climate.width`, `climate.height`, or any `volume.*`
+> geometry.
+
+Those are the values `Geometry.derive` reads when a field is grown, and a mode
+that moved one of them would be a mode that could only be entered by discarding
+the field. Note this is not a new constraint invented for the mode: `intensity`
+already drives `agents.density`, and already has the property that moving it
+does not change a running field's agent count. Mode inherits the rule; the test
+is what stops a future curve from breaking it.
+
+**The transition is asymmetric, on purpose.** `ParamRamp.set_target` gains a tau
+multiplier applied until the ramp reaches its target. Entering activation uses
+roughly ×8 — the 1.5 s default becomes 12 s, the hue anchor's 12 s becomes about
+a minute and a half — so the field opens up over a minute rather than arriving.
+Leaving uses roughly ×2, about 15 seconds, because leaving is what someone
+reaches for when the mode is *wrong for them*, and making that feel unresponsive
+would be a poor trade for a symmetry nobody asked for. A quick exit is still not
+a cut: everything downstream is bounded by §14.3 whatever the ramp does. Exact
+numbers want watching by a person.
+
+**Persistence and the taper.** `mode` is written to the config file like
+`backend`, and a session resumes in the mode it was left in — least surprise, and
+consistent with everything else. But a mode reached for a state should probably
+not still be running two days later, so an optional `activate_minutes` would ease
+back to regulation on the exit ramp after a set time. Off by default, and worth
+being explicit about the tension: §3 says nothing anywhere is a function of the
+clock. That rule is about the *field* having no periodic component to find, and a
+one-shot user-set taper introduces none. It is still the only place a clock would
+reach the output, which is why it is opt-in and named rather than assumed.
+
+### 14.6 The activate table
+
+Starting points to be measured, not measurements. Everything not listed is
+inherited from the base table unchanged.
+
+| Macro | Path | regulate | activate | Why |
+|---|---|---|---|---|
+| palette | `render.hue_spread` | 0.55–1.25 | 1.4–5.0 | at the realised climate amplitude, ±145° of regional deviation at the top instead of ±36°: regions genuinely differ |
+| palette | `pigment.hue_inject_mix` | (0.010 fixed) | 0.004–0.0015 | τ from 5 s to 25–90 s, so age marbling has an age difference to work with |
+| palette | `render.c_max` | (0.145 fixed) | 0.150–0.200 | more saturated, inside the existing 0.220 ceiling |
+| palette | `render.chroma_floor` | (0.012 fixed) | 0.020–0.045 | quiet regions keep colour instead of going grey |
+| intensity | `render.chroma_activity_gain` | 3.5–8.0 | 6.0–14.0 | activity reads as colour sooner |
+| intensity | `pigment.hue_from_orientation` | (0.55 fixed) | 0.55–0.90 | more iridescence along filament flanks |
+| tempo | `render.hue_turns_per_hour` | 0.55–2.60 | 2.0–9.0 | one turn per 7–30 min; see §14.4 on why this is not the main lever |
+| tempo | `sim_hz` | 12.0–26.0 | 18.0–30.0 | the whole simulation faster; costs GPU (§14.11) |
+| tempo | `flow.psi_gain` | 0.70–2.10 | 1.2–3.2 | motion is the exempt axis, so it is where speed is cheapest |
+| tempo | `flow.field_gain` | 0.45–1.30 | 0.8–2.0 | as above |
+| tempo | `flow.psi_theta` | 0.0012–0.0038 | 0.002–0.007 | the flow field itself reorganises faster, so motion does not become a steady drift |
+| tempo | `climate.advect_gain` | 0.12–0.38 | 0.25–0.60 | regimes migrate across the field faster |
+| tempo | `climate.theta` + `climate.sigma` | (0.0016 / 0.055 fixed) | up to ~0.005 / ~0.097 | regime memory from 31 s to 10 s — **but see below** |
+| event_rate | `events.rate_per_hour` | 0.5–20 | 2–60 | one every 30 minutes to one a minute |
+| — | `events.attack/hold/release` | 45/60/90 s | 20/30/45 s | still tens of seconds; the raised-cosine shape and the radius cap are untouched |
+| — | `events.max_concurrent` | 4 | 6 | more overlap, so the field is more often inside something |
+| — | `safety.max_chroma_delta` | 0.030 | 0.060 | only after §14.3 lands; before it, this is the loosest thing in the file |
+
+Two couplings that must not be missed.
+
+**The climate's OU pair.** Stationary amplitude goes as `σ/√(2θ)`, and every
+`range_*` in `ClimateParams` is calibrated against a realised s.d. of ~0.11.
+Raising `theta` alone shrinks the climate's amplitude and quietly rescales the
+meaning of *every* channel at once — feed, kill, hue, decay, `du`, repel. If
+`theta` moves, `sigma` moves with it to hold `σ/√θ`, and the realised amplitude
+is re-measured under the activate table before the `range_*` values are trusted.
+
+**Events pin what they name.** An event adds its amplitude to the climate every
+tick against the mean reversion, so any channel a kind names ends up at its clamp
+for the length of the envelope and the amplitude only shapes the ramp (see the
+note on `rift` in `events.py`). Raising `theta` weakens that pinning. The two
+changes interact, and the event profile should be tuned after the climate pair
+is settled, not alongside it.
+
+**No new event kinds.** `current` is already the mostly-flow kind, and under the
+activate envelope it *is* the surge — shorter, more frequent, arriving in a field
+that is already moving faster. The one kind that would genuinely add something is
+a hue-*spread* event, which would need a new climate channel carrying a
+multiplier on `range_hue` rather than an offset to it, and that is a larger
+change than this mode needs.
+
+### 14.7 Control surface
+
+A **Mode** group at the very top of the panel, above **Preset**, because it
+decides which presets exist. Two radio buttons rather than a combo box: there are
+two, and it is the most consequential choice in the window. Each labelled by what
+it is *for* rather than by how much is happening —
+
+- **Regulate** — slow, close in colour, long gaps between events.
+- **Activate** — varied colour, faster motion, events every few minutes.
+
+with a line under them saying the same eight knobs mean the same things in both,
+and cover a different range in each. The labels are the one thing in this section
+worth a second opinion from someone who has used the application in both states;
+everything else here is arithmetic.
+
+`--mode activate` on the command line, `mode = "activate"` at the top of the
+config file, and `--list-presets` grouped by mode.
+
+Proposed activate presets, all keeping the dark ground: `wake` (moderate on both
+axes), `reef` (colour variety high, motion moderate), `kinetic` (motion high,
+colour moderate), `prism` (both high). Four, for the same reason there are seven
+of the others — getting quickly back to the one that worked matters more here
+than tweaking.
+
+### 14.8 Tests
+
+The plan is only worth as much as this list.
+
+1. **`test_flash_safety.py` under the activate table**, with its presets, and
+   with mode switching added to the adversarial parameter sweep. A mode change
+   moves every macro-driven primitive at once, which is a new way to provoke the
+   limiter and belongs with the existing slamming.
+2. **New: the bound in relative luminance.** With flow disabled, assert the
+   per-pixel `|ΔY|` per frame is within `max_luminance_delta`. This is the test
+   that encodes §14.3, and it should fail on today's build at `l_max = 0.9` —
+   that is the point of writing it first.
+3. **New: the red flash criterion.** No pair of opposing transitions involving a
+   saturated red, over more than 25% of the screen, within a second. It should
+   pass trivially once (2) holds; it exists so that a later change to the chroma
+   budget cannot quietly break it.
+4. **New: the pattern criterion.** WCAG 2.3.1 also covers regular high-contrast
+   patterns — more than five light–dark stripe pairs over a quarter of the field.
+   Activation is where this becomes plausible, because faster flow stretches and
+   aligns structure along the flow direction. Add a spatial-spectrum measure to
+   `tests/morphology.py` and assert no single spatial frequency carries more than
+   a bounded share of the field's variance, under **both** modes. This is the one
+   genuinely new safety criterion the mode introduces, and nothing currently
+   covers it.
+5. **`test_config.py`:** mode round-trips through TOML; an unknown mode falls
+   back with a warning; every mode's presets name every macro; `curve_value`
+   agrees with `resolve` under each mode; and the structural-path invariant of
+   §14.5 holds for every curve in every table.
+6. **`test_soak.py` under activation:** no NaNs, no field death, no periodic
+   component — and the re-measurement of the realised climate amplitude that
+   §14.6 owes.
+7. **`test_morphology.py` under activation:** feature size stays polydisperse.
+   Activation raises tempo and climate churn; if it narrowed the feature-size
+   distribution it would produce the regular texture §4.7 exists to prevent, and
+   at higher chroma and speed that is a worse thing than it is now.
+8. **`test_checkpoint.py`:** the two modes derive identical geometry from the
+   same window size, and a field captured in one mode resumes in the other with
+   no geometry difference. The structural invariant, tested through the front
+   door.
+9. **`test_control_panel.py`:** the mode selector reaches the app, the preset
+   list follows the mode, and the transition goes through the ramp rather than
+   snapping.
+
+### 14.9 Build order
+
+1. **The luminance bound in Y, with tests (2) and (3).** Lands on its own,
+   improves the current build, and is a prerequisite: nothing should be built on
+   a bound stated in the wrong units.
+2. **Mode plumbing with an empty activate table.** Selectable, ramped, persisted,
+   tested — and visually identical to regulate. All of the plumbing risk, none of
+   the tuning risk, and a clean bisection point if something later goes wrong.
+3. **The activate curve table and presets**, including re-measuring the climate
+   amplitude and re-fitting `range_*`. This is the step that needs a real GPU and
+   a pair of eyes.
+4. **The event profile**, after the climate pair has settled.
+5. **The taper, and whatever the panel's labels want to become** once someone has
+   used it in both states.
+
+Steps 1 and 2 are worth doing even if the rest is never built.
+
+### 14.10 What this could get wrong
+
+- **Two modes make it easier to reach for the wrong one.** The fast exit ramp and
+  labels naming what each mode is *for* are the mitigation. There is no test for
+  it.
+- **The cost is real and unmeasured.** `sim_hz` to 30, more agent work per
+  second, more concurrent events. The under-10%-of-an-RTX-3080 figure in §8.1 is
+  for regulation at 1440p; activation could plausibly be 1.5–2× that, and the
+  budget governor's throttling is more visible when things are moving faster —
+  the tick rate dropping is easier to see against fast motion than against slow.
+  This needs measuring on the target card before the spans in §14.6 are trusted.
+- **The volumetric backend under activation is §13's caveat squared.** Validate
+  the mode on the layered backend first, and treat the slab as a second question.
+- **Higher chroma raises the stakes on the morphology work.** A monodisperse
+  spot texture is a trypophobia trigger at the current palette; the same texture
+  in saturated, varied colour is a louder one. §4.7 steps 5–6 are outstanding,
+  and this mode is a reason to weight them higher than they are weighted now.
+- **The judgement at the end is not available here.** Everything above is
+  arithmetic and reasoning over a codebase. Whether the result is *activating*
+  rather than merely busy — and whether "busy" is a failure or just a different
+  preference — needs a person, a real GPU, and a day of actually using it.
