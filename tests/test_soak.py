@@ -166,6 +166,88 @@ def test_the_feature_size_walk_is_bounded_and_tempo_independent():
         assert reaction.du_min <= config.clamp_du(du, reaction) <= reaction.du_max
 
 
+def _parallax_series(fps: float, seconds: float, params, seed: int = 5):
+    """The viewpoint's x offset over a run, sampled once per frame."""
+    engine = engine_module.Engine.__new__(engine_module.Engine)
+    engine._parallax = None
+    engine._parallax_walk = []
+    engine._parallax_lag = []
+    engine._parallax_rng = np.random.default_rng(seed)
+    dt = 1.0 / fps
+    series = np.empty(int(seconds * fps))
+    for i in range(series.size):
+        engine._update_parallax(params, dt, 1)
+        series[i] = engine._parallax[0][0]
+    return series
+
+
+def test_the_viewpoint_drift_actually_uses_its_travel():
+    """Motion parallax is the strongest depth cue either backend has, and it is
+    only a cue if the viewpoint moves.
+
+    This is a regression test for a walk that was numerically inert. A fixed
+    per-frame decay of 0.02 against a `sqrt(dt)` noise term gave a stationary
+    spread of 3e-4 across a travel of 1: at `render.parallax = 0.02` that is a
+    viewpoint displaced by a few hundredths of a pixel, so the `depth` macro's
+    parallax leg -- and the slab's entire camera motion -- did nothing at all.
+    Nothing about the image looks wrong when that happens, which is exactly why
+    it needs asserting rather than watching for.
+
+    Bounded and frame-rate independent for the same reasons the feature-size
+    walk is: `render.parallax` has to mean a maximum, and the frame rate is the
+    one thing in the system the viewpoint must not take its excursion from.
+    """
+    params = config.Config().resolve()
+    spreads = {}
+    for fps in (30.0, 60.0):
+        series = _parallax_series(fps, 2400.0, params)
+        assert np.isfinite(series).all()
+        assert np.abs(series).max() <= 1.0, "the offset left its bound"
+        assert np.abs(series).max() > 0.5, (
+            f"the viewpoint never used more than half its travel at {fps} Hz; "
+            "parallax is switched off in all but name"
+        )
+        spreads[fps] = float(series.std())
+
+    for fps, spread in spreads.items():
+        assert 0.30 < spread < 0.60, (
+            f"the drift's spread is {spread:.2f} of its travel at {fps} Hz; "
+            "it should sit in the middle and reach the ends occasionally"
+        )
+    assert abs(spreads[30.0] - spreads[60.0]) < 0.10, (
+        "how far the viewpoint roams depends on the frame rate")
+
+
+def test_the_viewpoint_drifts_without_ever_shimmering():
+    """The travel above has to be spent slowly, or it is per-pixel noise.
+
+    An Ornstein-Uhlenbeck process is smooth in its envelope and *white* in its
+    increments, which is fine for an amplitude and disastrous for a position:
+    the raw walk moves the image about half a pixel per frame, at random, which
+    is the temporal noise this application exists not to produce. The lag the
+    walk reaches the viewpoint through is what fixes that, and this is the
+    number it was chosen against.
+
+    Expressed in pixels of a 1440p display, since a fraction of the field's
+    extent says nothing about whether the eye can see it.
+    """
+    width = 2560.0
+    params = config.Config().resolve()
+    for fps in (30.0, 60.0):
+        series = _parallax_series(fps, 1200.0, params)
+        step = np.abs(np.diff(series)) * params.render.parallax * width
+        assert step.max() < 0.5, (
+            f"the viewpoint jumped {step.max():.2f} px in one frame at {fps} Hz")
+        assert step.mean() < 0.05, (
+            f"the viewpoint moves {step.mean():.3f} px per frame at {fps} Hz, "
+            "which is a shake rather than a drift")
+        # ... and the speed that leaves is a property of the walk, not of the
+        # frame rate: the same drift seen twice as often moves half as far each
+        # time.
+        assert 0.2 < step.mean() * fps < 3.0, (
+            f"the viewpoint travels {step.mean() * fps:.2f} px/s at {fps} Hz")
+
+
 def test_the_feature_size_band_is_used_but_not_camped_on():
     """The drift must span the du band without spending its time at the clamp.
 

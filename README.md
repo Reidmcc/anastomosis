@@ -202,6 +202,18 @@ Eight knobs, all 0–1:
 Presets: `default`, `quiet`, `dense`, `deep`, `ember`, `luminous`, `current`.
 All of them keep a dark ground.
 
+**Depth** is the one to reach for if either view looks flat. Most of what it
+moves is atmospheric — focus falloff, fog, how much contrast and colour the far
+material keeps — but it also sets how far the viewpoint drifts, which is the
+only cue in the piece that comes from the scene moving rather than from how it
+is shaded. At the default that drift is about 30 px of travel at 1440p, spent at
+under a pixel a second, and at the top of the knob roughly twice that. If it is
+still too subtle on your display, raise `"render.parallax"` past the 0.038 the
+knob reaches — it is a fraction of the screen's width, so 0.08 is an eighth of
+the frame between the near and far material. It cannot flicker: the drift is a
+random walk behind a lag, and it moves the image about a fiftieth of a pixel per
+frame.
+
 Every change — slider, preset switch, or file edit — is **ramped, never stepped**,
 so adjusting something can't itself produce a visual jolt. Switching presets is a
 slow transition rather than a cut.
@@ -224,6 +236,8 @@ event_rate = 0.5
 "render.filament_luma" = 0.42
 "reaction.feed" = 0.019
 "volume.depth" = 96          # what the Thickness slider writes
+"render.parallax" = 0.08     # viewpoint drift, as a fraction of screen width
+"render.parallax_tau" = 75   # seconds; how long it takes to change its mind
 ```
 
 There are around 70 primitive parameters underneath the macros; the field names

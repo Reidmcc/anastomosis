@@ -529,8 +529,25 @@ class RenderParams:
     # screen distance.
     tempo_falloff: float = 0.70
 
+    # How far the viewpoint drifts, as a fraction of the field's lateral
+    # extent. A *maximum* rather than a typical value: the walk behind it is
+    # bounded, and sits at about half of this most of the time.
+    #
+    # Under the layered backend this offsets each sheet by a different amount,
+    # which is what separates them; under the volumetric one it is the whole of
+    # the camera's motion. Either way it is the only depth cue here that comes
+    # from the scene *moving*: everything else on this list -- the focus
+    # falloff, the fog, the dimming, the desaturation -- is a function of
+    # normalised depth, so it says the same thing about the far face however
+    # far away that face actually is. Which makes this the one that carries
+    # depth the others cannot describe, and the one worth raising first if a
+    # display makes the image look flat.
     parallax: float = 0.020
-    parallax_drift: float = 0.00035
+    # Seconds; how long the drift takes to change its mind. Slow enough to read
+    # as weather rather than as sway, and floored in `validate` for the same
+    # reason -- a short one would turn the strongest depth cue here into the
+    # kind of coordinated global movement DESIGN.md 4.2 exists to prevent.
+    parallax_tau: float = 75.0
     dof_radius: float = 3.2  # cells, at the backmost layer
     fog_amount: float = 0.42  # atmospheric attenuation at the backmost layer
     depth_dim: float = 0.55  # luminance retained at the backmost layer
@@ -894,6 +911,12 @@ def validate(params: Params) -> Params:
     params.agents.found_period = max(2, min(20_000, int(params.agents.found_period)))
     params.agents.found_site_cells = max(
         64, min(1 << 24, int(params.agents.found_site_cells)))
+    # The viewpoint's drift has to stay a drift. The flash bound does not
+    # depend on this -- the limiter is per-pixel and holds whatever the camera
+    # does -- but a time constant of a second or two would make the whole image
+    # sway, which is the coordinated global motion of DESIGN.md 4.2 rather than
+    # the parallax this is for.
+    params.render.parallax_tau = min(max(params.render.parallax_tau, 8.0), 3600.0)
 
     # The slab's own structural values. The ceilings are core WebGPU's
     # guaranteed maxTextureDimension3D (2048), and the floors are what the

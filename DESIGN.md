@@ -1189,6 +1189,37 @@ the layered path.
 - **Parallax** offset per layer driven by an extremely slow drift (and optionally by
   cursor position, if the cursor is on that display — probably not, since the point
   is the user is working elsewhere).
+
+  Two things about that drift were wrong for as long as it existed, and both are
+  worth recording because neither is visible as a fault — a viewpoint that does
+  not move produces a perfectly good-looking image. It was an Ornstein–Uhlenbeck
+  walk with a fixed *per-frame* decay of 0.02 against a `sqrt(dt)` noise term,
+  which gave it a stationary spread of 3e-4 across a travel of 1: at
+  `render.parallax = 0.02` that is a viewpoint displaced by a few hundredths of a
+  pixel, and over two hours of simulation it never left a thousandth of its
+  range. Parallax was, in effect, switched off in both backends — including the
+  volumetric one, where it is the *whole* of the camera's motion. It is now
+  written in the same form as the feature-size walk (`_advance_du_walk`):
+  unit-variance, `sqrt(1 - (1-θ)²)` noise, θ from `dt/τ`, so the excursion is a
+  property of the walk and not of the frame rate.
+
+  The second correction is that an OU process is smooth in its envelope and
+  *white* in its increments. That is fine for an amplitude and disastrous for a
+  position: the raw walk moves the image about half a pixel per frame, at
+  random, which is precisely the per-pixel temporal noise §7 and the dither
+  design exist to avoid. The walk therefore reaches the viewpoint through one
+  first-order lag at a sixth of its own time constant, which makes the position
+  C¹ and costs almost none of the travel — measured over an hour at 1440p, the
+  frame-to-frame step falls from 0.54 px to 0.020 px while the peak excursion
+  stays at 49 px of 50. What is left is about 0.6 px/s, which is what the
+  parallax actually is.
+
+  The safety stage is deliberately not told about the viewpoint. It reprojects
+  its history through the screen-space velocity of the *material* (§7), so a
+  moving camera leaves an uncompensated residual — 0.02 px per frame against
+  material moving several, three orders of magnitude below anything the limiter
+  responds to. It would begin to matter at around a pixel a frame, which needs
+  `render.parallax` near 1: the whole frame width of drift.
 - **Depth-of-field**: per-layer blur radius increases with distance. Because the
   layers are separate render targets this is one cheap separable blur each, not a
   gather.
