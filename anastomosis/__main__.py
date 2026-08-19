@@ -55,6 +55,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="fix the random seed; omit for a different world each launch",
     )
     parser.add_argument(
+        "--backend", choices=("layered", "volumetric"), default=None,
+        help=(
+            "how depth is drawn: 'layered' (three 2.5D sheets, the default) "
+            "or 'volumetric' (a raymarched slab). Each keeps its own saved "
+            "field, so switching does not discard the other one. Omit to use "
+            "the config's setting."
+        ),
+    )
+    parser.add_argument(
         "--write-config", action="store_true",
         help="write a default config file and exit",
     )
@@ -141,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.preset:
             cfg.macros = presets_module.get(args.preset)
             cfg.preset_name = args.preset
+        if args.backend:
+            cfg.backend = args.backend
         config_module.save(cfg, config_path)
         print(f"wrote {config_path}")
         return 0
@@ -165,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         fullscreen=args.fullscreen,
         config_path=config_path,
         seed=args.seed,
+        backend=args.backend,
         ui=not args.no_ui,
         checkpoint=not args.no_checkpoint,
         resume=not args.reset,

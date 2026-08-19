@@ -92,6 +92,14 @@ class ActiveEvent:
     attack: float
     hold: float
     release: float
+    # Where through the slab the event sits, for the volumetric backend
+    # (DESIGN.md §5.1). Defaulted, and last among the positional fields, so
+    # that a checkpoint written before the slab existed restores its in-flight
+    # events unchanged -- mid-envelope events are the one part of the scheduler
+    # worth saving, and dropping them would be exactly the step the envelopes
+    # exist to prevent. The layered backend's climate has no third axis and
+    # ignores it.
+    z: float = 0.5
     elapsed: float = 0.0
     kind: str = "bloom"
 
@@ -252,6 +260,7 @@ class EventScheduler:
         event = ActiveEvent(
             x=self._rng.random(),
             y=self._rng.random(),
+            z=self._rng.random(),
             radius=radius,
             peak=params.strength * self._rng.uniform(0.6, 1.0),
             channels=Channels(*(c * jitter() for c in base)),
@@ -277,6 +286,7 @@ class EventScheduler:
             row = {
                 "pos_x": event.x,
                 "pos_y": event.y,
+                "pos_z": event.z,
                 "radius": event.radius,
                 "strength": strength,
             }

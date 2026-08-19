@@ -24,10 +24,18 @@ SIM_FIELDS: list[Field] = [
     # Dimensions and identity
     ("dims_x", "u32"),
     ("dims_y", "u32"),
+    # The third dimension of each grid. One under the layered backend, which
+    # simply never reads it; the slab's real depth under the volumetric one.
+    # Shared rather than forked because these are the numbers a *macro* has to
+    # mean the same thing through, and one struct is one place to keep the
+    # host-side packing and the shader-side layout in step.
+    ("dims_z", "u32"),
     ("clim_w", "u32"),
     ("clim_h", "u32"),
+    ("clim_d", "u32"),
     ("psi_w", "u32"),
     ("psi_h", "u32"),
+    ("psi_d", "u32"),
     ("tick", "u32"),
     ("seed", "u32"),
     ("agent_count", "u32"),
@@ -108,6 +116,7 @@ SIM_FIELDS: list[Field] = [
     ("blur_radius", "f32"),
     ("blur_dir_x", "f32"),
     ("blur_dir_y", "f32"),
+    ("blur_dir_z", "f32"),
     # Per-layer feel
     ("feature_scale", "f32"),
     ("tempo_scale", "f32"),
@@ -124,6 +133,19 @@ SIM_FIELDS: list[Field] = [
     ("gain_i", "f32"),
     ("integral_limit", "f32"),
     ("homeo_rate", "f32"),
+    # Volumetric slab only (DESIGN.md §5.1).
+    #
+    # `depth_flow` weights the *lateral* components of the flow's vector
+    # potential, which is how the slab gets motion that is mostly in plane
+    # without giving up the exactly divergence-free velocity field: velocity is
+    # the curl of whatever potential is stored, so weighting the potential
+    # keeps the identity while scaling `v_z` by roughly this factor. Scaling
+    # `v_z` directly would not -- `div(g*v) = grad(g).v` -- and pigment would
+    # accumulate in the places the scaling compresses.
+    ("depth_flow", "f32"),
+    # The agents' step along the slab normal, as a fraction of their lateral
+    # step. Agents are not a conserved density, so this one is a plain scale.
+    ("depth_agent", "f32"),
 ]
 
 # --------------------------------------------------------------------------
@@ -136,9 +158,15 @@ RENDER_FIELDS: list[Field] = [
     ("layer_count", "u32"),
     ("frame", "u32"),
     ("seed", "u32"),
+    # Volumetric slab only: the grid the ray marches through, and how many
+    # steps it takes doing it.
+    ("vol_w", "u32"),
+    ("vol_h", "u32"),
+    ("vol_d", "u32"),
+    ("march_steps", "u32"),
+    ("shadow_steps", "u32"),
     ("pad0", "u32"),
     ("pad1", "u32"),
-    ("pad2", "u32"),
     # Temporal interpolation between the last two sim states.
     ("frac", "f32"),
     ("interp_dt", "f32"),
@@ -165,6 +193,41 @@ RENDER_FIELDS: list[Field] = [
     ("exposure_release", "f32"),
     ("dither_amount", "f32"),
     ("reproject_scale", "f32"),
+    # --- Volumetric slab only (DESIGN.md §5.1) ---------------------------
+    # Lateral zoom, which is the aspect correction the layered backend puts in
+    # its per-layer records.
+    ("zoom_x", "f32"),
+    ("zoom_y", "f32"),
+    # Camera. `shear` is the differential lateral offset between the near and
+    # far faces -- this is what parallax *is* in a volume, rather than a
+    # per-layer offset -- and `converge` spreads the rays slightly off
+    # orthographic so the slab is seen at an angle away from the centre.
+    ("cam_shear_x", "f32"),
+    ("cam_shear_y", "f32"),
+    ("converge", "f32"),
+    # World thickness of the slab, as a fraction of its lateral extent. Voxels
+    # are cubic, so this is just depth/width.
+    ("slab_depth", "f32"),
+    # The soft window that fades the two faces. The slab is a 3-torus like the
+    # rest of the domain (there are no walls anywhere in this simulation), so
+    # material leaving the near face reappears at the far one; without a window
+    # that arrival and departure would be a step at the depth extremes.
+    ("depth_window", "f32"),
+    # Atmospheric attenuation with depth, matching the layered backend's
+    # per-layer values at the backmost layer.
+    ("depth_dim", "f32"),
+    ("depth_desat", "f32"),
+    ("depth_fog", "f32"),
+    # Depth of field: lateral blur radius in voxels at the far face.
+    ("dof_radius", "f32"),
+    # The single soft light: direction, and how much of the lighting is
+    # ambient rather than shadowed.
+    ("light_x", "f32"),
+    ("light_y", "f32"),
+    ("light_z", "f32"),
+    ("light_ambient", "f32"),
+    ("shadow_density", "f32"),
+    ("shadow_reach", "f32"),
 ]
 
 # Per-layer compositing data, one record per layer in a storage array.
@@ -183,6 +246,10 @@ LAYER_FIELDS: list[Field] = [
 EVENT_FIELDS: list[Field] = [
     ("pos_x", "f32"),
     ("pos_y", "f32"),
+    # Where the event sits through the slab. Ignored by the layered backend,
+    # whose climate has no third axis; the scheduler draws it either way, so an
+    # event that outlives a backend switch does not have to be re-placed.
+    ("pos_z", "f32"),
     ("radius", "f32"),
     ("strength", "f32"),
     ("chan_feed", "f32"),

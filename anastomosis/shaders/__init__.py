@@ -71,5 +71,5 @@ def all_shader_names() -> list[str]:
     return sorted(
         p.name
         for p in SHADER_DIR.glob("*.wgsl")
-        if p.name not in {"common.wgsl", "bindings.wgsl"}
+        if p.name not in {"common.wgsl", "common3d.wgsl", "bindings.wgsl"}
     )

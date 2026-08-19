@@ -381,8 +381,104 @@ class EventParams:
 
 
 @dataclass
+class VolumeParams:
+    """The volumetric slab backend -- DESIGN.md §5.1.
+
+    Only read when ``Config.backend`` is ``"volumetric"``. The slab is a thin
+    3-torus: ``512 x 288 x 48`` cubic voxels, which is a lateral extent of 1 by
+    0.56 and a thickness of 0.094, so "thin slab" is a fact about the geometry
+    rather than a way of talking about it.
+
+    Nothing here duplicates a parameter the layered backend already has.
+    Agents, reaction, flow, climate, pigment, homeostat and the whole of
+    ``render``'s colour and depth work are shared, because a macro has to mean
+    the same thing under either backend; what is here is the handful of things
+    a volume has and a stack of sheets does not.
+
+    Memory is the one place the slab is genuinely more expensive than the
+    layers: at the default size a field is about 650 MB of rgba16float, against
+    roughly 90 MB for the 1440p layered stack. That is comfortable on the
+    target card (DESIGN.md §8.1) and the size is a knob for anything smaller.
+    """
+
+    # --- Slab geometry (structural: changing it needs a new field) --------
+    # Lateral width in voxels. The height follows the window's aspect, so the
+    # voxels stay cubic and a 16:9 display gets exactly the 512x288 of §5.1.
+    width: int = 512
+    depth: int = 48
+    base_scale: float = 1.0  # fraction of `width` actually allocated
+    # Agents per voxel, against 0.27 per cell in the plane. Not a like-for-like
+    # comparison and not meant to be: a filament network occupies a much smaller
+    # fraction of a volume than of a plane, so the agents that do find the
+    # structure concentrate harder on it, while the ones that do not are spread
+    # through three dimensions of empty space. 0.09 gives about 640,000 agents
+    # at the default slab, which is the same order as the 1.5 M the layered
+    # stack runs at 1440p and comfortably inside the budget either way. It is
+    # also the parameter most likely to want moving once somebody has watched
+    # this on a real GPU -- see DESIGN.md §13.
+    density: float = 0.09
+    # The climate is a volume too, so a regime occupies a region of the slab
+    # rather than a column through it. Coarse for the same reason its 2D
+    # counterpart is: it is sampled trilinearly and must never develop an edge.
+    climate_width: int = 32
+    climate_height: int = 18
+    climate_depth: int = 6
+    psi_scale: int = 8  # vector-potential grid divisor
+
+    # --- Motion anisotropy ------------------------------------------------
+    # The slab is four or five feature-widths deep, so isotropic flow would
+    # carry material through the whole thickness in a few seconds and the
+    # depth axis would read as churn rather than as depth. Both of these damp
+    # motion along the slab normal; see the notes on the matching fields in
+    # `gpu_params` for why the flow one weights the *potential* and not the
+    # velocity.
+    depth_flow: float = 0.45
+    depth_agent: float = 0.45
+
+    # --- Raymarch ---------------------------------------------------------
+    # 48 steps, one per slice: ample for parallax and occlusion given that the
+    # far field is fogged and blurred anyway (§5.1).
+    steps: int = 48
+    # How far off orthographic the rays are. Small on purpose: a
+    # near-orthographic camera keeps ray coherence excellent, and the depth cue
+    # this application wants comes from occlusion and attenuation rather than
+    # from perspective.
+    converge: float = 0.055
+    # The fraction of the slab's depth each face fades over. Material leaving
+    # the near face reappears at the far one -- the domain is toroidal in all
+    # three axes, exactly as it is in two under the layered backend -- and this
+    # window is what makes that arrival and departure a fade rather than a
+    # step.
+    depth_window: float = 0.18
+
+    # --- The single soft light -------------------------------------------
+    # Direction the light comes *from*, in slab coordinates. Slightly above,
+    # slightly to one side, and mostly from behind the viewer, which is the
+    # arrangement that reads as volume without casting shadows long enough to
+    # look theatrical.
+    light_x: float = -0.45
+    light_y: float = 0.70
+    light_z: float = -0.55
+    # How much of the lighting survives full shadow. High, because the point of
+    # self-shadowing here is a depth cue and not drama, and because a deep
+    # shadow moving across the field is a large local luminance change -- which
+    # the safety stage would bound anyway, but at the cost of lagging the image.
+    light_ambient: float = 0.55
+    shadow_steps: int = 6
+    shadow_density: float = 1.8
+    shadow_reach: float = 0.45  # shadow ray length, in slab depths
+
+
+@dataclass
 class RenderParams:
-    """Compositing, depth, and the Oklab colour mapping. DESIGN.md §5-6."""
+    """Compositing, depth, and the Oklab colour mapping. DESIGN.md §5-6.
+
+    Everything from ``parallax`` down is read by both depth backends, which is
+    what makes the `depth` macro mean one thing: under the layered backend the
+    values describe the backmost layer, under the volumetric one they describe
+    the far face of the slab. ``layers`` and the three falloffs above that are
+    layered-only, and the slab's own geometry lives in :class:`VolumeParams`.
+    """
 
     layers: int = 3
     base_scale: float = 1.0  # front layer, fraction of display resolution
@@ -431,6 +527,7 @@ class Params:
     flow: FlowParams = field(default_factory=FlowParams)
     pigment: PigmentParams = field(default_factory=PigmentParams)
     climate: ClimateParams = field(default_factory=ClimateParams)
+    volume: VolumeParams = field(default_factory=VolumeParams)
     homeostat: HomeostatParams = field(default_factory=HomeostatParams)
     events: EventParams = field(default_factory=EventParams)
     render: RenderParams = field(default_factory=RenderParams)
@@ -666,16 +763,29 @@ def curve_value(macro: str, path: str, value: float) -> float:
 # --------------------------------------------------------------------------
 
 
+BACKENDS = ("layered", "volumetric")
+DEFAULT_BACKEND = "layered"
+
+
 @dataclass
 class Config:
     """Macros plus explicit primitive overrides.
 
     ``resolve()`` produces the :class:`Params` the engine consumes.
+
+    ``backend`` chooses how depth is put on the screen (DESIGN.md §5): the
+    layered 2.5D stack, or the volumetric slab of §5.1. It sits here rather
+    than in :class:`Params` because it is not a parameter -- nothing ramps it,
+    and it decides which class the engine *is*. Like every other structural
+    value it takes effect when a field is grown, so switching it needs a reset
+    or a relaunch; the two backends keep separate saved fields, so switching
+    away and back resumes what was there.
     """
 
     macros: Macros = field(default_factory=Macros)
     overrides: dict[str, float] = field(default_factory=dict)
     preset_name: str = "default"
+    backend: str = DEFAULT_BACKEND
 
     def resolve(self) -> Params:
         params = Params()
@@ -747,7 +857,40 @@ def validate(params: Params) -> Params:
     params.agents.found_period = max(2, min(20_000, int(params.agents.found_period)))
     params.agents.found_site_cells = max(
         64, min(1 << 24, int(params.agents.found_site_cells)))
+
+    # The slab's own structural values. The ceilings are core WebGPU's
+    # guaranteed maxTextureDimension3D (2048) with room to spare, and the
+    # floors are what the passes need to be meaningful at all: a slab one voxel
+    # deep is the layered backend with extra steps, and a march of a couple of
+    # steps cannot resolve occlusion.
+    volume = params.volume
+    volume.width = max(32, min(2048, int(volume.width)))
+    volume.depth = max(8, min(512, int(volume.depth)))
+    volume.climate_width = max(4, min(256, int(volume.climate_width)))
+    volume.climate_height = max(4, min(256, int(volume.climate_height)))
+    volume.climate_depth = max(2, min(64, int(volume.climate_depth)))
+    volume.psi_scale = max(1, min(32, int(volume.psi_scale)))
+    volume.steps = max(8, min(256, int(volume.steps)))
+    volume.shadow_steps = max(0, min(32, int(volume.shadow_steps)))
     return params
+
+
+def normalise_backend(name: object) -> str:
+    """The backend a name asks for, or the default with a warning.
+
+    Untrusted like every other value off disk or off a command line, and not
+    worth failing a launch over: an unrecognised backend is a typo, and the
+    layered one is the safe thing to open with.
+    """
+    text = str(name or "").strip().lower()
+    if text in BACKENDS:
+        return text
+    if text:
+        log.warning(
+            "unknown backend %r; using %r (known: %s)",
+            name, DEFAULT_BACKEND, ", ".join(BACKENDS),
+        )
+    return DEFAULT_BACKEND
 
 
 # --------------------------------------------------------------------------
@@ -832,6 +975,11 @@ _HEADER = """\
 # Edit and save: changes are hot-reloaded, and every parameter is ramped
 # smoothly rather than stepped, so it is safe to adjust while running.
 #
+# `backend` chooses how depth is drawn: "layered" (three 2.5D sheets) or
+# "volumetric" (a raymarched slab). It is structural, so it takes effect on a
+# new field -- reset the simulation, or relaunch. Each backend keeps its own
+# saved field.
+#
 # [macros] are the normal interface -- eight knobs, all 0..1.
 # [overrides] pins individual primitive parameters by dotted path, e.g.
 #   "render.filament_luma" = 0.42
@@ -896,6 +1044,7 @@ def load(path: str | Path) -> Config:
         macros=macros,
         overrides=overrides,
         preset_name=str(data.get("preset_name", "default")),
+        backend=normalise_backend(data.get("backend", DEFAULT_BACKEND)),
     )
 
 
@@ -911,6 +1060,7 @@ def save(config: Config, path: str | Path) -> None:
     doc.add(tomlkit.nl())
 
     doc.add("preset_name", config.preset_name)
+    doc.add("backend", normalise_backend(config.backend))
 
     macros = tomlkit.table()
     for f in fields(config.macros):

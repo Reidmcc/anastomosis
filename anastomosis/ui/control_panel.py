@@ -51,6 +51,23 @@ NOTE_AT_CAP = (
 EVENT_RATE_MACRO = "event_rate"
 EVENT_RATE_PATH = "events.rate_per_hour"
 
+# The two depth backends (DESIGN.md §5), with the difference stated in terms of
+# what the user will see rather than of how it is drawn.
+BACKEND_LABELS: list[tuple[str, str, str]] = [
+    (
+        "layered",
+        "Layered",
+        "Three sheets at different depths, the finest detail. The default.",
+    ),
+    (
+        "volumetric",
+        "Volumetric",
+        "One continuous volume: material genuinely passes in front of and "
+        "behind other material, and casts shade into it. Coarser, and asks "
+        "more of the graphics card.",
+    ),
+]
+
 # Ordered for the panel, with a plain-language description of what each does.
 MACRO_LABELS: list[tuple[str, str, str]] = [
     ("intensity", "Intensity", "How much is happening: density, contrast, colour"),
@@ -110,6 +127,7 @@ class ControlPanel(QtWidgets.QWidget):
         layout.setSpacing(10)
 
         layout.addWidget(self._build_presets())
+        layout.addWidget(self._build_backend())
         layout.addWidget(self._build_macros())
         layout.addWidget(self._build_events())
         layout.addWidget(self._build_status())
@@ -135,6 +153,27 @@ class ControlPanel(QtWidgets.QWidget):
         self.preset_combo.addItems(presets_module.names())
         self.preset_combo.activated.connect(self._on_preset)
         row.addWidget(self.preset_combo, 1)
+        return box
+
+    def _build_backend(self) -> QtWidgets.QWidget:
+        """How depth is drawn.
+
+        Structural rather than perceptual, so it does not belong among the
+        sliders: nothing about it can be ramped, and choosing it grows a new
+        field rather than adjusting the one on screen. It asks before doing
+        that, for the same reason the reset button does -- except that here the
+        field being left is kept, so the answer is much less costly than it
+        looks.
+        """
+        box = QtWidgets.QGroupBox("Depth")
+        row = QtWidgets.QHBoxLayout(box)
+        self.backend_combo = QtWidgets.QComboBox()
+        for name, label, tip in BACKEND_LABELS:
+            self.backend_combo.addItem(label, name)
+            self.backend_combo.setItemData(
+                self.backend_combo.count() - 1, tip, QtCore.Qt.ToolTipRole)
+        self.backend_combo.activated.connect(self._on_backend)
+        row.addWidget(self.backend_combo, 1)
         return box
 
     def _build_macros(self) -> QtWidgets.QWidget:
@@ -260,6 +299,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.status_labels = {}
         for key, label in (
             ("runtime", "Running for"),
+            ("depth", "Depth"),
             ("field", "Field"),
             ("rate", "Sim / frame"),
             ("events", "Events"),
@@ -339,6 +379,9 @@ class ControlPanel(QtWidgets.QWidget):
         index = self.preset_combo.findText(self.app.config.preset_name)
         if index >= 0:
             self.preset_combo.setCurrentIndex(index)
+        index = self.backend_combo.findData(self.app.backend)
+        if index >= 0:
+            self.backend_combo.setCurrentIndex(index)
         self._updating = False
 
     def _current_macros(self) -> Macros:
@@ -377,6 +420,34 @@ class ControlPanel(QtWidgets.QWidget):
         # Ramped like any other change, so switching presets is a slow
         # transition rather than a cut.
         self.app.apply_macros(macros)
+
+    def _on_backend(self) -> None:
+        if self._updating:
+            return
+        wanted = self.backend_combo.currentData()
+        if wanted == self.app.backend:
+            return
+        label = self.backend_combo.currentText()
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Change how depth is drawn",
+            f"Switch to the {label.lower()} view?\n\n"
+            "The picture fades down and comes back up over a few seconds. "
+            "The field you are leaving is saved, so switching back later "
+            "finds it where it was.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            self._load_from_app()  # put the combo back
+            return
+        try:
+            self.app.switch_backend(wanted)
+            self.app.save_config()
+        except Exception as exc:
+            log.error("could not switch the depth backend: %s", exc)
+            QtWidgets.QMessageBox.warning(self, "Could not switch", str(exc))
+            self._load_from_app()
 
     def _on_save(self) -> None:
         self.app.config.macros = self._current_macros()
@@ -469,6 +540,9 @@ class ControlPanel(QtWidgets.QWidget):
         minutes, secs = divmod(rest, 60)
         self.status_labels["runtime"].setText(
             f"{hours}h {minutes:02d}m {secs:02d}s   ({ticks:,} ticks)"
+        )
+        self.status_labels["depth"].setText(
+            f"{self.app.backend}   {engine.geometry.describe()}"
         )
         self.status_labels["field"].setText(
             f"density {stats['mean_v']:.3f}   activity {stats['mean_activity']:.5f}"

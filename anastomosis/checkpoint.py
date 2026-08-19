@@ -50,6 +50,17 @@ What is still refused is a file this build cannot use at all: a foreign format
 version, missing or wrongly-shaped arrays, or a geometry no engine could be
 built at. Every failure here degrades to "start fresh" -- a mismatched,
 truncated or foreign file must never be able to stop the application opening.
+
+**Two backends, two files.** The layered stack and the volumetric slab
+(DESIGN.md §5.1) hold different state in different shapes, and no amount of
+resampling turns one into the other, so a checkpoint records which backend
+wrote it and :func:`default_checkpoint_path` gives each its own file. Switching
+backend therefore does not destroy the field you switched away from: switch
+back and it is still there, older but intact. What the two share is everything
+about *how* a checkpoint behaves -- the same version gating, the same
+build-to-fit-the-file launch, the same degrade-to-fresh on anything unusable --
+which is why the difference between them is one small object per backend
+(:data:`LAYOUTS`) rather than a second copy of this module.
 """
 
 from __future__ import annotations
@@ -66,16 +77,20 @@ from typing import Any
 
 import numpy as np
 
+from . import config as config_module
 from . import engine as engine_module
 from . import gpu_params
+from . import volume as volume_module
 
 log = logging.getLogger(__name__)
 
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 # Version 1 recorded the *window* size where version 2 records the simulation's
 # own, which are the same number unless that session was resized after starting.
 # Version 3 adds the morphology climate pair and the feature-size walk, both of
 # which postdate version 2 and neither of which an older file can carry.
+# Version 4 names the backend that wrote the file; anything older predates the
+# volumetric slab and can only have come from the layered one.
 # Reading them costs a few lines and saves anyone upgrading their mature field.
 OLDEST_READABLE_VERSION = 1
 
@@ -97,9 +112,20 @@ PAIR_FIELDS = (
 # history rather than the whole field.
 FIELDS_SINCE = {"climate_c": 3}
 
+# The version the backend key first appeared in. A file without it is layered,
+# because nothing else existed yet.
+BACKEND_SINCE = 4
+
 # Rewritten from scratch every tick before anything reads them, so they are not
 # saved. Named here so the tests can check that this stays true.
+#
+# The slab has three more of them and they are omitted on the same grounds: the
+# assembled flow potential and the blur scratch are rewritten every tick before
+# anything reads them, and the interpolated pigment every *frame*. At the
+# default slab those three are about 170 MB that would otherwise be written to
+# disk every five minutes to no purpose.
 DERIVED_FIELDS = ("reaction_prev", "velocity")
+VOLUME_DERIVED_FIELDS = ("reaction_prev", "velocity", "potential", "scratch", "interp")
 
 
 # --------------------------------------------------------------------------
@@ -167,6 +193,22 @@ def _read_texture(device, texture) -> np.ndarray:
     )
 
 
+def _read_texture3(device, texture) -> np.ndarray:
+    """Read one rgba16float 3D texture back as ``(d, h, w, 4)`` float16."""
+    width, height = texture.width, texture.height
+    depth = texture.depth_or_array_layers
+    raw = device.queue.read_texture(
+        {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
+        {"offset": 0, "bytes_per_row": width * 8, "rows_per_image": height},
+        (width, height, depth),
+    )
+    return (
+        np.frombuffer(raw, dtype=np.float16)[: width * height * depth * 4]
+        .reshape(depth, height, width, 4)
+        .copy()
+    )
+
+
 def _read_buffer(device, buffer) -> np.ndarray:
     """Read a storage buffer back as opaque bytes.
 
@@ -183,27 +225,18 @@ def capture(engine, scheduler=None, sim_hz: float = 0.0) -> Checkpoint:
     Call this between ticks: the deposit accumulator is only guaranteed empty
     once the trail pass has consumed it.
     """
-    device = engine.device
-    arrays: dict[str, np.ndarray] = {}
-
-    for layer in engine.layers:
-        index = layer.spec.index
-        for name in PAIR_FIELDS:
-            pair = getattr(layer, name)
-            arrays[f"layer{index}.{name}"] = _read_texture(
-                device, pair.textures[pair.index]
-            )
-        arrays[f"layer{index}.agents"] = _read_buffer(device, layer.agents_buf)
-
-    arrays["stats"] = _read_buffer(device, engine.stats_buf)
+    layout = layout_for(engine.name)
+    arrays = layout.capture(engine)
+    arrays["stats"] = _read_buffer(engine.device, engine.stats_buf)
 
     meta: dict[str, Any] = {
         "version": FORMAT_VERSION,
         "created": time.time(),
         "sim_hz": float(sim_hz),
+        "backend": layout.name,
         # The shape the next launch has to build itself in to be able to load
         # this, rather than the shape it has to happen to already be in.
-        "geometry": _geometry_meta(engine.geometry),
+        "geometry": layout.geometry_meta(engine.geometry),
         "engine": {
             "tick_count": int(engine.tick_count),
             "frame_count": int(engine.frame_count),
@@ -237,27 +270,6 @@ def _walk_rng_state(engine) -> dict[str, Any]:
         return json.loads(json.dumps(state))
     except (AttributeError, TypeError, ValueError):  # pragma: no cover
         return {}
-
-
-def _geometry_meta(geometry) -> dict[str, Any]:
-    """A geometry as plain JSON-able data."""
-    return {
-        "sim_width": int(geometry.sim_width),
-        "sim_height": int(geometry.sim_height),
-        "layers": [
-            {
-                "index": int(layer.index),
-                "width": int(layer.width),
-                "height": int(layer.height),
-                "agent_count": int(layer.agent_count),
-                "psi_width": int(layer.psi_width),
-                "psi_height": int(layer.psi_height),
-                "climate_width": int(layer.climate_width),
-                "climate_height": int(layer.climate_height),
-            }
-            for layer in geometry.layers
-        ],
-    }
 
 
 # --------------------------------------------------------------------------
@@ -329,15 +341,23 @@ def discard(path: str | Path) -> None:
             log.warning("could not remove %s: %s", candidate, exc)
 
 
-def default_checkpoint_path() -> Path:
-    """``$XDG_STATE_HOME/anastomosis/checkpoint.npz``.
+def default_checkpoint_path(backend: str | None = None) -> Path:
+    """``$XDG_STATE_HOME/anastomosis/checkpoint[-<backend>].npz``.
 
     State rather than config or cache: it is neither hand-editable nor cheap to
     regenerate.
+
+    One file per backend, because the two hold incompatible state and no
+    amount of resampling turns a stack of sheets into a slab. Separate files
+    mean switching backend costs nothing permanent: switch back and the field
+    you left is still there. The layered backend keeps the unsuffixed name it
+    has always had, so an existing mature field is found unchanged.
     """
     base = os.environ.get("XDG_STATE_HOME")
     root = Path(base) if base else Path.home() / ".local" / "state"
-    return root / "anastomosis" / "checkpoint.npz"
+    name = str(backend or config_module.DEFAULT_BACKEND)
+    suffix = "" if name == config_module.DEFAULT_BACKEND else f"-{name}"
+    return root / "anastomosis" / f"checkpoint{suffix}.npz"
 
 
 class BackgroundSaver:
@@ -392,6 +412,37 @@ class BackgroundSaver:
 # --------------------------------------------------------------------------
 
 
+class _Layout:
+    """How one backend's state maps to and from a checkpoint's arrays.
+
+    Four questions, and every one of them has a different answer per backend
+    while the machinery around them has exactly one: what shape the geometry
+    metadata takes, how to read it back safely, which arrays a file must hold
+    to be usable, and how to move them on and off the GPU. Everything else in
+    this module -- the version gating, the bounds checking, the degrade-to-fresh
+    behaviour, the counters and walks in the metadata -- is written once.
+    """
+
+    name = "abstract"
+
+    def geometry_meta(self, geometry) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def read_geometry(self, meta: dict[str, Any]):
+        raise NotImplementedError
+
+    def expected_arrays(
+        self, geometry, version: int = FORMAT_VERSION
+    ) -> dict[str, tuple[int, ...]]:
+        raise NotImplementedError
+
+    def capture(self, engine) -> dict[str, np.ndarray]:
+        raise NotImplementedError
+
+    def restore_arrays(self, engine, arrays: dict[str, np.ndarray]) -> None:
+        raise NotImplementedError
+
+
 def _field_shape(layer, name: str) -> tuple[int, int, int]:
     """The shape one saved field has, given the layer geometry it belongs to."""
     if name.startswith("climate"):
@@ -403,75 +454,264 @@ def _field_shape(layer, name: str) -> tuple[int, int, int]:
     return (height, width, 4)
 
 
+class _LayeredLayout(_Layout):
+    """The 2.5D stack: one set of fields and one agent array per layer."""
+
+    name = "layered"
+
+    def geometry_meta(self, geometry) -> dict[str, Any]:
+        return {
+            "sim_width": int(geometry.sim_width),
+            "sim_height": int(geometry.sim_height),
+            "layers": [
+                {
+                    "index": int(layer.index),
+                    "width": int(layer.width),
+                    "height": int(layer.height),
+                    "agent_count": int(layer.agent_count),
+                    "psi_width": int(layer.psi_width),
+                    "psi_height": int(layer.psi_height),
+                    "climate_width": int(layer.climate_width),
+                    "climate_height": int(layer.climate_height),
+                }
+                for layer in geometry.layers
+            ],
+        }
+
+    def read_geometry(self, meta: dict[str, Any]):
+        """The geometry described by a checkpoint's metadata, or ``None``.
+
+        Nothing in here is trusted: the values are coerced to ``int`` and the
+        result is bounds-checked by the caller before an engine is built from
+        it.
+        """
+        block = meta.get("geometry")
+        if not isinstance(block, dict):
+            # Format version 1, which kept the sizes in two other places and
+            # recorded the window size rather than the simulation's.
+            saved = meta.get("engine") or {}
+            block = {
+                "sim_width": saved.get("width"),
+                "sim_height": saved.get("height"),
+                "layers": meta.get("layers"),
+            }
+
+        rows = block.get("layers")
+        if not isinstance(rows, list) or not rows:
+            return None
+        try:
+            layers = tuple(
+                engine_module.LayerGeometry(
+                    index=int(row["index"]),
+                    width=int(row["width"]),
+                    height=int(row["height"]),
+                    agent_count=int(row["agent_count"]),
+                    psi_width=int(row["psi_width"]),
+                    psi_height=int(row["psi_height"]),
+                    climate_width=int(row["climate_width"]),
+                    climate_height=int(row["climate_height"]),
+                )
+                for row in rows
+            )
+            return engine_module.Geometry(
+                sim_width=int(block["sim_width"]),
+                sim_height=int(block["sim_height"]),
+                layers=layers,
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
+    def expected_arrays(
+        self, geometry, version: int = FORMAT_VERSION
+    ) -> dict[str, tuple[int, ...]]:
+        expected: dict[str, tuple[int, ...]] = {}
+        for layer in geometry.layers:
+            for name in PAIR_FIELDS:
+                if version < FIELDS_SINCE.get(name, 0):
+                    continue
+                expected[f"layer{layer.index}.{name}"] = _field_shape(layer, name)
+            expected[f"layer{layer.index}.agents"] = (
+                max(layer.agent_count, 1) * engine_module.AGENT_STRIDE,
+            )
+        return expected
+
+    def capture(self, engine) -> dict[str, np.ndarray]:
+        arrays: dict[str, np.ndarray] = {}
+        for layer in engine.layers:
+            index = layer.spec.index
+            for name in PAIR_FIELDS:
+                pair = getattr(layer, name)
+                arrays[f"layer{index}.{name}"] = _read_texture(
+                    engine.device, pair.textures[pair.index]
+                )
+            arrays[f"layer{index}.agents"] = _read_buffer(
+                engine.device, layer.agents_buf)
+        return arrays
+
+    def restore_arrays(self, engine, arrays: dict[str, np.ndarray]) -> None:
+        device = engine.device
+        for layer in engine.layers:
+            index = layer.spec.index
+            for name in PAIR_FIELDS:
+                data = arrays.get(f"layer{index}.{name}")
+                if data is None:
+                    # Only ever a field this file predates -- the validation
+                    # refuses anything else missing -- so the seeded one stays.
+                    continue
+                pair = getattr(layer, name)
+                # Both slots, so the parity the next tick happens to start on
+                # cannot resurrect the seeded state.
+                for texture in pair.textures:
+                    _write_texture(device, texture, data)
+                pair.index = 0
+            device.queue.write_buffer(
+                layer.agents_buf, 0, arrays[f"layer{index}.agents"].tobytes())
+
+
+class _VolumeLayout(_Layout):
+    """The volumetric slab: one set of 3D fields and one agent array.
+
+    The field *names* are the same as the layered backend's, because they are
+    the same fields -- trail, reaction, pigment, three climate pairs and the
+    weather potential. What differs is that there is one of each rather than
+    one per layer, and that each is a volume.
+    """
+
+    name = "volumetric"
+
+    def geometry_meta(self, geometry) -> dict[str, Any]:
+        return {
+            "width": int(geometry.width),
+            "height": int(geometry.height),
+            "depth": int(geometry.depth),
+            "agent_count": int(geometry.agent_count),
+            "psi_width": int(geometry.psi_width),
+            "psi_height": int(geometry.psi_height),
+            "psi_depth": int(geometry.psi_depth),
+            "climate_width": int(geometry.climate_width),
+            "climate_height": int(geometry.climate_height),
+            "climate_depth": int(geometry.climate_depth),
+        }
+
+    def read_geometry(self, meta: dict[str, Any]):
+        block = meta.get("geometry")
+        if not isinstance(block, dict):
+            return None
+        try:
+            return volume_module.VolumeGeometry(
+                width=int(block["width"]),
+                height=int(block["height"]),
+                depth=int(block["depth"]),
+                agent_count=int(block["agent_count"]),
+                psi_width=int(block["psi_width"]),
+                psi_height=int(block["psi_height"]),
+                psi_depth=int(block["psi_depth"]),
+                climate_width=int(block["climate_width"]),
+                climate_height=int(block["climate_height"]),
+                climate_depth=int(block["climate_depth"]),
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
+    @staticmethod
+    def _shape(geometry, name: str) -> tuple[int, int, int, int]:
+        if name.startswith("climate"):
+            w, h, d = geometry.climate_dims
+        elif name == "psi":
+            w, h, d = geometry.psi_dims
+        else:
+            w, h, d = geometry.dims
+        return (d, h, w, 4)
+
+    def expected_arrays(
+        self, geometry, version: int = FORMAT_VERSION
+    ) -> dict[str, tuple[int, ...]]:
+        expected: dict[str, tuple[int, ...]] = {
+            f"slab.{name}": self._shape(geometry, name) for name in PAIR_FIELDS
+        }
+        expected["slab.agents"] = (
+            max(geometry.agent_count, 1) * volume_module.AGENT_STRIDE,
+        )
+        return expected
+
+    def capture(self, engine) -> dict[str, np.ndarray]:
+        slab = engine.slab
+        arrays: dict[str, np.ndarray] = {}
+        for name in PAIR_FIELDS:
+            pair = getattr(slab, name)
+            arrays[f"slab.{name}"] = _read_texture3(
+                engine.device, pair.textures[pair.index])
+        arrays["slab.agents"] = _read_buffer(engine.device, slab.agents_buf)
+        return arrays
+
+    def restore_arrays(self, engine, arrays: dict[str, np.ndarray]) -> None:
+        device = engine.device
+        slab = engine.slab
+        for name in PAIR_FIELDS:
+            data = arrays.get(f"slab.{name}")
+            if data is None:
+                continue
+            pair = getattr(slab, name)
+            for texture in pair.textures:
+                _write_texture3(device, texture, data)
+            pair.index = 0
+        device.queue.write_buffer(
+            slab.agents_buf, 0, arrays["slab.agents"].tobytes())
+
+
+LAYOUTS: dict[str, _Layout] = {
+    layout.name: layout for layout in (_LayeredLayout(), _VolumeLayout())
+}
+
+
+def layout_for(backend: str) -> _Layout:
+    """The layout for a backend name, defaulting to the layered one.
+
+    Untrusted, like everything else that arrives from a file: an unknown name
+    resolves to the layered layout, whose validation then rejects the arrays
+    for not being the shape it expects. That is the right failure -- one
+    "cannot use this, starting fresh" rather than a special case per way of
+    being wrong.
+    """
+    return LAYOUTS.get(str(backend or ""), LAYOUTS[config_module.DEFAULT_BACKEND])
+
+
+def checkpoint_backend(checkpoint: Checkpoint) -> str:
+    """Which backend wrote this file.
+
+    A file without the key predates the volumetric slab, so it can only have
+    come from the layered backend.
+    """
+    return str(checkpoint.meta.get("backend") or config_module.DEFAULT_BACKEND)
+
+
 def _expected_arrays(
-    geometry, version: int = FORMAT_VERSION
+    geometry, version: int = FORMAT_VERSION, backend: str | None = None
 ) -> dict[str, tuple[int, ...]]:
     """Array name -> required shape, for a given simulation geometry.
 
     Version-aware, because a field that did not exist when the file was written
     cannot be in it and must not be demanded of it.
     """
+    layout = layout_for(backend or config_module.DEFAULT_BACKEND)
     expected: dict[str, tuple[int, ...]] = {
         "stats": (gpu_params.STATS_DTYPE.itemsize,),
     }
-    for layer in geometry.layers:
-        for name in PAIR_FIELDS:
-            if version < FIELDS_SINCE.get(name, 0):
-                continue
-            expected[f"layer{layer.index}.{name}"] = _field_shape(layer, name)
-        expected[f"layer{layer.index}.agents"] = (
-            max(layer.agent_count, 1) * engine_module.AGENT_STRIDE,
-        )
+    expected.update(layout.expected_arrays(geometry, version))
     return expected
 
 
-def _read_geometry(meta: dict[str, Any]) -> engine_module.Geometry | None:
-    """The geometry described by a checkpoint's metadata, or ``None``.
-
-    Nothing in here is trusted: the values are coerced to ``int`` and the result
-    is bounds-checked by the caller before an engine is built from it.
-    """
-    block = meta.get("geometry")
-    if not isinstance(block, dict):
-        # Format version 1, which kept the sizes in two other places and
-        # recorded the window size rather than the simulation's.
-        saved = meta.get("engine") or {}
-        block = {
-            "sim_width": saved.get("width"),
-            "sim_height": saved.get("height"),
-            "layers": meta.get("layers"),
-        }
-
-    rows = block.get("layers")
-    if not isinstance(rows, list) or not rows:
-        return None
-    try:
-        layers = tuple(
-            engine_module.LayerGeometry(
-                index=int(row["index"]),
-                width=int(row["width"]),
-                height=int(row["height"]),
-                agent_count=int(row["agent_count"]),
-                psi_width=int(row["psi_width"]),
-                psi_height=int(row["psi_height"]),
-                climate_width=int(row["climate_width"]),
-                climate_height=int(row["climate_height"]),
-            )
-            for row in rows
-        )
-        return engine_module.Geometry(
-            sim_width=int(block["sim_width"]),
-            sim_height=int(block["sim_height"]),
-            layers=layers,
-        )
-    except (KeyError, TypeError, ValueError, OverflowError):
-        return None
-
-
 def _usable_geometry(
-    checkpoint: Checkpoint,
-) -> tuple[engine_module.Geometry | None, list[str]]:
-    """``(geometry, problems)``: what this file needs, or why it is unusable."""
+    checkpoint: Checkpoint, backend: str | None = None
+) -> tuple[Any, list[str]]:
+    """``(geometry, problems)``: what this file needs, or why it is unusable.
+
+    ``backend`` is what the caller intends to *run*. Passing it turns a file
+    written by the other backend into an ordinary "cannot use this" rather than
+    an attempt to read a slab's metadata as a stack of layers. Left out, the
+    file is taken at its word, which is what a restore into an already-built
+    engine wants.
+    """
     version = checkpoint.meta.get("version")
     if (
         not isinstance(version, int)
@@ -482,7 +722,15 @@ def _usable_geometry(
             f"{OLDEST_READABLE_VERSION} to {FORMAT_VERSION}"
         ]
 
-    geometry = _read_geometry(checkpoint.meta)
+    saved_backend = checkpoint_backend(checkpoint)
+    if backend is not None and saved_backend != backend:
+        return None, [
+            f"written by the {saved_backend} backend, this session runs "
+            f"{backend}"
+        ]
+
+    layout = layout_for(saved_backend)
+    geometry = layout.read_geometry(checkpoint.meta)
     if geometry is None:
         return None, ["the metadata describes no usable geometry"]
     problems = geometry.problems()
@@ -491,7 +739,7 @@ def _usable_geometry(
 
     # The file must actually hold what its own metadata claims, since that is
     # what the arrays are uploaded against.
-    for name, shape in _expected_arrays(geometry, version).items():
+    for name, shape in _expected_arrays(geometry, version, saved_backend).items():
         array = checkpoint.arrays.get(name)
         if array is None:
             problems.append(f"missing {name}")
@@ -502,16 +750,17 @@ def _usable_geometry(
     return geometry, []
 
 
-def required_geometry(checkpoint: Checkpoint) -> engine_module.Geometry | None:
+def required_geometry(checkpoint: Checkpoint, backend: str | None = None):
     """The geometry an engine must be built at to be able to load this, or ``None``.
 
     This is what stops the window size from mattering: instead of asking whether
     a saved field fits the session that is starting, the session asks what shape
     the field needs and starts in it. ``None`` means the file cannot be used at
-    all -- foreign version, corrupt metadata, missing arrays, or a geometry no
-    engine could be built at -- and the caller grows a new field instead.
+    all -- foreign version, corrupt metadata, missing arrays, a geometry no
+    engine could be built at, or the wrong backend -- and the caller grows a new
+    field instead.
     """
-    geometry, problems = _usable_geometry(checkpoint)
+    geometry, problems = _usable_geometry(checkpoint, backend)
     if problems:
         log.info(
             "the saved state cannot be used, starting from a fresh field (%s)",
@@ -529,7 +778,7 @@ def compatibility_problems(engine, checkpoint: Checkpoint) -> list[str]:
     and either way it is what keeps the upload from writing mismatched shapes to
     the GPU.
     """
-    geometry, problems = _usable_geometry(checkpoint)
+    geometry, problems = _usable_geometry(checkpoint, engine.name)
     if geometry is None:
         return problems
     return geometry.differences(engine.geometry)
@@ -543,6 +792,17 @@ def _write_texture(device, texture, data: np.ndarray) -> None:
         {"offset": 0, "bytes_per_row": payload.shape[1] * 8,
          "rows_per_image": payload.shape[0]},
         (payload.shape[1], payload.shape[0], 1),
+    )
+
+
+def _write_texture3(device, texture, data: np.ndarray) -> None:
+    payload = np.ascontiguousarray(data, dtype=np.float16)
+    depth, height, width = payload.shape[0], payload.shape[1], payload.shape[2]
+    device.queue.write_texture(
+        {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
+        payload,
+        {"offset": 0, "bytes_per_row": width * 8, "rows_per_image": height},
+        (width, height, depth),
     )
 
 
@@ -591,23 +851,7 @@ def restore(engine, checkpoint: Checkpoint, scheduler=None) -> bool:
         return False
 
     device = engine.device
-    for layer in engine.layers:
-        index = layer.spec.index
-        for name in PAIR_FIELDS:
-            data = checkpoint.arrays.get(f"layer{index}.{name}")
-            if data is None:
-                # Only ever a field this file predates -- the validation above
-                # refuses anything else missing -- so the seeded one stays.
-                continue
-            pair = getattr(layer, name)
-            # Both slots, so the parity the next tick happens to start on cannot
-            # resurrect the seeded state.
-            for texture in pair.textures:
-                _write_texture(device, texture, data)
-            pair.index = 0
-        device.queue.write_buffer(
-            layer.agents_buf, 0, checkpoint.arrays[f"layer{index}.agents"].tobytes()
-        )
+    layout_for(engine.name).restore_arrays(engine, checkpoint.arrays)
 
     device.queue.write_buffer(engine.stats_buf, 0, checkpoint.arrays["stats"].tobytes())
 
@@ -617,9 +861,18 @@ def restore(engine, checkpoint: Checkpoint, scheduler=None) -> bool:
     engine.seed = int(saved.get("seed", engine.seed)) & 0xFFFFFFFF
     hue_phase = float(saved.get("hue_phase", 0.0))
     engine.hue_phase = hue_phase % (2.0 * math.pi) if math.isfinite(hue_phase) else 0.0
+    # The camera drift. How many entries there are is the backend's business
+    # -- one per layer under the layered stack, one camera under the slab -- so
+    # this restores whatever was saved and lets `_update_parallax` discard it if
+    # the count no longer matches. Losing it costs a slow re-drift from centre,
+    # not a step.
     parallax = saved.get("parallax") or []
-    if len(parallax) == len(engine.layers):
-        engine._parallax = [[float(x), float(y)] for x, y in parallax]
+    try:
+        engine._parallax = [
+            [float(x), float(y)] for x, y in parallax
+        ] or None
+    except (TypeError, ValueError):
+        engine._parallax = None
     _restore_walk(engine, saved)
 
     if scheduler is not None:

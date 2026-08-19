@@ -1172,7 +1172,10 @@ implementation risk and lateral resolution, not cost:
   identical under either depth backend.
 
 So: layered 2.5D first, volumetric slab as a **planned alternate depth backend**
-once the rest is proven (§5.1), not as a speculative stretch goal.
+once the rest is proven (§5.1), not as a speculative stretch goal. Both are now
+built, and the choice between them is the user's -- a selector in the control
+panel, a `backend` key in the config, a `--backend` flag. The default is still
+the layered path.
 
 - 3 independent simulation layers at different spatial scales and tempos (back layer
   large/slow, front layer fine/quicker).
@@ -1216,6 +1219,74 @@ is tuned and proven, since it makes every parameter harder to reason about.
 
 The output stages (§6, §7) are unchanged between backends, so this is a clean swap
 rather than a fork.
+
+#### What building it actually settled
+
+Five decisions were not obvious from the sketch above, and each is the answer to
+a question the layered path never had to ask.
+
+**The slab is a 3-torus, not a box.** Every argument for a toroidal domain in
+two dimensions applies unchanged to the third: a reflecting or no-flux face
+accumulates material against itself over a run measured in days, and agents that
+bounce off a wall pile up along it. So all three axes wrap and no pass anywhere
+has a boundary case. The cost is paid once, in the renderer: material leaving the
+near face reappears at the far one, so the march applies a raised-cosine window
+over both faces and the arrival and departure are fades rather than steps. That
+window is also the reason the toroidal choice is free rather than merely cheap —
+the far face is the fogged, dimmed, blurred end of the volume anyway.
+
+**Divergence-free flow needs a stored potential, not a sum of velocities.** In
+the plane, `v = curl(ψ)` for a scalar ψ, and the two components — imposed weather
+and structure-following — can be built as velocities and added, because the sum
+of two curls is a curl. In three dimensions the structure term is not the curl of
+anything obvious: "flow along the iso-surfaces of V" wants `∇V × ê`, which is
+divergence-free only when `ê` is constant — and a constant `ê` gives the slab a
+permanent preferred plane with every filament in it sliding the same way. So the
+vector potential `A` is assembled into a texture at full resolution and
+differentiated in a second pass. `div(curl(A))` then cancels term for term under
+central differences, because the difference operators commute — exactly zero, not
+zero to within a discretisation error. Measured on the running field, the residual
+divergence is 0.04% of the velocity magnitude, which is the `float16` quantisation
+of the velocity texture and nothing else.
+
+Two things ride on that licence, and neither would be exactly divergence-free
+applied to a velocity: the climate's per-region flow gain (multiplying a velocity
+by a varying gain adds `∇g·v` to the divergence, and material piles up wherever
+the gain falls off), and the depth anisotropy below.
+
+**Motion has to be anisotropic, and the anisotropy belongs on the potential.**
+The slab is four or five feature-widths deep. Isotropic flow at a speed the agent
+layer needs carries material through the entire thickness in a couple of seconds,
+and the depth axis reads as churn rather than as depth. Weighting the *lateral*
+components of `A` by a factor scales `v_z = ∂ₓA_y − ∂_yA_x` by roughly that factor
+while leaving the lateral velocity dominated by the terms in `A_z` — and leaves
+the field a curl, so it stays exactly divergence-free. Scaling `v_z` directly does
+not. Agents get the same treatment applied to their heading rather than their
+step, so that sensing follows motion instead of probing at angles they will not
+take.
+
+**3D Physarum sensing is a rolled cone.** Heading is a unit vector, since there is
+no scalar turn in three dimensions, and steering is a normalised interpolation
+toward (or, past the anti-fusion crossing, away from) a sensed direction — which
+is a rotation in the plane the two span and needs no basis to express. Four flank
+sensors sit on a cone of half-angle `sensor_angle`, rolled by a per-agent random
+phase every tick: four *fixed* flanks give the population a preferred lattice of
+turn directions, which the left/right pair in 2D cannot do. The fusion bias, the
+sign change at commitment 1.0, and the head-on special case all carry over
+unchanged in meaning.
+
+**The climate needs the third axis too.** A 2D climate stretched through depth
+would give every structure at a given (x, y) the same feed, the same kill and the
+same feature size however far apart in z, and the volume would read as a thick
+sheet. A regime is a region of the slab.
+
+The one thing genuinely lost is lateral resolution, and it is the reason the
+layered path remains the default: 512 voxels across against 2560, so filaments are
+about five display pixels wide rather than one. Motion is unaffected in the way
+that matters — features are five times larger *and* move five times faster in
+absolute terms, so feature-widths per second, which is what the eye reads at this
+timescale, is the same under both. Memory is the other real cost: ~650 MB of
+`rgba16float` against ~90 MB for the 1440p stack.
 
 ---
 
@@ -1480,10 +1551,22 @@ Conventional unit tests cover little of the risk here. The real QA is:
 
 ## 11. Module layout
 
+The sketch below is the shape this was planned in; the built layout is flatter
+(no `sim/` and `gfx/` packages) and has one addition the sketch does not name.
+The two depth backends live in `engine.py` (layered) and `volume.py` (slab), and
+everything they share — the output chain from the exposure governor to the
+present blit, the flash-safety stage, the parameter mapping, and the device-side
+plumbing — lives in `backend.py`. That module is what makes "a clean swap rather
+than a fork" (§5.1) true rather than merely intended: the safety stage in
+particular is a guarantee enforced by construction, and two copies of it free to
+drift apart would be the most expensive duplication in the application.
+
 ```
 anastomosis/
   __main__.py           entry point
   app.py                canvas, event loop, pacing, hot-reload
+  backend.py            shared: output chain, safety stage, parameter mapping
+  volume.py             the volumetric slab backend (§5.1)
   device.py             adapter selection, feature detection, device-lost recovery
   config.py             dataclasses, TOML load/save, validation, safety ceilings
   macros.py             macro → primitive curves, parameter ramping
@@ -1552,7 +1635,7 @@ want of a display, and one -- the checkpoint-determinism check -- currently
 fails on that adapter, on `main` as much as on any branch, and is not yet
 explained.
 
-**Complete:** all 17 WGSL modules; the three-system substrate with agents, trail,
+**Complete:** all 30 WGSL modules; the three-system substrate with agents, trail,
 reaction, curl-noise flow and pigment advection; the climate field and the
 GPU-resident homeostat; slow events; layered compositing with parallax, DOF and
 atmosphere; the Oklab colour pipeline; the full safety stage with blue-noise
@@ -1562,13 +1645,13 @@ ramping; the Qt control panel, including asking for an event of a given kind on
 demand; CLI; checkpointing on a five-minute interval and
 on close, resuming by default, with an explicit reset in the control panel;
 shutdown as a single idempotent path reached from the window closing, a signal,
-or the loop ending, so closing the window saves the field and ends the process.
+or the loop ending, so closing the window saves the field and ends the process;
+and **both depth backends** -- the layered 2.5D stack and the volumetric slab of
+§5.1 -- selectable from the config, the command line or the control panel, with
+one saved field each so switching between them is not destructive.
 
 **Not implemented:**
 
-- **Checkpointing** (§4.4). Restarts begin from a fresh field rather than
-  resuming a mature one. Everything else about long-duration survival is in
-  place; this only affects what happens *after* a crash or reboot.
 - **The morphology work in §4.7**, steps 5–6. Feature size is now polydisperse
   and migrating — the third climate pair drives the reaction's diffusion rate
   per region, over a global mean that walks — which addresses the texture
@@ -1581,8 +1664,6 @@ or the loop ending, so closing the window saves the field and ends the process.
   was waiting for exists now, but nothing measured says it has earned being
   switched on. Outstanding: the ℓ setpoint (step 5, though the reduce pass
   already carries the wider partials it needs) and trail advection (step 6).
-- **The volumetric slab backend** (§5.1), which was always positioned as the
-  second step after the layered path is proven.
 - **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is
   untested, since a software adapter offers no way to provoke a device loss.
 
@@ -1591,3 +1672,16 @@ defaults sit in the right place perceptually. The software adapter renders
 correct pixels far too slowly to watch. The numbers say the simulation is alive,
 structured, and stable; whether it is *pleasant* is a judgement that needs the
 real GPU and a pair of eyes.
+
+That caveat is heavier for the volumetric backend than for the layered one, and
+worth being explicit about. Its invariants are checked and hold -- the flow is
+divergence-free to the storage precision, the slab wraps on all three axes with
+no accumulation at the faces, the depth axis carries structure of its own, the
+homeostat keeps mean V in band over a long run, and the flash-safety bound holds
+through the ray march exactly as it does through the compositor. But §5.1's own
+warning that a volume "makes every parameter harder to reason about" is
+unaddressed by any of that. The numbers a slab needs are not the numbers a sheet
+needs, and the ones most likely to want moving once someone has watched it are
+the agent density (a filament network occupies a much smaller fraction of a
+volume than of a plane), the depth anisotropy, and the light's ambient floor.
+The layered path stays the default until that judgement has been made.
