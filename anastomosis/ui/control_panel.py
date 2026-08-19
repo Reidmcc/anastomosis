@@ -893,6 +893,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.status_labels["depth"].setText(depth)
         self.status_labels["field"].setText(
             f"density {stats['mean_v']:.3f}   activity {stats['mean_activity']:.5f}"
+            f"   feature {stats['ell']:.1f}"
         )
         window = self.app._frame_times[-30:] or [0.0]
         frame_ms = 1000.0 * sum(window) / len(window)

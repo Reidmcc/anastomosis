@@ -172,7 +172,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // pruning redistributes rather than drains: the mass reappears wherever
     // agents currently are instead of wherever mass already is.
     let deposit_amt = max(0.0, params.deposit + params.range_deposit * cb.x + stats.corr_deposit)
-        * (1.0 + clamp(stats.prune_return, 0.0, 2.0));
+        * (1.0 + clamp(stats.prune_return, 0.0, 2.0)
+           + clamp(stats.cap_return, 0.0, 3.0));
 
     // --- Sense ------------------------------------------------------------
     // One sensor ahead and four on a cone around it, rolled by a random phase

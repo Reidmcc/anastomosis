@@ -143,6 +143,52 @@ class AgentParams:
     # The mechanism is built, plumbed and tested; see DESIGN.md 4.7 for what
     # would have to change for it to earn being switched on.
     prune_gain: float = 0.0
+    # Deposit capacity -- the counter to winner-take-all trail following, and
+    # the mechanism behind the persistent white dots (DESIGN.md 4.7, "what the
+    # dots turned out to be"). Trail following has no capacity limit (4.9):
+    # agents pile onto the strongest signal and their deposits make it
+    # stronger, so the network ends up holding almost half its mass in its top
+    # 2% of texels -- round, stationary hubs five times the level of the
+    # filaments between them. A deposit landing on trail at this level is
+    # halved (`1 / (1 + trail / cap)`), so hubs stop out-competing while bare
+    # ground and ordinary filaments -- an order of magnitude below the cap --
+    # barely notice; founding cohorts land on bare ground and are untouched.
+    #
+    # What the capacity withholds is measured (the trail texture's `.a` channel
+    # carries a withheld EMA alongside the income EMA in `.g`) and handed back
+    # through the agent deposit, exactly as flux pruning's removal is: the
+    # capacity is a redistribution from hubs to wherever traffic is, not a
+    # sink, so the homeostat has nothing to cancel. Zero disables.
+    #
+    # The value is measured, and lower is not stronger. At 1.2, across three
+    # seeds, the network's top-2% mass share falls 0.49 -> 0.33 and the
+    # bright-blob count roughly halves (72 -> 34 on average), with trail mass
+    # matching the uncapped control to 1% and the return settling around 1
+    # against its bound of 3. At 2.0 the effect fades (0.42); at 0.6 the
+    # deposit-weighted withheld ratio exceeds the bound, the return pins, and
+    # the capacity becomes exactly the sink it must not be: trail mass falls
+    # 11% and the hubs survive *better* than at 1.2. If this is ever lowered,
+    # cap_return in the telemetry must stay clear of its clamp.
+    deposit_cap: float = 1.2
+    # How much of the velocity field the trail rides -- DESIGN.md 4.7 step 6,
+    # at last. Pigment is advected at 1.0; the trail at this fraction, so the
+    # network is carried and sheared by the same flow that carries the colour,
+    # instead of sitting bolted to the grid while the picture slides over it.
+    # A hub under shear stops being a stationary circle, which is the half of
+    # the dot complaint no morphology lever could reach. Zero disables, and
+    # the trail pass is then texel-exact.
+    #
+    # What is verified is the mechanism and the invariants, in step 4's
+    # tradition: a blob rides a known velocity at exactly this fraction of it
+    # (test_agents), and across seeds the sweep shows mass, mean V, activity
+    # and corr_decay unmoved with it on. The aggregate -- whether the network's
+    # 400-tick autocorrelation actually falls -- did not resolve above
+    # run-to-run variance at test resolution, exactly as step 4's churn did
+    # not. Two costs are measured and accepted: the capacity's de-hubbing
+    # weakens somewhat with the trail sliding under the depositors (top-2%
+    # mass share 0.33 -> 0.39 across three seeds), and cap_return rides
+    # higher (~1.6 against ~1.0), still well inside its bound.
+    trail_advect: float = 0.5
     starve_threshold: float = 0.004
     max_age: float = 2400.0  # ticks before forced respawn
 
@@ -175,22 +221,68 @@ class ReactionParams:
     # `dv` is never varied independently: the ratio dv/du is held fixed and
     # only the pair is scaled, because the ratio moves mass hard.
     #
-    # A slow global Ornstein-Uhlenbeck walk on the *mean*: the log of the
-    # multiplier, at one standard deviation of the walk, so 0.07 is about
-    # +-7%. Geometric to match the per-region deviation in ClimateParams, which
-    # makes the two compose exactly. The spatial deviation is what actually
-    # fixes the texture; this only keeps the global mean from being a defended
-    # constant. Kept small and very slow deliberately -- a globally coherent
-    # breathing of feature size is the coordinated global change DESIGN.md 4.2
-    # exists to prevent, and at the low end of a larger walk the field's
-    # activity approaches the homeostat's floor (0.00090 against a floor of
-    # 0.00084 at a 20% excursion, against 0.00101 at 14%).
-    du_walk: float = 0.07
-    du_walk_tau: float = 420.0  # seconds; well past any visible timescale
-    # Hard bounds on the local `du` after the walk and the climate deviation
-    # are both applied. A survival bound, not a target: the usable band in
-    # DESIGN.md 4.7 is [0.17, 0.40], and these are deliberately wider so the
-    # drift has somewhere to go.
+    # --- The feature-size loop (DESIGN.md 4.7 step 5) ---------------------
+    #
+    # The global mean of `du` is not a constant and is no longer an open-loop
+    # walk either. It is the output of a controller that measures the field's
+    # characteristic length scale `ell = mean V / mean |grad V|` and drives it
+    # to a setpoint which is itself a slow bounded walk. The difference
+    # matters: an open-loop walk on `du` asks for a diffusion rate and hopes
+    # the texture follows, and if the field is sitting in an attractor that
+    # pins its wavelength, nothing objects. A loop closed on `ell` notices --
+    # that is the whole point of measuring the one quantity that is not
+    # invariant under rearrangement -- and pushes `du` until the texture
+    # actually moves.
+    #
+    # `ell_walk` is the log-`ell` deviation the setpoint asks for at one
+    # standard deviation of the walk, so 0.09 is about +-9% in feature size
+    # typically and +-19% at the walk's +-2 bound. Feature *count* goes as
+    # roughly ell^-2, so that is a swing of about 2x across the walk's range --
+    # comparable to the 2.7x the offline drift experiment in DESIGN.md 4.7
+    # produced, and several times what the open-loop du walk it replaces
+    # delivered (+-7% in `du` is +-3% in ell at one standard deviation).
+    ell_walk: float = 0.09
+    ell_walk_tau: float = 420.0  # seconds; well past any visible timescale
+    # The controller's own time constant. It has to sit between two others: far
+    # slower than the field's response to a change in `du` (a few hundred
+    # ticks, from the offline drift runs) so the loop is not chasing the
+    # reaction's own dynamics, and rather faster than `ell_walk_tau` so it
+    # tracks the setpoint instead of lagging it. The plant gain is about 0.5
+    # -- ell goes as sqrt(du) across the whole measured sweep -- so the closed
+    # loop settles at about twice this.
+    ell_tau_seconds: float = 90.0
+    # The reference the setpoint is a deviation *from*: a very slow average of
+    # the field's own length scale, with the modulation subtracted before it is
+    # averaged. Both halves are load-bearing.
+    #
+    # A reference rather than an absolute setpoint, because there is no
+    # absolute number to use. The `scale` macro moves `du` by design, and a
+    # controller holding ell at a fixed value would cancel it; the agent layer
+    # and the feed/kill machinery move ell too, so the value the full engine
+    # settles at is not the value the isolated reaction does. Referenced to
+    # itself, the loop has no opinion about where feature size should sit and
+    # only insists that it move.
+    #
+    # And the modulation is subtracted before averaging because otherwise the
+    # reference chases its own output: ell tracks the setpoint, the reference
+    # averages ell, the setpoint is built from the reference, and the walk gets
+    # integrated into a drift with no fixed point. Subtracting it leaves the
+    # reference tracking the field's *natural* length scale, which is what it
+    # is supposed to be following.
+    ell_ref_tau_seconds: float = 1800.0
+    # Bound on the accumulated log multiplier, and so on the controller's whole
+    # authority: +-0.36 is x/1.43 on `du`, i.e. 0.146 to 0.301 at the shipped
+    # base. That is very nearly the 0.16-0.34 span the offline drift experiment
+    # in DESIGN.md 4.7 ran at and measured mass and activity staying inside
+    # both homeostat deadbands through. It doubles as the anti-windup: the
+    # integrator is clamped, not merely its effect, so a field that refuses to
+    # move its length scale parks the controller at a bound rather than winding
+    # up somewhere it then has to unwind from.
+    ell_corr_limit: float = 0.36
+    # Hard bounds on the local `du` after the controller's global correction
+    # and the climate deviation are both applied. A survival bound, not a
+    # target: the usable band in DESIGN.md 4.7 is [0.17, 0.40], and these are
+    # deliberately wider so the drift has somewhere to go.
     #
     # The floor is measured. At du = 0.06 the field collapses -- mean V 0.015,
     # activity indistinguishable from zero; at 0.08 it survives but barely
@@ -265,8 +357,70 @@ class PigmentParams:
     """The advected field that is actually shaded. DESIGN.md §2."""
 
     inject_rate: float = 0.055  # how fast pigment adopts local structure
-    density_from_v: float = 2.9
-    density_from_trail: float = 0.85
+    # What the image is *made of*, and the balance is the whole question.
+    #
+    # At 2.9 against 0.85 the reaction carried the picture and the network was
+    # nearly invisible in it. That is worth stating in numbers, because the
+    # ratio understates it: mean V is about 0.118 and a spot reaches 0.3-0.4,
+    # so a single spot alone reached 0.9-1.2 against a ceiling of 1 and every
+    # feature on screen rendered as a flat-topped disc with a hard rim. The
+    # field of similar-sized round dots that made the texture aversive
+    # (DESIGN.md 4.7) was not only in the simulation; the shading stage was
+    # picking it out and clipping it.
+    #
+    # Rebalanced, the peak of the reaction lands at 0.86 of the ceiling and
+    # reads as a soft bump instead of a clipped disc, while the network carries
+    # the structure. Measured on a mature field, the fraction of texels the
+    # ceiling clips falls from 6.7% to 4.3%, and the number of separate bright
+    # blobs the rendered image is made of from 147 to 25. Nothing about the
+    # simulation changes; this is the last stage before colour, and it is the
+    # cheapest place to stop amplifying the one geometry the application must
+    # not dwell on.
+    #
+    # The trail weight is high enough to carry the image and no higher. Past
+    # about 1.3 the trail term starts reaching the ceiling on its own, and
+    # where it does, the reaction's contribution is discarded -- which would
+    # move the clipping from the spots to the filaments rather than removing
+    # it. At 1.25 that is 2% of texels and 2.8% of the brightest reaction.
+    density_from_v: float = 1.90
+    density_from_trail: float = 1.25
+    # How much of the reaction's contribution is gated on there being network
+    # under it. 0 renders V wherever it is, which is what produced a
+    # free-standing lattice of dots across bare ground; 1 renders it only where
+    # filaments are.
+    #
+    # This is the difference between the two things V does. Trail raises the
+    # local feed rate, so the reaction nucleates *on* the network and gives
+    # filaments the internal texture DESIGN.md 2 wants from the coupling. Away
+    # from the network the same reaction is just Gray-Scott in its spot regime,
+    # and that is the monodisperse lattice -- the same size everywhere,
+    # answering to nothing, and the part of the image with no structural story
+    # behind it. Gating keeps the first and drops the second.
+    #
+    # Deliberately well short of 1, and the reason is measured rather than
+    # aesthetic. Gating harder keeps winning on blob count -- 25 separate bright
+    # regions at 0.25, 11 at 0.40 -- but it wins by hiding the reaction, and the
+    # reaction is what carries the *variation* in feature size that the rest of
+    # DESIGN.md 4.7 works to produce. Past this point the spread of local
+    # feature size in the rendered image starts falling back through the
+    # unrebalanced control (c.v. 0.222 ungated, 0.203 here, 0.183 at 0.40,
+    # against 0.191 before any of this). Uniformity is the trigger, so trading
+    # it away for a lower blob count is trading the wrong way.
+    #
+    # This is the single default most likely to want moving once someone has
+    # watched the result on real hardware; see DESIGN.md 13.
+    v_needs_trail: float = 0.25
+    # Soft knee on the trail's rendered contribution. The hubs sit at trail
+    # levels around five times the filaments', so under a linear term they are
+    # the one thing on screen that reaches the density ceiling and clips to a
+    # flat white disc -- measured, a third of the bright-blob texels were
+    # clipped. `knee * tanh(trail / knee)` is within 12% of linear at the
+    # filament level (trail ~0.07-0.3) and bounded at `knee` above it, which
+    # takes the clipped fraction to 3% while moving filament brightness by
+    # less than 0.003. It dims hubs rather than removes them -- the removal is
+    # `deposit_cap`'s job -- but a soft translucent maximum is a different
+    # thing to look at than a hard-rimmed white circle. Zero means linear.
+    trail_knee: float = 0.45
     activity_rate: float = 0.020  # lowpass on |dV/dt|; deliberately very slow
     activity_gain: float = 26.0
     # Material keeps the hue it was born with and carries it along the flow.

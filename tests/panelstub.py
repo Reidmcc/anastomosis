@@ -20,12 +20,37 @@ import dataclasses
 
 from anastomosis import config as config_module
 from anastomosis import events as events_module
+from anastomosis import gpu_params
 from anastomosis import volume as volume_module
 
 # The window the panel believes it is showing. Only its shape matters, and only
 # to the thickness knob, whose ceiling is the shorter lateral axis of the slab
 # this size implies.
 SIZE = (2560, 1440)
+
+
+def stats(**overrides) -> dict[str, float]:
+    """What a stand-in engine's ``read_stats`` returns.
+
+    Every field of the real block, not the two the status line happened to
+    read when the stub was written. The real
+    :meth:`~anastomosis.backend.Backend.read_stats` builds its dict from
+    ``STATS_DTYPE.names``, so a status line may read any field in it and be
+    right; a stub that lists a couple by hand is a `KeyError` waiting for the
+    next quantity anyone decides to show. Deriving it from the same dtype is
+    the same argument this module's docstring makes about panel attributes,
+    one layer down.
+    """
+    values = {name: 0.0 for name in gpu_params.STATS_DTYPE.names}
+    # Plausible rather than zero for the few the panel and the log line
+    # actually render, so a formatted status string looks like a real one.
+    values.update(mean_v=0.12, mean_activity=0.0012, var_v=0.009, ell=2.4,
+                  exposure=1.0, count=1.0)
+    unknown = set(overrides) - set(values)
+    if unknown:
+        raise KeyError(f"not fields of the stats block: {sorted(unknown)}")
+    values.update(overrides)
+    return values
 
 
 class PanelApp:

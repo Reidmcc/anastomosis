@@ -127,14 +127,15 @@ def test_the_feature_size_walk_is_bounded_and_tempo_independent():
     """The global half of the morphology drift, DESIGN.md §4.7.
 
     Three properties, all load-bearing. The walk must be bounded, because it
-    scales the diffusion rate and an unbounded excursion would park the whole
-    field against a clamp -- a frozen texture again, just a different one. It
-    must be unit-variance, because that is where the amplitude comes from: the
-    parameter is expressed as a fraction of `du`, and a walk whose spread was
-    not one would silently mean something else. And neither property may depend
-    on the tick rate: the tempo macro moves ``sim_hz`` by more than 2x, and if
-    the spread widened with it, turning up the tempo would quietly change how
-    far feature size roams.
+    sets the feature-size loop's setpoint and an unbounded excursion would ask
+    for a texture the controller can only chase into its own clamp -- a frozen
+    texture again, just a different one. It must be unit-variance, because that
+    is where the amplitude comes from: the parameter is expressed as a
+    deviation in log feature size, and a walk whose spread was not one would
+    silently mean something else. And neither property may depend on the tick
+    rate: the tempo macro moves ``sim_hz`` by more than 2x, and if the spread
+    widened with it, turning up the tempo would quietly change how far feature
+    size roams.
 
     Run against a short time constant so the sample covers a few hundred
     correlation times without a few hundred thousand iterations; the
@@ -145,13 +146,13 @@ def test_the_feature_size_walk_is_bounded_and_tempo_independent():
     spreads = {}
     for sim_hz in (12.0, 26.0):
         engine = engine_module.Engine.__new__(engine_module.Engine)
-        engine._du_walk = 0.0
+        engine._ell_walk = 0.0
         engine._walk_rng = np.random.default_rng(4)
         dt = 1.0 / sim_hz
         series = np.empty(int(duration * sim_hz))
         for i in range(series.size):
-            engine._advance_du_walk(dt, tau)
-            series[i] = engine._du_walk
+            engine._advance_ell_walk(dt, tau)
+            series[i] = engine._ell_walk
 
         assert np.isfinite(series).all()
         assert abs(series.mean()) < 0.2, (
@@ -163,14 +164,21 @@ def test_the_feature_size_walk_is_bounded_and_tempo_independent():
     for sim_hz, spread in spreads.items():
         assert 0.85 < spread < 1.15, (
             f"the walk is not unit-variance at {sim_hz} Hz (s.d. {spread:.2f}); "
-            f"its amplitude no longer means a fraction of du"
+            f"its amplitude no longer means a deviation in log feature size"
         )
 
-    # Whatever the walk does, the diffusion rate it produces stays in the band.
+    # Whatever the walk asks for, the diffusion rate the controller can reach
+    # in answer stays inside the band -- the correction is clamped, so this is
+    # a statement about `ell_corr_limit` against `du_min`/`du_max`.
     reaction = config.Config().resolve().reaction
-    for extreme in (-2.0, 2.0):
-        du = reaction.du * (1.0 + reaction.du_walk * extreme)
+    for extreme in (-1.0, 1.0):
+        du = reaction.du * math.exp(reaction.ell_corr_limit * extreme)
         assert reaction.du_min <= config.clamp_du(du, reaction) <= reaction.du_max
+        assert du == config.clamp_du(du, reaction), (
+            f"the controller's own bound reaches a du clamp (du {du:.4f} "
+            f"against [{reaction.du_min}, {reaction.du_max}]); the loop would "
+            f"saturate against the survival bound rather than its own"
+        )
 
 
 def _parallax_series(fps: float, seconds: float, params, seed: int = 5):
@@ -722,6 +730,19 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     it again, hence the seed here. The effect size has been stable across all of
     it: 0.77 on a dense hub before either change, 0.73 and 0.83 after the first,
     0.78 here after the second.
+
+    Trail advection is pinned off, and that is a measurement constraint rather
+    than a dodge. The severance this asserts is a statement about what happens
+    to the ground under the disc, and with the network mobile there is no
+    longer any such ground: material streams through the fixed disc, the
+    starvation feedback never develops on any particular strand, and the
+    seed-anchored precondition cannot be guaranteed -- measured, the same seed's
+    disc sits on 0.57 of trail with advection off and 0.002 with it on. The
+    deposit capacity stays at its default, because it measurably does not
+    interfere (severance 0.80 with it against 0.79 without). What a rift looks
+    like *with* the trail moving -- a zone the network thins while crossing,
+    rather than a growing gap -- is a §13 question for a viewer, not a ratio a
+    seed can anchor.
     """
     device, _ = gpu_device
     size, radius = 128, 0.24
@@ -745,6 +766,7 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     def run(with_event: bool) -> dict[str, tuple[float, float]]:
         params = config.Config().resolve()
         params.render.layers = 1
+        params.agents.trail_advect = 0.0  # see the docstring
         engine = engine_module.Engine(device, size, size, params, seed=13)
         assert checkpoint.restore(engine, snapshot), (
             "the warmed field does not fit the engine it was captured from"
@@ -1045,3 +1067,245 @@ def test_recovers_from_a_corrupted_field(gpu_device, offscreen_target):
     stats = engine.read_stats()
     assert np.isfinite(stats["mean_v"]), "field statistics are still poisoned"
     assert stats["mean_v"] > 0.0, "field did not recover"
+
+
+# ---------------------------------------------------------------------------
+# The feature-size loop -- DESIGN.md §4.7 step 5
+# ---------------------------------------------------------------------------
+
+
+def _ell_params():
+    """Defaults with the feature-size loop's time constants shortened.
+
+    The shipped constants are minutes: the loop settles in about three, the
+    reference it works against averages over thirty. Asserting the *mechanism*
+    at those rates would mean a hundred thousand ticks on a software adapter for
+    a property that is a function of the ratios between them, not of either
+    alone -- the same argument the walk's own test makes. What is not shortened
+    is the reaction's own response, which is a few hundred ticks and is the
+    thing the loop has to stay slower than, so the loop is left an order of
+    magnitude above it.
+    """
+    params = config.Config().resolve()
+    params.render.layers = 1
+    params.reaction.ell_tau_seconds = 20.0      # 400 ticks
+    params.reaction.ell_ref_tau_seconds = 600.0  # 12000 ticks
+    return params
+
+
+@pytest.mark.slow
+def test_the_feature_size_loop_waits_for_a_field_worth_measuring(gpu_device):
+    """It must not steer while the field is still growing into its band.
+
+    The length scale of a field that is still filling in changes for reasons
+    that have nothing to do with the loop, and a controller that took its
+    baseline from one would spend its first reference time constant driving the
+    diffusion rate to a bound to chase a number that was never the field's.
+    Measured before the gate existed: `corr_du` reached its clamp within 1600
+    ticks of a cold start and stayed there.
+
+    The gate is the mass deadband the homeostat already computes, so this also
+    says the two controllers agree about when a field is a field.
+    """
+    device, _ = gpu_device
+    params = _ell_params()
+    engine = engine_module.Engine(device, 128, 128, params, seed=5)
+
+    homeostat = params.homeostat
+    floor = homeostat.target_mass * (1.0 - homeostat.deadband)
+
+    # Sampled rather than read every tick: `read_stats` is a buffer readback,
+    # so it synchronises the queue, and the cold window is hundreds of ticks
+    # wide.
+    seen_cold = False
+    for tick in range(1400):
+        engine.tick(params, [])
+        if tick % 10:
+            continue
+        stats = engine.read_stats()
+        if stats["mean_v"] < floor and stats["ell_samples"] == 0.0:
+            seen_cold = True
+            assert stats["corr_du"] == 0.0, (
+                f"the loop corrected by {stats['corr_du']:+.4f} at tick {tick} "
+                f"with mass at {stats['mean_v']:.4f}, below the deadband floor "
+                f"of {floor:.4f}"
+            )
+
+    assert seen_cold, "the field started inside the band; the gate was untested"
+    stats = engine.read_stats()
+    assert stats["ell_samples"] > 0.0, (
+        "the loop never started, so the gate is not opening at all"
+    )
+    # And when it did start, it took its baseline from the field rather than
+    # from a constant: the reference must sit on the measurement.
+    assert math.exp(stats["ell_ref"]) == pytest.approx(stats["ell"], rel=0.25), (
+        f"the reference ({math.exp(stats['ell_ref']):.3f}) is nowhere near the "
+        f"length scale it was seeded from ({stats['ell']:.3f})"
+    )
+
+
+@pytest.mark.slow
+def test_a_demanded_change_in_feature_size_is_answered(gpu_device):
+    """The loop, end to end, and the reason for closing it at all.
+
+    An open-loop walk on `du` asks for a diffusion rate and takes whatever
+    texture the reaction chooses to give it; if the field is sitting in the
+    attractor that pins its wavelength -- the failure DESIGN.md §4.7 exists to
+    fix -- the walk moves and the picture does not. Closing the loop on `ell`
+    turns that into a growing error the controller acts on.
+
+    Both arms are restored from *one* mature field, so they are paired
+    exactly. §4.7 records that the step-4 mechanisms could not be measured this
+    way -- founding respawn draws extra random numbers, so two runs of the same
+    seed share only their first few ticks -- and this loop has no such problem:
+    the demand is the only thing that differs.
+
+    The second assertion is the one that made `du` the lever in the first
+    place. Feature size has to move without mass or activity moving with it,
+    because anything that moves mass reaches the image as a slow global
+    brightness swing through the exposure governor.
+    """
+    from anastomosis import checkpoint
+
+    device, _ = gpu_device
+    params = _ell_params()
+    params.reaction.ell_walk = 0.16  # a large, unambiguous demand
+
+    warm = engine_module.Engine(device, 128, 128, params, seed=5)
+    warm._advance_ell_walk = lambda dt, tau: None
+    for _ in range(1600):
+        warm.tick(params, [])
+    seeded = warm.read_stats()
+    assert seeded["ell_samples"] > 0.0, (
+        "the warm-up never reached the band, so there is nothing to step from"
+    )
+    snapshot = checkpoint.capture(warm, sim_hz=params.sim_hz)
+
+    def demand(walk: float) -> dict[str, float]:
+        engine = engine_module.Engine(device, 128, 128, params, seed=5)
+        assert checkpoint.restore(engine, snapshot)
+        engine._advance_ell_walk = lambda dt, tau: None
+        engine._ell_walk = walk
+        late: list[tuple[float, ...]] = []
+        for tick in range(3000):
+            engine.tick(params, [])
+            if tick > 1800 and tick % 50 == 0:
+                s = engine.read_stats()
+                late.append((s["ell"], s["corr_du"], s["mean_v"],
+                             s["mean_activity"]))
+        block = np.asarray(late)
+        return {
+            "ell": float(block[:, 0].mean()),
+            "corr_du": float(block[:, 1].mean()),
+            "mean_v": float(block[:, 2].mean()),
+            "activity": float(block[:, 3].mean()),
+        }
+
+    coarse = demand(1.5)
+    fine = demand(-1.5)
+
+    assert coarse["corr_du"] > fine["corr_du"], (
+        f"the controller moved the diffusion rate the wrong way "
+        f"(coarse {coarse['corr_du']:+.4f}, fine {fine['corr_du']:+.4f}); the "
+        f"loop is a positive feedback and will drive du to a bound"
+    )
+    assert coarse["ell"] > fine["ell"] * 1.05, (
+        f"a demand spanning x{math.exp(2 * 1.5 * params.reaction.ell_walk):.2f} "
+        f"in feature size moved the measured length scale from "
+        f"{fine['ell']:.3f} to {coarse['ell']:.3f}; the loop is not reaching "
+        f"the texture"
+    )
+
+    homeostat = params.homeostat
+    for label, arm in (("coarse", coarse), ("fine", fine)):
+        for name, target, value in (
+            ("mass", homeostat.target_mass, arm["mean_v"]),
+            ("activity", homeostat.target_activity, arm["activity"]),
+        ):
+            lo = target * (1.0 - homeostat.deadband)
+            hi = target * (1.0 + homeostat.deadband)
+            assert lo < value < hi, (
+                f"{label}: {name} {value:.5f} left the homeostat deadband "
+                f"[{lo:.5f}, {hi:.5f}]; moving feature size is moving what the "
+                f"controller defends, and so the exposure governor with it"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Deposit capacity -- the counter to winner-take-all trail following
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_the_deposit_capacity_dissolves_hubs_without_draining_the_network(
+    gpu_device,
+):
+    """The de-hubbing claim, held to the prune postmortem's checklist.
+
+    Three things, and the order matters. The concentration must actually fall
+    -- the network holding half its mass in its top 2% of texels is the white
+    dots. Trail mass must match the uncapped control, because the capacity is
+    only allowed to *redistribute*: what it withholds at the hubs is measured
+    and handed back through the agent deposit, and a return that has quietly
+    become a sink shows up here first. And `cap_return` must sit well inside
+    its clamp, because a pinned return is exactly how it becomes a sink -- the
+    measured failure at cap = 0.6, where the deposit-weighted withheld ratio
+    exceeded the bound, mass fell 11%, and the hubs survived better than at
+    the shipped 1.2.
+    """
+    device, _ = gpu_device
+    width, height, ticks = 128, 128, 1400
+
+    def run(cap: float) -> dict:
+        params = config.Config().resolve()
+        params.render.layers = 1
+        params.agents.deposit_cap = cap
+        # Isolated from the other step-6 mechanism, so a regression here names
+        # its culprit.
+        params.agents.trail_advect = 0.0
+        engine = engine_module.Engine(device, width, height, params, seed=23)
+        for _ in range(ticks):
+            engine.tick(params, [])
+        layer = engine.layers[0]
+        raw = device.queue.read_texture(
+            {"texture": layer.trail.textures[layer.trail.index], "mip_level": 0,
+             "origin": (0, 0, 0)},
+            {"offset": 0, "bytes_per_row": width * 8, "rows_per_image": height},
+            (width, height, 1),
+        )
+        trail = np.frombuffer(raw, dtype=np.float16).reshape(
+            height, width, 4)[..., 0].astype(np.float64)
+        stats = engine.read_stats()
+        flat = np.sort(trail.ravel())
+        return {
+            "mass": float(trail.mean()),
+            "top2": float(flat[-int(flat.size * 0.02):].sum() / max(flat.sum(), 1e-9)),
+            "cap_return": float(stats["cap_return"]),
+            "corr_decay": float(stats["corr_decay"]),
+        }
+
+    control = run(0.0)
+    capped = run(config.Config().resolve().agents.deposit_cap)
+
+    assert control["cap_return"] == 0.0, (
+        "the capacity is not inert at zero cap, so it is not off when off"
+    )
+    assert capped["top2"] < control["top2"] * 0.85, (
+        f"the network still holds {capped['top2']:.2f} of its mass in its top "
+        f"2% of texels against a control of {control['top2']:.2f}; the "
+        f"capacity is not dissolving the hubs"
+    )
+    drift = abs(capped["mass"] - control["mass"]) / max(control["mass"], 1e-9)
+    assert drift < 0.12, (
+        f"trail mass moved {drift:.1%} against the uncapped control; the "
+        f"return accounting is not putting back what the capacity withholds"
+    )
+    assert 0.05 < capped["cap_return"] < 2.5, (
+        f"cap_return settled at {capped['cap_return']:.2f}: either the "
+        f"capacity is withholding nothing, or the return is pinned at its "
+        f"clamp and has become a sink"
+    )
+    assert abs(capped["corr_decay"] - control["corr_decay"]) < 0.002, (
+        "the homeostat is correcting for the capacity; the redistribution is "
+        "not mass-neutral where it matters"
+    )

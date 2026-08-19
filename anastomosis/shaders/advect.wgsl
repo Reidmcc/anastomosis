@@ -51,8 +51,35 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let v_prev = textureLoad(reaction_prev, p, 0).g;
     let trail = textureLoad(trail_tex, p, 0).r;
 
+    // What the image is made of. The reaction's contribution is gated on there
+    // being network under it, because the reaction does two different things:
+    // on a filament it is the internal texture the trail-feed coupling exists
+    // to produce, and away from one it is free Gray-Scott in its spot regime,
+    // which is a lattice of same-sized round holes answering to nothing. The
+    // second is the texture DESIGN.md 4.7 calls a functional defect, and this
+    // is the last stage that can decline to draw it.
+    //
+    // The saturating curve is the one the trail coupling itself uses in
+    // reaction.wgsl, so "enough network to nucleate structure" and "enough
+    // network to show it" are the same shape of statement about the same
+    // field.
+    let network = trail / (1.0 + trail);
+    let v_gate = mix(1.0, network, params.v_needs_trail);
+
+    // The trail's own contribution goes through a soft knee: near-linear at
+    // filament level, bounded at `trail_knee` above it. The hubs sit around
+    // five times the filaments' trail level, so under a linear term they were
+    // the one thing on screen that cleared the density ceiling and clipped to
+    // a flat white disc. The knee cannot remove a hub -- that is the deposit
+    // capacity's job, in trail.wgsl -- but it keeps whatever mass one holds
+    // from rendering as hard-rimmed white.
+    var trail_shaded = trail;
+    if (params.trail_knee > 0.0) {
+        trail_shaded = params.trail_knee * tanh(trail / params.trail_knee);
+    }
     let structure = clamp(
-        params.density_from_v * v_now + params.density_from_trail * trail,
+        params.density_from_v * v_now * v_gate
+            + params.density_from_trail * trail_shaded,
         0.0,
         1.0,
     );

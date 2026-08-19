@@ -181,6 +181,22 @@ def bilinear_upsample(low: np.ndarray, factor: int) -> np.ndarray:
 CLIMATE_SD = 0.11
 
 
+# Quantiles of the trail field the running engine actually settles at, measured
+# on a mature 160-cell single layer at the default macros -- the same kind of
+# constant as CLIMATE_SD above, and recorded for the same reason: the shading
+# balance is a statement about where the ceiling falls in this distribution, and
+# there is no way to say that from the reaction alone.
+#
+# They move with the intensity macro, which concentrates the network (DESIGN.md
+# 4.7 records the mass-weighted figures shifting by 3x across it), so anything
+# asserted against them is an assertion about the default.
+TRAIL_QUANTILES = {0.5: 0.009, 0.9: 0.291, 0.99: 0.934}
+TRAIL_MAX = 3.01
+# Median V inside the bright-blob mask on the same field: the reaction level a
+# hub typically carries, for reasoning about the combined shaded density there.
+V_HUB_P50 = 0.21
+
+
 def climate_scale_field(
     size: int, factor: int = 20, seed: int = 1, smooth: int = 3,
     amplitude: float = CLIMATE_SD,

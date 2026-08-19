@@ -168,7 +168,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // already is. Returning it through decay instead -- the obvious centring --
     // reinforces established structure and freezes the field; see trail.wgsl.
     let deposit_amt = max(0.0, params.deposit + params.range_deposit * cb.x + stats.corr_deposit)
-        * (1.0 + clamp(stats.prune_return, 0.0, 2.0));
+        * (1.0 + clamp(stats.prune_return, 0.0, 2.0)
+           + clamp(stats.cap_return, 0.0, 3.0));
 
     // Sense: three points ahead, bilinear so there is no texel-grid bias.
     let heading = agent.heading;

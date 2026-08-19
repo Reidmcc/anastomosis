@@ -559,8 +559,13 @@ climate-varying `du` stays covered by `test_parity.py`.
 4. ~~Rift events and anti-fusion, both riding the channels from (2).~~
    **Built**, together with the founding respawn step 3's postmortem asked
    for; see below.
-5. ℓ in the reduce pass, with a drifting setpoint.
-6. Trail advection, behind a knob, once the rest is tuned.
+5. ~~ℓ in the reduce pass, with a drifting setpoint.~~ **Built**, and it is
+   the step that turns the mean from an open-loop guess into something the
+   controller can be held to; see below.
+6. ~~Trail advection, behind a knob, once the rest is tuned.~~ **Built**,
+   alongside two mechanisms this list never anticipated, because the dots
+   turned out to live in a different field than every step above assumed;
+   see below.
 
 ~~Steps 1–3 should carry most of the value: polydisperse, migrating feature
 sizes plus genuine edge severance.~~ Step 2 carries the value. Step 3 works
@@ -570,12 +575,15 @@ are recorded below.
 **What steps 1 and 2 turned out to be.** They are not two mechanisms but one
 split the way feed and kill already are — a global mean and a per-region
 deviation around it. The spike was worth keeping in that role: a unit-variance
-OU walk on the mean (`Engine._advance_du_walk`, τ = 7 min, ±7% per standard
-deviation), with the climate deviation on top of it. The walk alone is
+OU walk on the mean (`Backend._advance_ell_walk`, τ = 7 min; ±7% on `du` per
+standard deviation as originally built, ±9% on the length scale it now asks
+for), with the climate deviation on top of it. The walk alone is
 explicitly *not* the fix, for the reason given above — it moves every feature on
 screen the same way at the same time and leaves them all the same size as each
-other — but as the carrier of the mean it is what step 5 will eventually hand
-over to the controller, so the plumbing is the same plumbing.
+other — but as the carrier of the mean it is what step 5 hands over to the
+controller, so the plumbing is the same plumbing. It is still that walk, still
+unit-variance, still bounded and still checkpointed with its stream; what
+changed in step 5 is what it multiplies.
 
 **The climate field realises about a tenth of its nominal range, and this had to
 be measured before anything could be calibrated.** Every `range_*` parameter is
@@ -689,8 +697,8 @@ mass-weighted mean deficit is 0.21 at the default intensity — but 0.07 at the
 top of the intensity macro, where the network concentrates two thirds of its
 mass into 2.6% of texels. So the reference is not a constant and cannot be one;
 it is now measured in the reduce pass, which is why the per-tile partials went
-from one `vec4` to two (the stride change §4.7 anticipated for step 5's ℓ term —
-that half of the plumbing is done).
+from one `vec4` to two (the stride change §4.7 anticipated for step 5's ℓ term;
+step 5 has since taken the third lane of that second `vec4`).
 
 That fixed the accounting and broke something worse. Centring the term locally —
 raising decay on starved strands and lowering it on well-fed ones, exactly as
@@ -914,6 +922,337 @@ arm, with the field neither collapsing nor freezing and the homeostat never
 reaching for a correction. Whether they earn their place perceptually is one
 more question for the first viewing on real hardware (§13), alongside the ones
 already waiting there.
+
+### What step 5 actually did
+
+Reported from a real viewing, and the reason this step stopped waiting: the
+field still reaches a state that is a mostly uniform array of dots which change
+very little — the §4.7 texture, in the picture rather than in the statistics.
+Less pronounced under the volumetric backend, and worse at *low* intensity,
+which is the observation that identifies the cause. The intensity macro scales
+down exactly the couplings that perturb the reaction off its own attractor
+(`agents.density`, `agents.deposit`, `reaction.trail_feed_gain`), so at the
+quiet end the reaction is running as nearly free Gray–Scott, and free
+Gray–Scott in this regime is a monodisperse spot lattice.
+
+Two separate things were wrong, and only one of them was in the simulation.
+
+**Nothing was closed on the texture.** Steps 1–4 all *ask*. The global walk asks
+for a diffusion rate, the climate asks for a per-region deviation, the events
+ask for a severance — and if the field declines, nothing anywhere notices,
+because §4.2's three measures are invariant under rearrangement and cannot see
+a frozen arrangement. The measured spread the climate deviation bought is real
+and is also small: local ℓ c.v. 0.081 → 0.118, i.e. features about 12% apart in
+size when the trigger is *uniformity*. The walk on the global mean was smaller
+still: ±7% in `du` is ±3% in ℓ.
+
+So ℓ now goes into the reduce pass, as this section proposed, and a controller
+is closed on it. The measurement costs the four neighbour loads for a central
+difference — matching `tests/morphology.py` exactly, since every number in this
+section is quoted in that ℓ — summed into the third lane of the second `vec4`,
+and one division in `homeostat.wgsl`.
+
+**The setpoint is referenced to the field, not to a number.** The obvious
+design — hold ℓ at a constant — is wrong here in a way worth recording, because
+it looks right. The `scale` macro moves `du` *deliberately*, so a controller
+defending an absolute ℓ would cancel the macro outright; and the value the full
+engine settles at is not the value the isolated reaction does, because the
+agent layer and the feed/kill machinery move ℓ as well (this section already
+records the local ℓ spread as 0.15 in the engine against 0.081 in the reaction
+alone). There is no constant to use, and calibrating one against the software
+adapter would have been calibrating against the wrong field.
+
+So the setpoint is `reference + walk`, where the reference is a slow average of
+the field's own ℓ. The loop therefore has no opinion about where feature size
+should sit, only that it should move — which is exactly the complaint restated
+as a control objective.
+
+Two details of that are load-bearing and neither was obvious.
+
+*The modulation is subtracted before the reference averages it.* Otherwise the
+reference chases its own output: ℓ tracks the setpoint, the reference averages
+ℓ, the setpoint is built from the reference, and the walk gets integrated into
+a drift with no fixed point at all. Averaging `ln ℓ − offset` instead leaves the
+reference tracking the field's *natural* length scale, which is what a baseline
+is supposed to be. Measured with the reference frozen after seeding and the
+amplitude widened to make the effect unmissable, the two arms of a sustained
+±2 s.d. demand landed on ℓ 2.48 and 2.48 — the reference had absorbed the
+offset while it was being established, and the loop had nothing left to ask
+for. That is the correct behaviour for a *constant* offset, and it is also the
+sharpest possible statement that this loop answers changes in the demand rather
+than its level. The demand it is actually given changes on a seven-minute time
+constant against a reference that averages over thirty, which is where the
+separation comes from.
+
+*The reference has to start fast and then stop being fast.* Seeded from the
+first measurement and left at its 30-minute time constant, its first value is
+its value for the next half hour; measured, `corr_du` reached its clamp within
+1600 ticks of a cold start and stayed there, running the whole warm-up at
+`du × 1.43`. Seeded as a running mean and left that way, it converges faster
+than the walk moves and cancels the modulation entirely. It is therefore a
+running mean for 600 ticks and an exponential after that. The loop is
+additionally gated on the mass deadband the homeostat already computes: a field
+still growing into its band has a length scale that is going to change for
+reasons that are nothing to do with this loop, and so does one a dieback has
+just emptied.
+
+**The plant, measured rather than assumed.** ℓ against `du` at the shipped
+feed/kill, through `reduce.wgsl` and `homeostat.wgsl` themselves and agreeing
+with the numpy reference to f16 rounding:
+
+| du | 0.146 | 0.170 | 0.2097 | 0.260 | 0.301 | 0.380 |
+|---|---|---|---|---|---|---|
+| ℓ | 1.96 | 2.10 | 2.32 | 2.57 | 2.75 | 3.09 |
+
+An exponent of 0.47 — ℓ goes as `sqrt(du)`, which is what a diffusion length
+should do — over the span the controller's own bound permits. In the *full*
+engine it measured 0.61, the agent layer contributing the difference. That
+exponent is what sizes the gain and it is asserted, because a run that measured
+it negative would make the loop a positive feedback that drives `du` to a
+bound.
+
+Three time constants, and the ordering between them is the design: the
+reaction's own response to a change in `du` is a few hundred ticks, the loop is
+90 s, the setpoint walk is 420 s, and the reference is 1800 s. Faster than the
+walk so it tracks rather than lags; slower than the plant so it is not chasing
+the reaction's own dynamics; far slower again for the reference, or it absorbs
+what it is the baseline for.
+
+**What it does, paired.** One field grown to maturity, checkpointed, and
+restored into three engines that differ only in what they ask for — which is
+the paired comparison this section records as impossible for the step-4
+mechanisms, and it is available here because the demand is the only thing that
+differs and it draws no random numbers. 128², 5000 ticks after the step:
+
+| demand | ℓ | `corr_du` | mean V | activity |
+|---|---|---|---|---|
+| −1.5 s.d. | 2.286 | −0.349 | 0.1356 | 0.00117 |
+| 0 | 2.469 | −0.159 | 0.1332 | 0.00131 |
+| +1.5 s.d. | 2.687 | +0.041 | 0.1314 | 0.00142 |
+
+Feature size separates monotonically and mass moves 3% doing it, with activity
+inside the deadband in every arm — which is the property the whole choice of
+`du` as the lever rests on, now demonstrated on the running engine rather than
+on the isolated reaction. Across the walk's full range the actuator bound
+allows ℓ to span about ×1.4, and feature count goes as roughly ℓ⁻², so ×2 in
+count: comparable to the 2.7× the offline drift experiment above produced, and
+against the ×1.15 in ℓ the open-loop walk it replaces was delivering.
+
+The middle row is worth reading. At zero demand the controller is holding
+`corr_du` at −0.16, opposing a slow rise in the field's own ℓ that the
+reference has not caught up with yet. That is the loop working as specified —
+deviations from the baseline get corrected, and the baseline follows over half
+an hour — but it does eat into the headroom on one side, which is why the −1.5
+arm reached the clamp.
+
+**The other half was not in the simulation at all.** `advect.wgsl` builds the
+density it shades as `density_from_v · V + density_from_trail · trail`, clamped
+to 1, and at 2.9 against 0.85 a *single* reaction spot cleared that ceiling on
+its own with no filament under it: mean V is 0.118 and a spot reaches 0.3–0.4.
+So every feature on screen was drawn as a flat-topped disc with a hard rim.
+The lattice of similar-sized round holes was not merely being passed through by
+the last stage before colour — it was being picked out and clipped, while the
+network the piece is named after contributed about 8% of the mean density.
+
+Two changes, both in shading and neither touching the simulation. The weights
+are rebalanced to 1.9 against 1.25, which puts the ceiling *between* the two
+distributions instead of below both: the reaction's extreme now reaches 0.86 of
+it and clips nowhere, and the network reaches it on its strongest 1% and
+nowhere near its top 10%. Both bounds matter and the second is the
+non-obvious one — past a trail weight of about 1.3 the network fills the ceiling
+by itself over a real fraction of the field, and where it does, the reaction's
+contribution is simply discarded. That would move the clipping from the spots to
+the filaments rather than removing it.
+
+And the reaction's contribution is gated on there being network under it,
+through the same saturating `trail / (1 + trail)` the trail-feed coupling itself
+uses, because the reaction is doing two different things: on a filament it is
+the internal texture §2 wants from the coupling, and away from one it is free
+Gray–Scott in its spot regime, which is the monodisperse lattice answering to
+nothing.
+
+**How hard to gate is a trade-off, and it does not run the way the obvious
+measure suggests.** Rendered through the full output chain at 160², after the
+exposure governor has settled:
+
+| | mean L | exposure | bright components | local ℓ c.v. |
+|---|---|---|---|---|
+| before, 2.9 / 0.85, no gate | 0.159 | 0.56 | 147 | 0.191 |
+| 1.9 / 1.25, no gate | 0.156 | 0.99 | 70 | 0.222 |
+| 1.9 / 1.25, gate 0.25 *(shipped)* | 0.151 | 1.38 | 25 | 0.203 |
+| 1.9 / 1.25, gate 0.40 | 0.147 | 1.72 | 11 | 0.183 |
+
+The component count is the measure that speaks to "an array of dots": the bright
+material goes from 147 separate blobs to 25, and a connected filigree is not the
+geometry the trigger is about. But it keeps improving as the gate rises, and the
+*other* measure does not. Uniformity is the actual trigger, and the spread of
+local feature size peaks ungated, is still above the unrebalanced control at
+0.25, and falls back through it by 0.40. Gating harder wins the obvious measure
+by hiding the reaction — and the reaction is what carries the variation in
+feature size that the whole of the rest of this section works to produce. So the
+gate ships at 0.25, where the blob count has most of its improvement and the
+size spread is intact.
+
+That is a genuinely uncomfortable place to have to choose from: two measures of
+the same complaint, pulling in opposite directions, with no viewer to break the
+tie. `pigment.v_needs_trail` is the knob, and §13 names it as the default most
+likely to want moving.
+
+**And it helps least where the complaint was worst, which has to be said
+plainly.** The report was that the dots are more pronounced at low intensity.
+They are, measurably — and the shading change does much less about it there:
+
+| intensity | | mean L | exposure | bright components | local ℓ c.v. |
+|---|---|---|---|---|---|
+| 0.24 | before | 0.162 | 0.69 | 192 | 0.135 |
+| 0.24 | after | 0.149 | 2.04 | 138 | 0.139 |
+| 0.50 | before | 0.159 | 0.56 | 147 | 0.191 |
+| 0.50 | after | 0.151 | 1.38 | 25 | 0.203 |
+
+The top-left pair is the complaint in numbers: turning the intensity down gives
+*more* separate blobs and a *third less* variation in their size. And the gate
+takes 28% off the blob count there against 83% at the default, because it can
+only hand the picture to the network when there is a network to hand it to. At
+the quiet end there is not: `agents.density`, `agents.deposit` and
+`reaction.trail_feed_gain` are all near the bottom of their curves, so the
+reaction is barely coupled to the filaments and most of what is on screen is
+free Gray–Scott. Gating then dims the field roughly uniformly and the exposure
+governor puts it back, which is the "wrong correction applied to the wrong
+thing" `raymarch.wgsl` warns about, arriving from a different direction.
+
+The feature-size loop does still act there — it is upstream of all of this, and
+`ell` is identical in both arms of each intensity, which is the check that says
+the shading change is a shading change. So the *"changes very little"* half of
+the complaint is answered at every intensity and the *"array of dots"* half is
+answered mostly at the top of the range.
+
+What would answer it at the bottom is not in this step: it is that the intensity
+macro currently scales down the very couplings that hold the reaction off its
+attractor, so "quiet" and "decoupled" are the same setting. Putting a floor
+under `trail_feed_gain` and `deposit`, or pointing intensity at the render-side
+quantities instead, would make quiet mean dimmer and sparser rather than more
+monodisperse. That is a change to what a shipped macro means, so it wants
+deciding rather than assuming.
+
+**The exposure interaction, which is the one this section has always flagged as
+the real risk.** Less clipped area means less bright area, so the mean density
+falls by about a third and the governor has to make it up: its multiplier goes
+from 0.56 to 1.38, which is nowhere near either bound, and the settled image
+lightness lands on target as before. What it costs is *time*. Brightening is the
+deliberately slow direction — `exposure_attack` is a third of `exposure_release`,
+because the unsafe direction is always "gets brighter" — so the governor now
+takes appreciably longer to walk up to its target at startup than it did when
+the image arrived nearly bright enough already. That is a slower fade-in, not a
+different settled level, and it is the price of the ceiling no longer doing the
+tone mapping.
+
+**What is still not answered.** Whether any of this is enough, which is the same
+question §13 has been carrying: these are numbers about a field, and the
+complaint is about a picture. The two measures that speak most directly to it —
+the component count of the shaded density, and the spread of local feature size
+— both move in the right direction and by a lot, but neither has a threshold
+behind it that anyone has validated against an actual viewer. Step 6 (trail
+advection) remains the largest untried lever, and is now more attractive than it
+was: with the shading gated on the network, shear that stretches and pinches
+filaments would reach the image far more directly than it would have when the
+picture was made of spots.
+
+### What the dots turned out to be, and what step 6 actually did
+
+Step 5 shipped, was watched on real hardware, and the report came back: sizes
+now vary, but the dots are still there — hundreds of them, still mostly
+circular. Attributing the bright blobs to a field and a layer, instead of
+assuming, settled it in one measurement: the blobs are **73% trail term**, at
+the front layer's own scale, and the network is holding **46% of its mass in
+its top 2% of texels**. The white dots are not Gray–Scott spots. They are
+*trail hubs* — the ordinary winner-take-all of trail following, which §4.9
+names in passing ("no capacity limit and no exit but `max_age`") and nothing
+anywhere counteracted. The reaction, which every §4.7 mechanism so far acts
+on, is the *background* texture — elongated, varied, and fine. Everything
+built above this line moved the field that was not the dots. (Founding
+respawn was ruled out as the hub source: a `found_fraction = 0` fork is
+statistically identical to its control.)
+
+A hub is round because agent congregation is isotropic plus a Gaussian blur,
+and stationary because nothing moves the trail field. So the fixes are a
+capacity, a carrier, and a knee.
+
+**Deposit capacity.** A deposit landing on trail at `deposit_cap` is halved
+(`1 / (1 + trail / cap)`), so hubs stop out-competing while filaments — an
+order of magnitude below the cap — barely notice, and founding cohorts on bare
+ground are untouched. What the capacity withholds is tracked as an EMA in the
+trail texture's spare `.a` channel, summed in the reduce pass against the
+income EMA, and handed back through the agent deposit exactly as flux
+pruning's removal is: a redistribution from hubs to wherever traffic is, not a
+sink.
+
+Two calibration findings, both of which invert naive intuition:
+
+- *Lower is not stronger.* At cap 1.2, across three seeds, the top-2% mass
+  share falls 0.49 → 0.33 and the bright-blob count roughly halves, with trail
+  mass matching the uncapped control to 1% and `corr_decay` unmoved — the
+  prune postmortem's full checklist. At cap 0.6 the return **pins its clamp**
+  and the capacity becomes exactly the sink it must not be: mass falls 11% and
+  the hubs survive *better* than at 1.2. The reason is that deposits land on
+  the network by construction — agents ride the strands they follow — so the
+  deposit-weighted trail level is several times the field mean and the
+  equilibrium withheld/landed ratio is well above one. The return's bound is
+  3, sized from that, and `cap_return` is in the telemetry line because a
+  pinned return is the failure to watch for.
+- At cap 2.0 the effect fades (top-2% share 0.42): the band is real on both
+  sides.
+
+**Trail advection — step 6, at last.** The trail rides the velocity field at
+`trail_advect` of the pigment's rate, all four channels together, in the same
+semi-Lagrangian form. The velocity pass moved ahead of the trail pass in the
+tick for it, so `velocity` stays a derived field — written every tick before
+anything reads it — rather than becoming checkpoint state; the
+structure-following flow component consequently reads the previous tick's
+reaction, one diffusion step behind, which nothing can see.
+
+What is verified is the mechanism and the invariants, in step 4's tradition: a
+blob under a known velocity translates by exactly `velocity · advect_dt ·
+trail_advect` per tick with the carry conserving mass to 0.5%, and across
+seeds the sweep shows mass, mean V, activity and every homeostat correction
+unmoved with it on. The aggregate — whether the network's 400-tick
+autocorrelation falls — did **not** resolve above run-to-run variance at test
+resolution (0.89 and 0.99 on two seeds at gain 0.5), exactly as step 4's churn
+did not; §13's caveat applies. One measured cost is accepted: with the trail
+sliding under the depositors the capacity de-hubs somewhat less (top-2% share
+0.33 → 0.39), which is the price of the hubs being moving objects rather than
+fixed ones.
+
+**The knee.** The step-5 rebalance stopped the *reaction* clipping and thereby
+handed the ceiling to the hubs — a third of the bright-blob texels sat clipped
+flat. The trail's rendered term is now `knee · tanh(trail / knee)`: within 12%
+of linear at filament level, bounded at `knee` above it, so no amount of hub
+mass renders as a hard-rimmed white disc. Chosen against dumped fields —
+knee 0.45 takes the clipped fraction of blob texels from 32% to 3% while
+moving filament brightness by under 0.003 — and it dims hubs rather than
+removes them, which is the capacity's job. The two compose: the capacity
+thins the hubs' mass, the knee stops whatever remains from clipping, and the
+advection keeps it moving.
+
+Together, on the pigment structure term at test scale: bright-blob count 72 →
+34 (three-seed means, capacity alone; 56 with advection on), no invariant
+moved, and the picture's brightest object is now the network. Whether that is
+*enough* is the same §13 question as ever — these are numbers about a field,
+and the complaint is about a picture.
+
+**One interaction found by a failing test, and what it turned out to mean.**
+With the trail mobile, the rift soak test's severance ratio went to noise —
+and isolating it cleared the suspect the arithmetic pointed at: the capacity
+does not blunt rifts at all (severance 0.80 with it, 0.79 without, same seed
+and ground). What advection does is dissolve the *measurement*: severance is a
+statement about the ground under a fixed disc, and a mobile network has no
+such ground — the same seed's disc sits on trail at 0.57 with advection off
+and 0.002 with it on, because the network had drifted elsewhere. The rift
+itself still works at shipped defaults whenever there is ground to sever:
+on a seed whose disc lands on material, severance measures 0.53 with the
+usual heal behind it. Its appearance shifts from "a gap grows and heals"
+toward "a zone the network thins while crossing", which may well be the
+better look and is a §13 question. The test now asserts the mechanism with
+the trail held still, and says why.
 
 ---
 
@@ -1437,6 +1776,14 @@ not produce. In Oklab, lightness is separable and can be capped independently.
 | Chroma `C` | heavily lowpassed local activity — busy regions saturate, quiet regions desaturate toward the background |
 | Hue `h` | local field orientation (`atan2` of `∇V`) + reaction-species ratio `U/V`, offset by a global drifting anchor |
 
+What that pigment density is *made of* is decided one stage earlier, in
+`advect.wgsl`, and it turned out to matter more than anything in this section:
+weighted as it originally was, the density handed to the colour stage was
+essentially the reaction field with the filament network as a rounding error,
+and every reaction spot arrived already clipped against its ceiling. §4.7 step 5
+has the measurements. Nothing here changed; what changed is that the thing being
+graded is now the network rather than a lattice of discs.
+
 The hue anchor is one channel of the climate field, so hue varies *spatially* as
 well as drifting globally — different regions sit in different parts of the palette
 and those regions migrate. Global hue rotation defaults to one full turn per ~45
@@ -1676,6 +2023,17 @@ Conventional unit tests cover little of the risk here. The real QA is:
   pass a non-stationarity check and still fail the requirement. This is the
   counterpart to the soak test: the soak test asserts the field is alive, and a
   field can be alive and yet look identical for hours (§4.7).
+
+  Three things were added to this once §4.7 step 5 landed, and the split between
+  them is the useful part. The characteristic length the controller is closed on
+  is checked against the numpy reference in `test_parity.py`, along with the sign
+  and size of the exponent relating it to `du` — a loop whose plant gain measured
+  negative would be a positive feedback. The loop itself is asserted against a
+  running engine in `test_soak.py`, paired by restoring one mature field into
+  arms that differ only in what they ask for. And the shading stage gets its own
+  assertion in `test_morphology.py`, because a field of soft varied bumps still
+  reaches the eye as a lattice of hard round holes if the last stage before
+  colour clips every one of them.
 - **No-allocation check.** Assert steady-state buffer/texture count and process RSS
   are flat over a long run.
 
@@ -1762,11 +2120,15 @@ Steps 1–6 produce something already usable for its purpose.
 
 Built and verified headless against a software adapter (Mesa lavapipe), so every
 shader compiles and the full tick/render sequence runs in CI without a GPU. The
-suite is 259 tests and takes about eight minutes there: 248 pass and 11 skip for
-want of a display. The checkpoint-determinism check that this section previously
-recorded as failing on that adapter passes on the llvmpipe build measured here;
-it was never explained, so treat that as an observation about one adapter build
-rather than as a fix.
+suite is 351 tests, split the way their costs are: `.github/workflows/ci.yml`
+runs everything not marked `slow` on every push, across three Python versions
+plus a leg with no PySide6 that holds the README's promise that the panel is
+optional, and runs the `slow` marks -- drift, morphology, regime occupancy,
+the long soaks -- nightly and on demand, where minutes are affordable. The
+checkpoint-determinism check that this section previously recorded as failing
+on that adapter passes on the llvmpipe build measured here; it was never
+explained, so treat that as an observation about one adapter build rather than
+as a fix.
 
 **Complete:** all 30 WGSL modules; the three-system substrate with agents, trail,
 reaction, curl-noise flow and pigment advection; the climate field and the
@@ -1787,18 +2149,19 @@ axis, priced in graphics memory beside the slider.
 
 **Not implemented:**
 
-- **The morphology work in §4.7**, steps 5–6. Feature size is now polydisperse
-  and migrating — the third climate pair drives the reaction's diffusion rate
-  per region, over a global mean that walks — which addresses the texture
-  itself. Step 4 is in: agents repel from junctions where the climate asks them
-  to, respawns land in founding cohorts on bare ground, and a `rift` event
-  takes a region's network apart and lets it heal. Its individual mechanisms
-  are asserted and its invariants hold, but the aggregate churn it was meant to
-  buy could not be resolved above run-to-run variance at test resolution — see
-  §4.7. Flux pruning (step 3) is still switched off; the founding respawn it
-  was waiting for exists now, but nothing measured says it has earned being
-  switched on. Outstanding: the ℓ setpoint (step 5, though the reduce pass
-  already carries the wider partials it needs) and trail advection (step 6).
+- **The morphology work in §4.7 is now built through step 6.** Feature size is
+  polydisperse and migrating (the third climate pair), its global mean is
+  closed-loop (step 5's ℓ controller), the trail hubs that turned out to *be*
+  the reported dots have a deposit capacity working against them and a shading
+  knee stopping what remains from clipping, and the trail rides the velocity
+  field (step 6). Step 4 is in: agents repel from junctions where the climate
+  asks them to, respawns land in founding cohorts on bare ground, and a `rift`
+  event takes a region's network apart and lets it heal. As with step 4, what
+  the tests assert for the trail advection is the mechanism and the
+  invariants; its aggregate effect did not resolve above run-to-run variance
+  at test resolution — see §4.7. Flux pruning (step 3) is still switched off;
+  the founding respawn it was waiting for exists now, but nothing measured
+  says it has earned being switched on.
 - **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is
   untested, since a software adapter offers no way to provoke a device loss.
 
@@ -1807,6 +2170,29 @@ defaults sit in the right place perceptually. The software adapter renders
 correct pixels far too slowly to watch. The numbers say the simulation is alive,
 structured, and stable; whether it is *pleasant* is a judgement that needs the
 real GPU and a pair of eyes.
+
+That caveat now has two specific things attached to it, both from §4.7 step 5.
+
+The shading balance was changed on the strength of two measures of the rendered
+image — how many separate bright blobs it is made of, and how varied their size
+is — and those two pull in opposite directions: gating the reaction harder wins
+the first by throwing away the second, which is the polydispersity the rest of
+§4.7 exists to produce. The shipped point was chosen where the first has most
+of its improvement and the second is nearly intact, on a 160-cell field on the
+software adapter. It is the single default most likely to want moving once
+someone has watched it, and `pigment.v_needs_trail` is the knob.
+
+And it costs the slab more than the stack, which puts it on the list of
+slab-specific numbers this section already keeps. A filament network fills far
+less of a volume than of a plane, so gating the reaction on the network removes
+more of the slab's density than of the stack's, and the exposure governor makes
+it up: measured through the march, its multiplier goes from 2.8 to 8.3 against
+a hard bound of 20. The settled image lightness is unchanged and nothing is
+saturating, but the headroom above the brightness macro's top end is now about
+1.4× where it was 4×. The lever is the march's `extinction` calibration (§5.1),
+which was set against the old density scale; it is shared with the compositor,
+so moving it is not free, and it should wait for the same viewing everything
+else here is waiting for.
 
 That caveat is heavier for the volumetric backend than for the layered one, and
 worth being explicit about. Its invariants are checked and hold -- the flow is
