@@ -79,7 +79,10 @@ jobs:
     # seconds even before the software adapter's penalty.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # The suite takes about ten minutes on lavapipe. This is deliberately a
+    # backstop against a driver-level hang, not a performance budget: these
+    # tests can wedge rather than fail if the adapter dies under them.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
