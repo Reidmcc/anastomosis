@@ -213,6 +213,22 @@ fn gamut_map_oklab(lab: vec3<f32>) -> vec3<f32> {
     return clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// WCAG relative luminance, which is the quantity the photosensitivity
+// thresholds are actually defined in -- and which Oklab `L` is not. `L` is
+// roughly the cube root of this, so `dY/dL = 3L^2` and a step that is bounded
+// in `L` is bounded in `Y` by a factor that grows with lightness: 1.22 at the
+// default `l_max` of 0.62, 2.55 at the ceiling of 0.9. Chroma is worse, since
+// `L` is not luminance at all for a chromatic colour: `|dY/da|` reaches 0.315
+// inside the default gamut. DESIGN.md 14.3 has the measurements. The safety
+// stage bounds this quantity directly rather than inferring it.
+//
+// Linear-light input, so this is a plain dot product and, crucially, *linear*
+// in the colour -- which is what lets the limiter hit its budget exactly with
+// one interpolation instead of a search.
+fn relative_luminance(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
 fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
     let lo = c * 12.92;
     let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;

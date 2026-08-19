@@ -211,17 +211,27 @@ been running for two days.
 
 ## Safety
 
-The output stage bounds how fast any pixel's lightness can change, in Oklab,
-against the motion-compensated previous frame. At the default of 1% per frame at
-30 FPS, a 10% luminance excursion takes at least 333 ms and an opposing pair at
-least 667 ms — **1.5 flashes/second against the WCAG 2.3.1 limit of 3**. The
-user-settable ceiling is 0.012 (1.8/s).
+The output stage bounds how fast any pixel can change, against the
+motion-compensated previous frame, in two quantities at once: **relative
+luminance**, which is what the photosensitivity standards are written in, and
+Oklab **lightness**, which is what keeps the image perceptually smooth. Neither
+implies the other — Oklab lightness is roughly the cube root of relative
+luminance, and for a coloured pixel it is not luminance at all.
+
+At the default of 1% per frame at 30 FPS, a 10% luminance excursion takes at
+least 333 ms and an opposing pair at least 667 ms — **1.5 flashes/second against
+the WCAG 2.3.1 limit of 3**. The user-settable ceiling is 0.012 (1.8/s). WCAG's
+separate red-flash threshold needs twice as large an excursion, so it works out
+at 0.75/s.
 
 This holds even if the simulation blows up, a parameter is set absurdly, or a
 shader has a bug — the limiter is downstream of all of it. The test suite asserts
-it two ways: with flow disabled, so reprojection is the identity and the
-per-pixel bound is exact; and under normal operation against the WCAG area
-criterion. Both are checked while parameters are slammed between extremes.
+it four ways: with flow disabled, so reprojection is the identity and the
+per-pixel bounds are exact; with every brightness value and both perceptual
+limits at their maximum and the palette slammed half a turn every frame; under
+normal operation against the WCAG area criterion; and against the red-flash
+criterion on a palette forced into the red. All are checked while parameters are
+slammed between extremes.
 
 If you are photosensitive, note that this is a well-tested engineering bound, not
 a medical assurance.

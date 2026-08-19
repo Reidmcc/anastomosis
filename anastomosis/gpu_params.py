@@ -185,6 +185,7 @@ RENDER_FIELDS: list[Field] = [
     ("chroma_floor", "f32"),
     ("hue_global", "f32"),
     # Safety stage
+    ("max_luminance_delta", "f32"),
     ("max_luma_delta", "f32"),
     ("max_chroma_delta", "f32"),
     ("iir_alpha", "f32"),

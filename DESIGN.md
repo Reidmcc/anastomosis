@@ -1342,15 +1342,32 @@ Applied to the final composited image every frame, after all colour work:
    perceptual ceilings (`l_max`, `c_max`) are applied to the *target*, never to the
    result — clamping the result would mean that lowering a ceiling mid-session
    forces an immediate unbounded jump on every pixel above it.
-3. **Exposure governor.** Mean and 95th-percentile luminance are computed by mip
+3. **Per-pixel slew limit in relative luminance.** The step surviving (2), after
+   gamut mapping, is scaled so that `|ΔY|` per frame is at most
+   `max_luminance_delta` (default **0.01**). This is a *different quantity* from
+   (2) and is not implied by it: Oklab `L` is roughly the cube root of relative
+   luminance, and for a chromatic colour it is not luminance at all. `Y` is
+   linear in linear-light RGB, so interpolating between the reprojected previous
+   frame and the mapped target scales the luminance difference by exactly the
+   same factor — the budget is hit with one `mix`, no search, and the factor is
+   never above 1, so this can only shorten a step that (2) has already bounded.
+4. **Exposure governor.** Mean and 95th-percentile luminance are computed by mip
    reduction; global exposure is corrected with asymmetric slow attack/release so
    the overall level is stable and cannot drift bright.
-4. **Temporal IIR** `out = mix(prev, new, α)`, α ≈ 0.2, as a final backstop.
+5. **Temporal IIR** `out = mix(prev, new, α)`, α ≈ 0.2, as a final backstop.
 
 ### Exactly what is guaranteed
 
-> Per pixel, `|ΔL|` per frame is bounded by `max_luma_delta`, measured against the
-> **motion-compensated** previous frame.
+> Per pixel, `|ΔY|` per frame is bounded by `max_luminance_delta` and `|ΔL|` by
+> `max_luma_delta`, both measured against the **motion-compensated** previous
+> frame.
+
+Two bounds in two quantities, because they answer two questions. `ΔL` is
+perceptual: it holds the image visually smooth, and it is what keeps a hue or
+lightness change from lurching even where luminance happens to be preserved.
+`ΔY` is photic: it is the quantity WCAG's thresholds are written in, and it is
+the one the flash arithmetic below runs on. §14.3 records what happened when
+only the first was bounded and the second inferred from it.
 
 The reprojection qualifier is load-bearing and worth stating plainly. At a *fixed*
 screen pixel, a filament translating past can produce a larger change than the
@@ -1358,19 +1375,33 @@ limit. That is honest motion, not a flash, and suppressing it would be the wrong
 behaviour — it is precisely what the reprojection exists to permit. So the safety
 argument rests on two separate claims, and the test suite asserts them separately:
 
-1. **The limiter is exact.** With flow disabled, reprojection is the identity and
-   the per-pixel bound holds to within f16 quantisation (measured: 0.010043 against
-   a 0.010 limit) — including under adversarial parameter stepping.
+1. **The limiter is exact, in both quantities.** With flow disabled,
+   reprojection is the identity and the per-pixel bounds hold to within f16
+   quantisation — 0.010043 against a 0.010 limit in `L`, and 0.009999 against
+   0.010 in `Y` — including under adversarial parameter stepping. The `Y` bound
+   is asserted a second time with every brightness value and both Oklab limits
+   at their user-settable ceilings and the palette anchor slammed half a turn
+   every frame, which is the configuration §14.3 identified: without the clamp
+   in step 3 that run reaches 0.0123 against the 0.010 budget.
 2. **Large correlated change is impossible.** WCAG 2.3.1 / the PEAT general flash
    threshold defines a flash as a pair of opposing relative-luminance changes of
    ≥10% covering >25% of the screen, at ≥3 per second. The suite asserts that fewer
    than 25% of pixels ever change by ≥10% in a single frame, so the area criterion
    cannot be met regardless of timing. Mean screen lightness is held to the
    per-frame limit as well.
+3. **The red flash threshold is out of reach.** WCAG's second criterion is a
+   pair of opposing transitions involving a saturated red — one state with
+   `R/(R+G+B) ≥ 0.8` — where the two differ by more than 0.2 of maximum relative
+   luminance. Saturated-red states are reachable in this palette and always have
+   been (at the default `c_max` they exist up to `L` = 0.415), so the criterion
+   is not retired by staying out of that part of the gamut. It is retired by the
+   rate: 0.2 of `Y` at 0.01 per frame is 20 frames, and a pair 1.33 s — **0.75
+   per second**. Asserted on a run forced into the red sector at full chroma,
+   where the worst five-frame change on a saturated-red pixel measures 0.0089.
 
 ### Why the default is 1%, and why the ceiling is 1.2%
 
-At `ΔL ≤ 0.01` and 30 FPS, a 10% excursion requires ≥10 frames = **333 ms** and a
+At `ΔY ≤ 0.01` and 30 FPS, a 10% excursion requires ≥10 frames = **333 ms** and a
 full opposing pair ≥667 ms — **1.5 flashes/second**, half the threshold, with no
 assumption whatsoever about the simulation's behaviour. The bound holds if the
 reaction blows up, if a parameter is set absurdly, if an upstream shader has a bug.
@@ -1381,15 +1412,27 @@ arithmetic error: 0.03 permits 4.5 flashes/second, *above* the WCAG limit rather
 than below it. The test that encodes this criterion caught it, which is the entire
 reason for expressing the property numerically instead of describing it in prose.
 
-**A second discrepancy in the same arithmetic, found while planning §14 and not
-yet fixed.** All of the figures above are in Oklab `L`; WCAG's are in relative
-luminance, which `L` is roughly the cube root of. The conversion factor is
-`3L²`, so at the default `l_max` the luma limiter alone gives 1.83 flashes/s
-rather than 1.5, and the chroma limiter — which is not luminance-neutral for
-chromatic colours — permits as much relative-luminance change again. §14.3 has
-the measurements, and the fix: a clamp in relative luminance alongside the ones
-in Oklab. The area criterion asserted in the suite is unaffected and is what
-holds the line in the meantime.
+**A second discrepancy in the same arithmetic, found while planning §14 and
+since fixed.** Every figure in this section used to be in Oklab `L`, while
+WCAG's are in relative luminance, which `L` is roughly the cube root of. The
+conversion factor is `3L²`, so the luma limiter alone gave 1.83 flashes/s at the
+default `l_max` rather than 1.5 — and the chroma limiter, which is not
+luminance-neutral for chromatic colours, permitted as much again, uncounted. At
+the combination of user-settable ceilings the two together reached 18.9. §14.3
+has the measurements. Step 3 of the stage above is the fix, and the numbers here
+are now in the units the standard uses.
+
+`max_luma_delta` and `max_chroma_delta` keep their ceilings, and that is the
+point of separating the two bounds rather than replacing one with the other:
+they bound the *perceptual* step, they are free to be as loose as taste requires,
+and the photic consequence is bounded downstream of them whatever they are set
+to.
+
+**One caveat that remains, of exactly the same kind.** All of these figures
+assume 30 FPS, and `max_fps` is user-settable to 60 — at which the per-frame
+limiter runs twice as often and every rate above doubles. It is disclosed rather
+than bounded. Expressing the budget per second and scaling it by the measured
+frame interval would retire it; that is not done here.
 
 ### One non-obvious implementation constraint
 
@@ -1640,7 +1683,7 @@ Steps 1–6 produce something already usable for its purpose.
 
 Built and verified headless against a software adapter (Mesa lavapipe), so every
 shader compiles and the full tick/render sequence runs in CI without a GPU. The
-suite is 259 tests and takes about eight minutes there: 248 pass and 11 skip for
+suite is 263 tests and takes about eight minutes there: 252 pass and 11 skip for
 want of a display. The checkpoint-determinism check that this section previously
 recorded as failing on that adapter passes on the llvmpipe build measured here;
 it was never explained, so treat that as an observation about one adapter build
@@ -1657,6 +1700,9 @@ demand; CLI; checkpointing on a five-minute interval and
 on close, resuming by default, with an explicit reset in the control panel;
 shutdown as a single idempotent path reached from the window closing, a signal,
 or the loop ending, so closing the window saves the field and ends the process;
+the safety stage's second bound, in relative luminance, with the general and red
+flash criteria both asserted in the units WCAG defines them in (§7, derived in
+§14.3);
 and **both depth backends** -- the layered 2.5D stack and the volumetric slab of
 §5.1 -- selectable from the config, the command line or the control panel, with
 one saved field each so switching between them is not destructive.
@@ -1705,9 +1751,11 @@ The layered path stays the default until that judgement has been made.
 
 ---
 
-## 14. A second mode: activation (proposed, not built)
+## 14. A second mode: activation (proposed; step 1 built)
 
-Everything above this section is built. This one is a plan.
+Everything above this section is built. This one is a plan, with one exception:
+the safety work in §14.3, which was a prerequisite rather than a consequence,
+has been implemented and is now part of §7. The rest is unbuilt.
 
 ### 14.1 What the mode is for
 
@@ -1768,9 +1816,12 @@ argument the `event_rate` gamma is set by (§9).
 
 ### 14.3 Where the safety budget actually is, and a correction
 
+**Built.** This subsection is kept as the derivation and the measurement that
+motivated it; §7 is where the resulting guarantee is stated.
+
 Before anything is spent, it is worth knowing what the currency is. Working
 through it turned up a discrepancy in the *statement* of §7's guarantee that
-should be fixed regardless of whether this mode is ever built.
+had to be fixed regardless of whether this mode is ever built.
 
 **The guarantee is in Oklab L. WCAG is in relative luminance.** §7 reasons that
 `max_luma_delta = 0.01` at 30 FPS gives a 10% excursion in ≥333 ms and therefore
@@ -1815,21 +1866,29 @@ It also inherits the same unit problem: it thresholds the change in Oklab `L` at
 0.10, and at `l_max` = 0.62 a 10% excursion in `Y` is a change of only 0.082 in
 `L`.
 
-**The fix, which is a prerequisite for this mode rather than a consequence of
-it.** Add a relative-luminance clamp to `safety.wgsl`, after the Oklab step is
-computed and before it is applied. Given `previous` and the bounded `step`,
-binary-search a scale `s ∈ [0, 1]` such that
-`|Y(previous + s·step) − Y(previous)| ≤ max_luminance_delta`, and apply
-`s·step`. This is the same shape as the gamut-mapping bisection two lines below
-it, terminates for the same reason (`s = 0` always satisfies the bound), scales
-`L`, `a` and `b` together so it cannot alter hue or introduce a step of its own,
-and costs one extra Oklab→linear conversion per pixel in a shader that already
-does one.
+**The fix, which was a prerequisite for this mode rather than a consequence of
+it.** A relative-luminance clamp in `safety.wgsl`, applied to the gamut-mapped
+result. The first sketch of it was a bisection on a scale applied to the Oklab
+step, by analogy with the gamut mapping two lines below — but that only
+approximates the budget, because `Y` is not linear in an Oklab step: measured
+over 400,000 adversarial samples it landed at 0.0153 against a 0.010 budget.
 
-With `max_luminance_delta = 0.010` — 1% of maximum relative luminance per frame
-— a 10% excursion needs 10 frames and an opposing pair 667 ms: **1.5 pairs per
-second**, which is the number §7 has always claimed, now in the units WCAG uses,
-and unconditionally rather than at one point of the gamut. The existing Oklab
+Interpolating in linear light instead is both exact and cheaper. `Y` is a dot
+product of linear RGB, so `Y(mix(previous, target, k)) = mix(Y(previous),
+Y(target), k)` identically, and `k = budget / |ΔY|` hits the bound with no
+search at all. Both endpoints are in gamut, so the result is; `k ≤ 1`, so it can
+only ever shorten a step the Oklab clamps have already bounded; and measured
+against the same samples it never increases `|ΔL|` at all. It costs one dot
+product and one `mix`.
+
+Measured on the built version, at the default parameters the worst per-pixel
+`|ΔY|` in a 40-frame run is 0.0030, and at the adversarial ceiling configuration
+the clamp binds and lands on 0.009999 against its 0.010 budget.
+
+With `max_luminance_delta = 0.010` — 1% of maximum relative luminance per frame,
+ceiling 0.012 — a 10% excursion needs 10 frames and an opposing pair 667 ms:
+**1.5 pairs per second**, which is the number §7 has always claimed, now in the
+units WCAG uses, and unconditionally rather than at one point of the gamut. The existing Oklab
 clamps stay: they bound *perceived* lightness change, which is the perceptual
 quantity and the one the image should be graded against. The new clamp bounds
 the photic one.
@@ -1853,9 +1912,10 @@ the clamp above — under the current bound, at the ceilings, the same pair take
 436 ms (2.3 per second), and 106 ms once the chroma ceiling is in play (9.4 per
 second).
 
-The whole derivation above is arithmetic over the colour transform, so it belongs
-in `tests/reference.py` beside `lightness()` and in an assertion, not in a
-one-off script and a table in a document.
+The whole derivation above is arithmetic over the colour transform, so it lives
+in `tests/reference.py` beside `lightness()` — `relative_luminance` and
+`saturated_red` — and in assertions, rather than in a one-off script and a table
+in a document.
 
 ### 14.4 What activation spends, and why those axes are the cheap ones
 
@@ -2025,18 +2085,24 @@ than tweaking.
 
 The plan is only worth as much as this list.
 
+Items 2 and 3 are built, and are described in §7; the rest wait on the mode.
+
 1. **`test_flash_safety.py` under the activate table**, with its presets, and
    with mode switching added to the adversarial parameter sweep. A mode change
    moves every macro-driven primitive at once, which is a new way to provoke the
    limiter and belongs with the existing slamming.
-2. **New: the bound in relative luminance.** With flow disabled, assert the
-   per-pixel `|ΔY|` per frame is within `max_luminance_delta`. This is the test
-   that encodes §14.3, and it should fail on today's build at `l_max = 0.9` —
-   that is the point of writing it first.
-3. **New: the red flash criterion.** No pair of opposing transitions involving a
-   saturated red, over more than 25% of the screen, within a second. It should
-   pass trivially once (2) holds; it exists so that a later change to the chroma
-   budget cannot quietly break it.
+2. **The bound in relative luminance** — *built*. With flow disabled, assert
+   the per-pixel `|ΔY|` per frame is within `max_luminance_delta`. Written
+   first, and it did fail on the build it was written against: at the ceiling
+   configuration, 0.0123 against a 0.010 budget. A second version of it, run at
+   default parameters, is the everyday guard.
+3. **The red flash criterion** — *built*. No pair of opposing transitions
+   involving a saturated red, over more than 25% of the screen, within the five
+   frames a >3/s pair would have to fit in. It passes with a factor of 22 in
+   hand once (2) holds; it exists so that a later change to the chroma budget
+   cannot quietly break it, and it asserts that the run actually produced
+   saturated-red pixels first, because a red-flash test on a palette with no red
+   in it is a test of nothing.
 4. **New: the pattern criterion.** WCAG 2.3.1 also covers regular high-contrast
    patterns — more than five light–dark stripe pairs over a quarter of the field.
    Activation is where this becomes plausible, because faster flow stretches and
@@ -2066,9 +2132,10 @@ The plan is only worth as much as this list.
 
 ### 14.9 Build order
 
-1. **The luminance bound in Y, with tests (2) and (3).** Lands on its own,
-   improves the current build, and is a prerequisite: nothing should be built on
-   a bound stated in the wrong units.
+1. ~~**The luminance bound in Y, with tests (2) and (3).**~~ **Done.** Landed on
+   its own, ahead of any mode work, and is described in §7. What remains of the
+   same class is the frame-rate caveat noted there: every rate in §7 assumes 30
+   FPS and `max_fps` is settable to 60.
 2. **Mode plumbing with an empty activate table.** Selectable, ramped, persisted,
    tested — and visually identical to regulate. All of the plumbing risk, none of
    the tuning risk, and a clean bisection point if something later goes wrong.

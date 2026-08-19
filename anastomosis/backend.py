@@ -645,6 +645,7 @@ class Backend:
             # The palette macro is applied here rather than baked into pigment,
             # so turning the knob responds immediately.
             "hue_global": render.hue_anchor,
+            "max_luminance_delta": safety.max_luminance_delta,
             "max_luma_delta": safety.max_luma_delta,
             "max_chroma_delta": safety.max_chroma_delta,
             "iir_alpha": safety.iir_alpha,

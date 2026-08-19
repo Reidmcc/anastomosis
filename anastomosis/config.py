@@ -39,11 +39,21 @@ TAU = math.tau
 class SafetyParams:
     """Output-stage limits. See DESIGN.md §7.
 
-    ``max_luma_delta`` is the load-bearing one: at 30 FPS a value of 0.01 means
-    a 10% luminance excursion takes >=333 ms, capping the system at 1.5
-    flashes/second against the WCAG threshold of 3.
+    ``max_luminance_delta`` is the load-bearing one: at 30 FPS a value of 0.01
+    means a 10% excursion in *relative luminance* takes >=333 ms, capping the
+    system at 1.5 flashes/second against the WCAG threshold of 3.
+
+    ``max_luma_delta`` and ``max_chroma_delta`` bound the same step in Oklab,
+    which is a different quantity and a different job: they hold the change
+    perceptually smooth, and they are what keeps the image from lurching in
+    hue or lightness even where luminance happens to be preserved. Neither
+    implies the other, which is why both are here -- see DESIGN.md §14.3 for
+    the measurement that separated them.
     """
 
+    # Relative luminance, per frame. The photic bound; see DESIGN.md §7.
+    max_luminance_delta: float = 0.010
+    # Oklab, per frame. The perceptual bound.
     max_luma_delta: float = 0.010
     max_chroma_delta: float = 0.030
     iir_alpha: float = 0.20
@@ -652,6 +662,13 @@ SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
     # maximum-rate oscillation), against the WCAG limit of 3. The 0.03 this
     # was originally set to allows 4.5/s and is NOT safe -- see
     # test_ceiling_implies_wcag_margin.
+    #
+    # This is the one the WCAG arithmetic actually runs on, because it is in
+    # the units WCAG is written in. It is also what makes the two ceilings
+    # below affordable: an Oklab step is bounded in relative luminance
+    # downstream of them whatever they are set to, so they can be loose enough
+    # to be useful without being loose enough to be unsafe.
+    "safety.max_luminance_delta": (0.0005, 0.012),
     "safety.max_luma_delta": (0.0005, 0.012),
     "safety.max_chroma_delta": (0.0005, 0.100),
     "safety.iir_alpha": (0.02, 1.000),

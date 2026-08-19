@@ -8,9 +8,16 @@
 //
 // WCAG 2.3.1 / PEAT define a flash as a pair of opposing relative-luminance
 // changes of >=10% over >25% of the screen, and permit at most 3 per second.
-// With max_luma_delta = 0.01 at 30 FPS, a 10% excursion needs >=10 frames
+// With max_luminance_delta = 0.01 at 30 FPS, a 10% excursion needs >=10 frames
 // (333 ms) and an opposing pair >=667 ms -- a ceiling of 1.5 flashes/second,
 // half the threshold. Because the limit is per-pixel, it bounds any area.
+//
+// Note *which* limit that argument runs on. There are two, in two different
+// quantities, and they are both here on purpose: the Oklab clamps bound how
+// fast the image can change perceptually, and the relative-luminance clamp at
+// the end bounds the photic quantity the paragraph above is about. The second
+// is not implied by the first -- Oklab L is roughly the cube root of relative
+// luminance, and for a chromatic colour it is not luminance at all.
 //
 // The order of operations matters: exposure is applied *before* the limiter, so
 // the governor can never introduce a step of its own; it can only ask, and the
@@ -63,9 +70,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let velocity = finite_or4(textureSampleLevel(velocity_tex, samp, uv, 0.0), 0.0).rg;
     let displacement = velocity * render.reproject_scale / vdims;
     let history_uv = wrap_uv(uv - displacement);
-    let previous = linear_srgb_to_oklab(
-        finite_or4(textureSampleLevel(history_tex, samp, history_uv, 0.0), 0.0).rgb
-    );
+    // Kept in linear light as well as in Oklab: the relative-luminance limit
+    // below is measured against exactly these values, and bilinear filtering of
+    // an in-gamut buffer is a convex combination, so this is in gamut too.
+    let history_rgb =
+        finite_or4(textureSampleLevel(history_tex, samp, history_uv, 0.0), 0.0).rgb;
+    let previous = linear_srgb_to_oklab(history_rgb);
 
     // --- Slew limit --------------------------------------------------------
     // The IIR factor gives a smooth approach (no hard corner when the clamp
@@ -87,7 +97,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Gamut mapping reduces chroma at constant lightness and hue; clipping RGB
     // directly would change perceived brightness, which is the very thing this
     // pass exists to bound.
-    let rgb = gamut_map_oklab(result);
+    let mapped = gamut_map_oklab(result);
+
+    // --- Relative-luminance limit -----------------------------------------
+    // The clamps above bound the step in Oklab, which is the perceptual
+    // quantity; WCAG's thresholds are in relative luminance, which is a
+    // different one (see `relative_luminance` and DESIGN.md 7). Bounding only
+    // the first leaves the second to a conversion factor that grows with
+    // lightness -- and leaves the chroma limiter, which is not
+    // luminance-neutral for chromatic colours, contributing as much again
+    // uncounted. So the photic quantity is bounded here, directly.
+    //
+    // `Y` is linear in linear-light RGB, so interpolating between the previous
+    // frame and the mapped target scales the luminance difference by exactly
+    // the same factor: one `mix` lands on the budget with no search, where
+    // scaling the Oklab step by the same ratio would only approximate it
+    // (measured: 0.0153 against a 0.010 budget). Both endpoints are in gamut,
+    // so the result is, and the factor is at most 1 -- this can only ever
+    // shorten a step that has already been bounded, never lengthen one.
+    let y_previous = relative_luminance(history_rgb);
+    let luminance_step = relative_luminance(mapped) - y_previous;
+    let scale = min(
+        1.0,
+        max(render.max_luminance_delta, 0.0) / max(abs(luminance_step), 1.0e-9),
+    );
+    let rgb = mix(history_rgb, mapped, scale);
 
     textureStore(final_out, p, vec4<f32>(rgb, 1.0));
 }

@@ -164,8 +164,41 @@ def linear_srgb_to_oklab(rgb: np.ndarray) -> np.ndarray:
 
 
 def lightness(rgb: np.ndarray) -> np.ndarray:
-    """Oklab L only, which is what the flash-safety bound is expressed in."""
+    """Oklab L only, which is what the *perceptual* half of the bound uses."""
     return linear_srgb_to_oklab(rgb)[..., 0]
+
+
+# WCAG relative luminance, matching `relative_luminance` in common.wgsl. This
+# is the quantity the photosensitivity thresholds are defined in, and it is not
+# Oklab L: L is roughly its cube root, so `dY/dL = 3L^2`, and for a chromatic
+# colour L is not luminance at all. DESIGN.md 14.3.
+LUMINANCE_WEIGHTS = np.array([0.2126, 0.7152, 0.0722])
+
+
+def relative_luminance(rgb: np.ndarray) -> np.ndarray:
+    """`rgb` is (..., 3) linear sRGB; returns (...) WCAG relative luminance."""
+    return rgb @ LUMINANCE_WEIGHTS
+
+
+def saturated_red(rgb: np.ndarray) -> np.ndarray:
+    """WCAG's saturated-red test: `R / (R + G + B) >= 0.8`, on *encoded* sRGB.
+
+    Encoded rather than linear because that is the form the criterion is
+    written against, and the two disagree sharply near black -- which is where
+    most of this application's pixels live.
+    """
+    encoded = linear_to_srgb(rgb)
+    total = encoded.sum(axis=-1)
+    # A pixel with no light in it has no hue to be red; the ratio is 0/0 there,
+    # and calling that "saturated red" would make the criterion meaningless on
+    # a field whose ground is nearly black.
+    return np.where(total > 1e-6, encoded[..., 0] / np.maximum(total, 1e-12), 0.0) >= 0.8
+
+
+def linear_to_srgb(c: np.ndarray) -> np.ndarray:
+    """The sRGB transfer function, matching common.wgsl."""
+    c = np.clip(c, 0.0, 1.0)
+    return np.where(c <= 0.0031308, c * 12.92, 1.055 * np.power(c, 1.0 / 2.4) - 0.055)
 
 
 # ---------------------------------------------------------------------------
