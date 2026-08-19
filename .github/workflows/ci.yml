@@ -24,7 +24,9 @@ jobs:
   test:
     name: tests (py${{ matrix.python }}${{ matrix.extras == 'dev' && ', no ui' || '' }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Room for the driver install to burn its full budget above and still
+    # leave the suite time to run and report.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -38,9 +40,9 @@ jobs:
           - python: "3.11"
             extras: "dev"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -49,14 +51,19 @@ jobs:
       # apt on the hosted runners will block forever rather than fail: the
       # image runs its own background package activity, and a job that starts
       # while that holds the dpkg lock simply waits. Lock::Timeout turns that
-      # into an error with a legible message, DEBIAN_FRONTEND and
+      # into an error with a legible message, and DEBIAN_FRONTEND and
       # NEEDRESTART_MODE stop the two prompts that otherwise wait on a tty
-      # nobody is attached to, and the step timeout means a hang costs six
-      # minutes and points here rather than burning the whole job budget and
-      # reporting only that the job timed out. The variables go on the sudo
-      # command line because sudo drops them from the surrounding environment.
+      # nobody is attached to. The variables go on the sudo command line
+      # because sudo drops them from the surrounding environment.
+      #
+      # The budget is set from what the contention actually costs. Across one
+      # four-job run this step took 37s, 162s, 243s and 354s -- the spread is
+      # the lock, not the download. Each apt call gets its own 300s lock wait,
+      # so a legitimately unlucky job can spend close to eleven minutes here
+      # and still be working. Fifteen leaves that room while still bounding a
+      # genuine hang, which is the case the timeout exists for.
       - name: Install the software Vulkan driver
-        timeout-minutes: 6
+        timeout-minutes: 15
         run: |
           sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
             apt-get -o DPkg::Lock::Timeout=300 update
@@ -96,9 +103,9 @@ jobs:
     # tests can wedge rather than fail if the adapter dies under them.
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -107,14 +114,19 @@ jobs:
       # apt on the hosted runners will block forever rather than fail: the
       # image runs its own background package activity, and a job that starts
       # while that holds the dpkg lock simply waits. Lock::Timeout turns that
-      # into an error with a legible message, DEBIAN_FRONTEND and
+      # into an error with a legible message, and DEBIAN_FRONTEND and
       # NEEDRESTART_MODE stop the two prompts that otherwise wait on a tty
-      # nobody is attached to, and the step timeout means a hang costs six
-      # minutes and points here rather than burning the whole job budget and
-      # reporting only that the job timed out. The variables go on the sudo
-      # command line because sudo drops them from the surrounding environment.
+      # nobody is attached to. The variables go on the sudo command line
+      # because sudo drops them from the surrounding environment.
+      #
+      # The budget is set from what the contention actually costs. Across one
+      # four-job run this step took 37s, 162s, 243s and 354s -- the spread is
+      # the lock, not the download. Each apt call gets its own 300s lock wait,
+      # so a legitimately unlucky job can spend close to eleven minutes here
+      # and still be working. Fifteen leaves that room while still bounding a
+      # genuine hang, which is the case the timeout exists for.
       - name: Install the software Vulkan driver
-        timeout-minutes: 6
+        timeout-minutes: 15
         run: |
           sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
             apt-get -o DPkg::Lock::Timeout=300 update
