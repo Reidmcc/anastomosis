@@ -6,6 +6,8 @@ import math
 
 import pytest
 
+from dataclasses import fields
+
 from anastomosis import config, presets
 
 
@@ -501,3 +503,94 @@ def test_a_config_predating_the_setting_keeps_the_original_size(tmp_path):
     loaded = config.load(path)
     assert loaded.volume_detail == config.DEFAULT_VOLUME_DETAIL
     assert loaded.resolve().volume.width == config.VolumeParams().width
+# ---------------------------------------------------------------------------
+# The parallax split
+# ---------------------------------------------------------------------------
+
+
+def test_the_depth_macro_no_longer_moves_the_viewpoint():
+    """`depth` and `parallax` answer different questions and must not overlap.
+
+    Everything left under `depth` is a shading trick applied to a *normalised*
+    depth -- how much the far face is fogged, dimmed, desaturated and blurred --
+    and says the same thing about that face however far away it is. The
+    viewpoint's travel is the one cue that comes from the scene moving, and it
+    is the one somebody turns up when the shading is not enough on its own. Two
+    paths driven by two macros would leave whichever resolved last silently
+    winning.
+    """
+    paths = {path for path, *_ in config.MACRO_CURVES["depth"]}
+    assert "render.parallax" not in paths
+    assert "render.parallax_tau" not in paths
+
+    parallax_paths = {path for path, *_ in config.MACRO_CURVES["parallax"]}
+    assert parallax_paths == {"render.parallax", "render.parallax_tau"}
+
+    # Moving `depth` across its whole travel must leave the viewpoint alone.
+    reaches = {
+        config.Config(macros=config.Macros(depth=v)).resolve().render.parallax
+        for v in (0.0, 0.5, 1.0)
+    }
+    assert len(reaches) == 1
+
+
+def test_the_parallax_macro_spans_still_to_unmistakable():
+    """A knob that cannot reach far enough to settle the question is not much
+    use, and this one exists because the question was unsettled."""
+    off = config.Config(macros=config.Macros(parallax=0.0)).resolve().render
+    full = config.Config(macros=config.Macros(parallax=1.0)).resolve().render
+    assert off.parallax == 0.0, "the bottom of the travel must be a still camera"
+    # A quarter of the screen's width between the near and far material.
+    assert full.parallax >= 0.2
+    # And more travel comes with more speed, since a knob that moved only the
+    # travel would take four times as long to show twice as much.
+    assert full.parallax_tau < off.parallax_tau
+
+
+def test_a_config_from_before_the_split_takes_the_new_default(tmp_path):
+    """There is nothing to carry across from a pre-split file.
+
+    `depth` did drive `render.parallax`, but over a range chosen against a walk
+    that never moved, so what the old file says about parallax describes a
+    setting that did nothing. Inheriting it would preserve a bug's
+    configuration; the new default stands instead.
+    """
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "preset_name = \"default\"\n"
+        "[macros]\ndepth = 0.9\n[overrides]\n",
+        encoding="utf-8",
+    )
+    loaded = config.load(path)
+    assert loaded.macros.depth == 0.9
+    assert loaded.macros.parallax == config.Macros().parallax
+
+    # An explicit value is of course kept.
+    path.write_text(
+        "preset_name = \"default\"\n"
+        "[macros]\ndepth = 0.9\nparallax = 0.2\n[overrides]\n",
+        encoding="utf-8",
+    )
+    assert config.load(path).macros.parallax == 0.2
+
+
+@pytest.mark.parametrize("name", presets.names())
+def test_every_preset_names_every_macro(name):
+    """The module says it does, and a macro a preset forgets is one that snaps
+    to its default the moment somebody reaches for that preset."""
+    import ast
+    import inspect
+
+    source = inspect.getsource(presets)
+    tree = ast.parse(source)
+    calls = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and isinstance(value, ast.Call):
+                    calls[key.value] = {kw.arg for kw in value.keywords}
+    named = calls.get(name, set())
+    for field in fields(config.Macros):
+        assert field.name in named, (
+            f"preset {name} does not name {field.name}, so choosing it would "
+            "silently reset that knob")

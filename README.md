@@ -166,7 +166,8 @@ one session with `--backend`.
 ### How finely the volume is simulated
 
 The lateral coarseness above is the volumetric backend's one real weakness, and
-the **Detail** selector under **Depth** is the knob for it. Three sizes:
+the **Detail** selector under **Depth** is the knob for it. Three sizes, here at
+the default thickness:
 
 | Detail | Slab at 16:9 | Filament width at 1440p | Memory | Simulation cost |
 |---|---|---|---|---|
@@ -174,18 +175,19 @@ the **Detail** selector under **Depth** is the knob for it. Three sizes:
 | **Fine** | 768 × 432 × 48 | ~3.3 px | ~1.5 GB | ~2.3× |
 | **Finest** | 1024 × 576 × 48 | ~2.5 px | ~2.7 GB | ~4× |
 
-Wider is sharper rather than merely bigger: the depth stays at 48 and the height
-follows your window, so the voxels stay cubic and a filament — which is a fixed
-handful of voxels across — lands on proportionally fewer display pixels. If
-1080p looks soft and 1440p softer, this is the setting that answers it.
+Wider is sharper rather than merely bigger: the thickness is a separate knob and
+this one leaves it alone, while the height follows your window, so the voxels
+stay cubic and a filament — which is a fixed handful of voxels across — lands on
+proportionally fewer display pixels. If 1080p looks soft and 1440p softer, this
+is the setting that answers it.
 
 What it costs is the simulation, and only the simulation. Drawing a frame costs
 the same at all three sizes: the raymarch is one ray per output pixel and its
-step count follows the slab's *depth*, which none of these change. So the extra
-work is the per-tick passes over the volume, which scale with the voxel count —
-the square of the width ratio — along with memory. On the RTX 3080 of DESIGN.md
-§8.1 the standard size sits around 3% of the card's bandwidth, so even the
-finest stays inside roughly a tenth of it.
+step count follows the slab's *thickness*, which this setting does not touch. So
+the extra work is the per-tick passes over the volume, which scale with the
+voxel count — the square of the width ratio — along with memory. On the RTX 3080
+of DESIGN.md §8.1 the standard size sits around 3% of the card's bandwidth, so
+even the finest stays inside roughly a tenth of it.
 
 If **Finest** runs long on your card, the cheapest thing to give back is the
 tick rate — `sim_hz = 14` instead of 20. The interpolator hides it completely,
@@ -197,6 +199,33 @@ cannot keep what it is leaving: there is one volumetric field, and a slab of a
 different width is a different field. So changing it grows a new one from
 seeds — the panel asks first, and the **Depth** status line tells you when a
 saved field is still running at a size you have moved away from.
+
+### How thick the slab is
+
+Under **Volumetric**, the **Thickness** slider below the selector sets how many
+voxels deep the slab is — from 8 up to however many the shorter of its other two
+axes has, which is 288 on a 16:9 display at **Standard** detail. The default 48
+is a slab a ray passes one or two filaments through, so the depth cues are all
+present but quiet; more depth means more material between you and the far face,
+and so more occlusion, more shading and more atmosphere.
+
+Two things to know before moving it. It is what this view's memory is spent on,
+linearly — about 650 MB at the default and about 3.9 GB at the ceiling — and the
+line under the slider prices whatever it is pointing at. And the returns flatten
+before the ceiling does: past some thickness the near structure is opaque enough
+that the far face is no longer contributing anything you can see, and where that
+happens depends on **Intensity**, since that is what decides how much material
+there is. Somewhere in the low hundreds is where it is worth looking first.
+
+Changing it grows a new field — a slab of a different depth is a differently
+shaped field, and unlike a backend switch there is nothing to come back to — so
+the button beside the slider asks first, and the image settles down and grows
+back over a few minutes. The setting is saved, so the next launch opens at it.
+
+The two settings meet in one place: the thickness ceiling is the shorter lateral
+axis, so a wider slab can also be a deeper one — at **Finest** the ceiling rises
+from 288 to 576. Memory is the product of both, so if you raise both, read the
+line under the thickness slider before committing.
 
 ## Adjusting it
 
@@ -210,11 +239,43 @@ Eight knobs, all 0–1:
 | **Palette** | Where the colour range sits on the hue circle |
 | **Brightness** | Overall level and the background |
 | **Filament glow** | How luminous the filaments are against the ground |
-| **Depth** | Parallax, focus falloff, and atmosphere |
+| **Depth** | Focus falloff, atmosphere, and how far the back fades |
+| **Parallax** | How far the viewpoint drifts, and how briskly |
 | **How often** | How frequently events arrive on their own — under **Events**, not with the rest |
 
 Presets: `default`, `quiet`, `dense`, `deep`, `ember`, `luminous`, `current`.
 All of them keep a dark ground.
+
+**Parallax** is the one to reach for if either view looks flat. Everything
+**Depth** moves is a shading trick applied to a *normalised* depth — how much
+the far material is fogged, dimmed, desaturated and blurred — so it says the
+same thing about the back of the scene however far back that actually is.
+Parallax is the only cue that comes from the scene *moving*, and it is what
+lets you see past the near material rather than being told it is nearer.
+
+The readout is what you get: the share of the screen's width that the near
+material slides against the far material. At the top of the knob that is a
+quarter of the width, spent at about 8 px/s on a 1440p display. It cannot
+flicker at any setting — the drift is a random walk behind a lag, so
+consecutive frames move in the same direction, and what you see is a slow pan
+rather than a shake.
+
+**Under the volumetric view, the slab's thickness caps it, and that is the
+thing worth understanding.** Parallax is thickness times the tangent of the
+viewing angle. The default slab is 48 voxels deep against 512 wide — a sheet of
+paper — and there is only so much depth to be had by walking around a sheet of
+paper. Swinging further does not find more; it finds the same sheet seen
+edge-on. So the two knobs compound, and neither does much alone:
+
+| Thickness | Parallax at max | Near/far travel at 1440p |
+|---|---|---|
+| 48 (default) | held to 8% | ~170 px |
+| 96 | held to 15% | ~350 px |
+| 144 | 22% | ~520 px |
+| 288 | 25% | ~580 px |
+
+If the parallax readout stops rising as you drag it, the Thickness slider is
+what is holding it. **Turn both up together.**
 
 Every change — slider, preset switch, or file edit — is **ramped, never stepped**,
 so adjusting something can't itself produce a visual jolt. Switching presets is a
@@ -238,6 +299,9 @@ event_rate = 0.5
 # Pin individual primitives by dotted path; these beat the macros.
 "render.filament_luma" = 0.42
 "reaction.feed" = 0.019
+"volume.depth" = 96          # what the Thickness slider writes
+"render.parallax" = 0.30     # viewpoint drift, as a fraction of screen width
+"render.parallax_tau" = 60   # seconds; how long it takes to change its mind
 ```
 
 There are around 70 primitive parameters underneath the macros; the field names
@@ -314,10 +378,11 @@ unrecoverable:
   divergence-free (checked numerically, because the failure it prevents is
   pigment slowly pooling over hours), that the slab wraps on all three axes and
   carries structure through depth, that the flash-safety bound holds under it
-  too, and that switching backends keeps both fields. Also the three slab
-  sizes: that each grows the shape it names, that a wider one is sharper
-  rather than merely bigger, and that changing size regrows the field at the
-  new width rather than the old.
+  too, that switching backends keeps both fields, and that changing the slab's
+  thickness grows a new field without moving anything the march is calibrated
+  with. Also the three lateral sizes: that each grows the shape it names, that
+  a wider one is sharper rather than merely bigger, and that changing size
+  regrows the field at the new width rather than the old.
 
 ## Layout
 

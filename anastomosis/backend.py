@@ -55,6 +55,44 @@ FIELD_USAGE = (
 MAX_DIM = 8192
 MAX_DIM_3D = 2048
 
+# Gain on the viewpoint's walk before the `tanh` that bounds it, chosen so the
+# offset spends most of its time using the middle of its travel and only
+# occasionally approaches the ends: at 0.55 the r.m.s. offset is 0.45 and the
+# 95th percentile 0.79, against a hard bound of 1. Larger, and the viewpoint
+# lives near its limits, where `tanh` is flat and the drift slows to nothing
+# just when it is furthest out; smaller, and `render.parallax` stops meaning
+# anything like the excursion actually seen.
+PARALLAX_SHAPE = 0.55
+
+# The lag the walk reaches the viewpoint through, as a fraction of the walk's
+# own time constant, and the renormalisation that lag costs.
+#
+# An Ornstein-Uhlenbeck process is smooth in its envelope and white in its
+# increments, which is fine for an amplitude and disastrous for a position: at
+# a 75 s time constant the raw walk moves the image half a pixel per frame, at
+# random, which is precisely the per-pixel temporal noise this application
+# exists not to produce (see blit.wgsl). One first-order lag makes the position
+# C1 -- the whiteness moves into the acceleration, where nothing can see it --
+# and at a sixth of the walk's own constant it costs almost none of the travel:
+# measured over an hour, the frame-to-frame step falls from 0.54 px to 0.020 px
+# at 1440p while the peak excursion stays at 49 px of 50. The remaining motion
+# is about 0.6 px/s, which is what the parallax actually is.
+PARALLAX_LAG = 1.0 / 6.0
+PARALLAX_NORM = math.sqrt(1.0 + PARALLAX_LAG)
+
+
+def parallax_walk_for(offset: float) -> float:
+    """The walk that would have put the viewpoint at this offset.
+
+    `tanh`'s inverse, undoing the shaping in `_update_parallax`. A checkpoint
+    saves the offset and not the two states behind it, because the offset is
+    the part that was visible and the rest is derivable -- this is the deriving,
+    and it is what lets a resumed session pick the drift up where it stopped
+    rather than sliding back to the centre over the first few minutes.
+    """
+    bounded = min(max(offset, -0.999), 0.999)
+    return math.atanh(bounded) / (PARALLAX_SHAPE * PARALLAX_NORM)
+
 
 def round_up(value: int, multiple: int) -> int:
     return max(multiple, ((value + multiple - 1) // multiple) * multiple)
@@ -159,7 +197,18 @@ class Backend:
         self._du_walk = 0.0
         self._walk_rng = np.random.default_rng(self.seed ^ 0xD1FF)
         self.hue_phase = 0.0
+        # Where the viewpoint is: a unit-variance walk, and the bounded offset
+        # the compositors read off it. See `_update_parallax`.
+        #
+        # Its own noise stream, rather than the feature-size walk's. The two
+        # advance on different clocks -- that one per tick, this one per frame --
+        # so sharing would make the feature size's realised path depend on the
+        # frame rate, which is a coupling between two mechanisms that have
+        # nothing to do with each other.
+        self._parallax_rng = np.random.default_rng(self.seed ^ 0x9A17)
         self._parallax: list[list[float]] | None = None
+        self._parallax_walk: list[list[float]] = []
+        self._parallax_lag: list[list[float]] = []
 
         self.sampler = device.create_sampler(
             address_mode_u="repeat", address_mode_v="repeat",
@@ -584,24 +633,85 @@ class Backend:
         self._du_walk = max(-2.0, min(2.0, walk))
 
     def _update_parallax(self, params: Params, dt: float, count: int) -> None:
-        """Parallax offsets follow a random walk, not a sine.
+        """Where the viewpoint is, as a random walk rather than a sine.
 
         A sinusoidal drift would be periodic, and over a multi-hour session a
         periodic component is exactly what the design forbids -- the eye is very
         good at picking up a slow regular sway even when everything else is
         aperiodic.
+
+        Written in the same form as :meth:`_advance_du_walk`, and for the same
+        two reasons: the walk is kept unit-variance and dimensionless so the
+        amplitude lives with the parameter that scales it rather than being
+        split across two places, and its noise term is ``sqrt(1 - (1-theta)^2)``
+        so the spread is exactly one whatever the frame rate happens to be.
+
+        It did not used to be either of those. A fixed per-frame decay of 0.02
+        against a ``sqrt(dt)`` noise term gave the walk a stationary spread of
+        3e-4 across a travel of 1 -- which at ``render.parallax = 0.02`` is a
+        viewpoint that moves a few hundredths of a pixel and, over two hours of
+        simulation, never leaves a thousandth of its range. Motion parallax is
+        the strongest depth cue either backend has, and it was in practice
+        switched off in both of them.
+
+        The offset the compositors read is ``tanh`` of the walk, not a clamp of
+        it. Bounded either way, which is what makes ``render.parallax`` a
+        maximum rather than a typical value; but a hard clamp on a *position*
+        is a viewpoint that stops dead against a wall and stays there, where
+        this eases to a halt and turns around.
+
+        And the walk reaches the offset through one first-order lag, because an
+        OU process is white in its increments and a position with white
+        increments is a shaking image -- see :data:`PARALLAX_LAG`, which is the
+        whole of that argument and the measurements behind it.
+
+        One thing this deliberately does *not* do is tell the safety stage
+        about itself. That stage reprojects its history through the screen-space
+        velocity of the *material* (DESIGN.md §7), so a moving viewpoint leaves
+        an uncompensated residual -- and at the amplitudes reachable here the
+        residual is 0.02 px per frame against material that moves several,
+        which is three orders of magnitude below anything the limiter responds
+        to. Adding a camera term to the safety path would be complexity on the
+        one path in the application that must stay simple enough to be obviously
+        correct. It would start to matter somewhere around a pixel a frame,
+        which needs `render.parallax` near 1 -- the whole frame width of drift.
         """
-        if self._parallax is None or len(self._parallax) != count:
-            self._parallax = [[0.0, 0.0] for _ in range(count)]
-        theta = 0.02
-        sigma = params.render.parallax_drift * math.sqrt(max(dt, 1e-4))
-        for state in self._parallax:
+        if (
+            self._parallax is None
+            or len(self._parallax) != count
+            or len(self._parallax_walk) != count
+        ):
+            # Padded and truncated rather than reset, so that a backend whose
+            # record count changed keeps the viewpoints it can still use, and
+            # a restore -- which brings back the offsets and nothing else --
+            # continues from them. See `parallax_walk_for`.
+            existing = self._parallax or []
+            padded = (list(existing) + [[0.0, 0.0]] * count)[:count]
+            self._parallax = [[float(x), float(y)] for x, y in padded]
+            self._parallax_walk = [
+                [parallax_walk_for(x), parallax_walk_for(y)]
+                for x, y in self._parallax
+            ]
+            # Starting the lag at the walk is a viewpoint resuming at rest
+            # rather than at whatever speed it happened to be moving, which is
+            # the difference a restart is allowed to make.
+            self._parallax_lag = [list(pair) for pair in self._parallax_walk]
+        tau = max(params.render.parallax_tau, 1e-3)
+        dt = max(dt, 0.0)
+        theta = 1.0 - math.exp(-dt / tau)
+        sigma = math.sqrt(max(1.0 - (1.0 - theta) ** 2, 0.0))
+        lag = 1.0 - math.exp(-dt / (tau * PARALLAX_LAG))
+        for walk, lagged, offset in zip(
+            self._parallax_walk, self._parallax_lag, self._parallax
+        ):
             for axis in (0, 1):
-                state[axis] = (
-                    state[axis] * (1.0 - theta)
-                    + np.random.normal(0.0, 1.0) * sigma
+                walk[axis] = (
+                    walk[axis] * (1.0 - theta)
+                    + float(self._parallax_rng.normal()) * sigma
                 )
-                state[axis] = max(-1.0, min(1.0, state[axis]))
+                lagged[axis] += (walk[axis] - lagged[axis]) * lag
+                offset[axis] = math.tanh(
+                    PARALLAX_SHAPE * PARALLAX_NORM * lagged[axis])
 
     @staticmethod
     def _oklab_to_linear(

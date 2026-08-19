@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 
+import panelstub
 import pytest
 
 from anastomosis import config, events
@@ -208,38 +209,21 @@ def test_a_requested_event_survives_a_checkpoint():
 # ---------------------------------------------------------------------------
 
 
-class _StubApp:
-    """Just enough of Application for the panel to talk to."""
+class _StubApp(panelstub.PanelApp):
+    """The shared panel stand-in, recording what this module watches."""
 
     def __init__(self):
-        self.config = config.Config()
-        self.params = self.config.resolve()
-        self.scheduler = events.EventScheduler(seed=1)
-        self.engine = None
-        self._frame_times = [0.01]
-        self._sim_hz_scale = 1.0
+        super().__init__()
         self.requested: list[str] = []
         self.fullscreen_toggles = 0
-
-    def apply_macros(self, macros):
-        self.config.macros = macros
 
     def toggle_fullscreen(self) -> bool:
         self.fullscreen_toggles += 1
         return False
 
-    def save_config(self):
-        pass
-
-    def checkpoint_status(self):
-        return "off"
-
-    def reset_simulation(self):
-        pass
-
     def trigger_event(self, kind: str) -> bool:
         self.requested.append(kind)
-        return self.scheduler.trigger(kind, self.params.events) is not None
+        return super().trigger_event(kind)
 
 
 def _panel(monkeypatch):

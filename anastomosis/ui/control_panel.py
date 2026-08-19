@@ -24,6 +24,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from .. import config as config_module
 from .. import events as events_module
 from .. import presets as presets_module
+from .. import volume as volume_module
 from .. import window as window_module
 from ..config import Macros
 
@@ -41,6 +42,30 @@ NOTE_IDLE = "Ask for a perturbation. It builds over a minute or two."
 NOTE_AT_CAP = (
     "As many events are running as the settings allow; the buttons come back "
     "as they fade."
+)
+
+# The viewpoint drift, which is shown as the travel it produces rather than as
+# a bare 0..1. What the number means is "how far the near material slides
+# against the far material, across the width of the screen", which is a thing
+# somebody can want; "0.60" is not.
+#
+# It is also the readout that tells you when the slab is the limit rather than
+# the knob: under the volumetric backend the drift is held to what the
+# thickness justifies (`volume.PARALLAX_MAX_TANGENT`), so on a thin slab the
+# percentage stops climbing part-way along the travel. That is the control
+# saying "make the slab deeper", and it says it better than a tooltip can.
+PARALLAX_MACRO = "parallax"
+PARALLAX_PATH = "render.parallax"
+
+PARALLAX_TIP = (
+    "How far the viewpoint drifts, and how briskly.\n"
+    "The only depth cue here that comes from the scene moving rather than "
+    "from how it is shaded -- everything under Depth describes the far "
+    "material, where this one lets you see past the near material to it.\n"
+    "Under the volumetric view the slab's thickness caps it: parallax is "
+    "thickness times the viewing angle, and a thin slab seen from far enough "
+    "off-axis is just a slab seen edge-on. If the readout stops rising as you "
+    "drag, the Thickness slider above is what is holding it."
 )
 
 # The one macro that does not live in the "Adjust" group: how often events
@@ -105,7 +130,8 @@ MACRO_LABELS: list[tuple[str, str, str]] = [
     ("palette", "Palette", "Where the colour range sits on the hue circle"),
     ("brightness", "Brightness", "Overall level and the background"),
     ("filament_glow", "Filament glow", "How luminous the filaments are"),
-    ("depth", "Depth", "Parallax, focus falloff, and atmosphere"),
+    ("depth", "Depth", "Focus falloff, atmosphere, and how far the back fades"),
+    ("parallax", "Parallax", PARALLAX_TIP),
 ]
 
 # One entry per kind in ``events.EVENT_KINDS``, in the order the buttons should
@@ -119,6 +145,62 @@ EVENT_LABELS: dict[str, str] = {
     "tint": "A regional colour shift, with little structural effect",
     "rift": "The network comes apart across the region, rather than thinning",
 }
+
+
+# The thinnest and thickest a slab can be are decided by the window and the
+# config (`volume.depth_limits`), but the step is fixed: the geometry rounds the
+# thickness up to a multiple of eight so the 4-deep workgroups tile it, so the
+# slider counts in eights and never proposes a number it would not get.
+DEPTH_STEP = 8
+
+THICKNESS_TIP = (
+    "How deep the volumetric slab is, in voxels.\n"
+    "Deeper means more material between you and the far face, so occlusion, "
+    "shading and atmosphere all have more to work with. It is also what this "
+    "view's memory is spent on, which is why the cost is written beside it, "
+    "and the returns flatten before the top of the travel does -- past a "
+    "point the near structure hides the far face entirely.\n"
+    "Structural: it grows a new field rather than adjusting this one."
+)
+
+THICKNESS_FOR_LAYERED = (
+    "The layered view has no thickness to set. Switch to the volumetric one "
+    "above."
+)
+
+
+def describe_bytes(count: int) -> str:
+    """Plain language for a quantity of graphics memory.
+
+    Two significant figures and never more: this is an estimate of what a field
+    will occupy, offered so that someone moving the slider can see the cost
+    climbing, and a fourth digit would be claiming a precision it has not got.
+    """
+    if count >= 1 << 30:
+        return f"{count / (1 << 30):.1f} GB"
+    return f"{count / (1 << 20):.0f} MB"
+
+
+def describe_slab(geometry) -> str:
+    """The one line under the thickness slider: what it would build, and what
+    that costs. Shaped as a fact about a field rather than as a warning, since
+    every value the slider can reach is one the user is entitled to choose."""
+    return (
+        f"{geometry.width} x {geometry.height} x {geometry.depth} voxels, "
+        f"about {describe_bytes(geometry.field_bytes)}"
+    )
+
+
+def describe_parallax(reach: float) -> str:
+    """Plain language for how far the viewpoint travels.
+
+    As a share of the screen's width, because that is the thing the eye is
+    actually being offered: the near material slides this far against the far
+    material, and everything else about the number is arithmetic.
+    """
+    if reach < 0.005:
+        return "still"
+    return f"{reach * 100:.0f}% of width"
 
 
 def describe_interval(rate_per_hour: float) -> str:
@@ -168,6 +250,7 @@ class ControlPanel(QtWidgets.QWidget):
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._refresh_events)
         self._timer.timeout.connect(self._refresh_status)
+        self._timer.timeout.connect(self._refresh_thickness_range)
         self._timer.start(1000)
 
         self._load_from_app()
@@ -185,22 +268,33 @@ class ControlPanel(QtWidgets.QWidget):
         return box
 
     def _build_backend(self) -> QtWidgets.QWidget:
-        """How depth is drawn.
+        """How depth is drawn, and -- for the volumetric view -- how much of it.
 
-        Structural rather than perceptual, so it does not belong among the
-        sliders: nothing about it can be ramped, and choosing it grows a new
-        field rather than adjusting the one on screen. It asks before doing
-        that, for the same reason the reset button does -- except that here the
-        field being left is kept, so the answer is much less costly than it
-        looks.
+        Structural rather than perceptual, so none of these belongs among the
+        sliders: nothing about them can be ramped, and each grows a new field
+        rather than adjusting the one on screen. All three ask before doing
+        that, for the same reason the reset button does. The answers are not
+        equally costly, though, and the wording says so: switching backend
+        keeps the field it leaves, where changing either of the slab's
+        dimensions cannot -- a slab of a different shape is a differently
+        shaped field and nothing resamples one into the other.
 
-        The slab's size sits under it, and is the one place the two differ in
-        what they cost the user: there is only one volumetric field, so
-        changing its size grows a new one over the top of it rather than
-        setting it aside. That is a reset, and it asks like a reset.
+        The two dimensions are offered differently because they are different
+        kinds of choice. Detail is three named sizes, since the useful lateral
+        widths are a short list that has been costed against each other, and
+        the thing being chosen is sharpness. Thickness is a slider and a
+        separate button rather than a slider that acts on release, because
+        dragging it has to be free: the line under it prices every position,
+        and reading that is most of what the control is for.
+
+        They interact in one place worth knowing about. The thickness ceiling
+        is the shorter lateral axis, so a wider slab can also be a deeper one
+        -- which is why the slider's range is rebuilt whenever the detail
+        changes rather than fixed when the panel is built.
         """
         box = QtWidgets.QGroupBox("Depth")
-        layout = QtWidgets.QFormLayout(box)
+        grid = QtWidgets.QGridLayout(box)
+        grid.setVerticalSpacing(6)
 
         self.backend_combo = QtWidgets.QComboBox()
         for name, label, tip in BACKEND_LABELS:
@@ -208,16 +302,45 @@ class ControlPanel(QtWidgets.QWidget):
             self.backend_combo.setItemData(
                 self.backend_combo.count() - 1, tip, QtCore.Qt.ToolTipRole)
         self.backend_combo.activated.connect(self._on_backend)
-        layout.addRow("View", self.backend_combo)
+        grid.addWidget(self.backend_combo, 0, 0, 1, 3)
 
+        self.detail_label = QtWidgets.QLabel("Detail")
         self.detail_combo = QtWidgets.QComboBox()
         for name, label, tip in VOLUME_DETAIL_LABELS:
             self.detail_combo.addItem(label, name)
             self.detail_combo.setItemData(
                 self.detail_combo.count() - 1, tip, QtCore.Qt.ToolTipRole)
         self.detail_combo.activated.connect(self._on_volume_detail)
-        self.detail_label = QtWidgets.QLabel("Detail")
-        layout.addRow(self.detail_label, self.detail_combo)
+        grid.addWidget(self.detail_label, 1, 0)
+        grid.addWidget(self.detail_combo, 1, 1, 1, 2)
+
+        self.thickness_caption = QtWidgets.QLabel("Thickness")
+        self.thickness_caption.setToolTip(THICKNESS_TIP)
+        self.thickness_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.thickness_slider.setToolTip(THICKNESS_TIP)
+        self.thickness_slider.setTracking(True)
+        self.thickness_slider.valueChanged.connect(self._on_thickness)
+        self.thickness_value = QtWidgets.QLabel("—")
+        self.thickness_value.setMinimumWidth(64)
+        self.thickness_value.setAlignment(
+            QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        grid.addWidget(self.thickness_caption, 2, 0)
+        grid.addWidget(self.thickness_slider, 2, 1)
+        grid.addWidget(self.thickness_value, 2, 2)
+
+        self.thickness_note = QtWidgets.QLabel("—")
+        self.thickness_note.setWordWrap(True)
+        grid.addWidget(self.thickness_note, 3, 0, 1, 2)
+
+        self.thickness_apply = QtWidgets.QPushButton("Grow a new slab")
+        self.thickness_apply.setToolTip(
+            "Build the slab at this thickness. The current field and its saved "
+            "state are discarded."
+        )
+        self.thickness_apply.clicked.connect(self._on_thickness_apply)
+        grid.addWidget(self.thickness_apply, 3, 2)
+
+        grid.setColumnStretch(1, 1)
         return box
 
     def _sync_detail_enabled(self) -> None:
@@ -250,7 +373,9 @@ class ControlPanel(QtWidgets.QWidget):
             slider.setTracking(True)
 
             value = QtWidgets.QLabel("0.00")
-            value.setMinimumWidth(38)
+            # Wide enough for the longest readout in the column, so that
+            # dragging one slider does not shift the others sideways.
+            value.setMinimumWidth(88)
             value.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
 
             grid.addWidget(caption, row, 0)
@@ -423,7 +548,24 @@ class ControlPanel(QtWidgets.QWidget):
             return describe_interval(
                 config_module.curve_value(EVENT_RATE_MACRO, EVENT_RATE_PATH, value)
             )
+        if name == PARALLAX_MACRO:
+            return describe_parallax(self._parallax_reach(value))
         return f"{value:.2f}"
+
+    def _parallax_reach(self, value: float) -> float:
+        """How far the viewpoint will actually travel at this slider position.
+
+        The curve says what was asked for; the slab may say less. Reporting the
+        second is the point -- a control whose readout stops moving is telling
+        the user something true about why, and one that keeps climbing while
+        nothing on screen changes is lying to them.
+        """
+        asked = config_module.curve_value(PARALLAX_MACRO, PARALLAX_PATH, value)
+        if self.app.backend != "volumetric":
+            return asked
+        slab = self.app.volume_slab()
+        thickness = slab.depth / max(slab.width, 1)
+        return min(asked, volume_module.PARALLAX_MAX_TANGENT * thickness)
 
     def _load_from_app(self) -> None:
         self._updating = True
@@ -443,6 +585,62 @@ class ControlPanel(QtWidgets.QWidget):
             self.detail_combo.setCurrentIndex(index)
         self._sync_detail_enabled()
         self._updating = False
+        self._sync_thickness()
+
+    # -- the slab's thickness ----------------------------------------------
+
+    def _sync_thickness(self) -> None:
+        """Put the thickness row back where the application actually is.
+
+        The travel is asked for rather than remembered: its ceiling is the
+        shorter lateral axis of the slab, which follows the window's aspect, so
+        moving the window to a differently shaped display moves it.
+        """
+        low, high = self.app.volume_depth_limits()
+        was, self._updating = self._updating, True
+        self.thickness_slider.setRange(
+            max(low // DEPTH_STEP, 1), max(high // DEPTH_STEP, 1))
+        self.thickness_slider.setPageStep(4)
+        self.thickness_slider.setValue(
+            self.app.volume_slab().depth // DEPTH_STEP)
+        self._updating = was
+        self._refresh_thickness()
+
+    def _refresh_thickness(self) -> None:
+        """What the row says, and whether its button has anything to do."""
+        volumetric = self.app.backend == "volumetric"
+        proposed = self.app.volume_slab(self.thickness_slider.value() * DEPTH_STEP)
+        self.thickness_value.setText(f"{proposed.depth} voxels")
+        self.thickness_caption.setEnabled(volumetric)
+        self.thickness_slider.setEnabled(volumetric)
+        if not volumetric:
+            # The knob belongs to a field this backend does not have. Saying so
+            # is better than a control that silently changes nothing visible.
+            self.thickness_note.setText(THICKNESS_FOR_LAYERED)
+            self.thickness_apply.setEnabled(False)
+            return
+        self.thickness_note.setText(describe_slab(proposed))
+        self.thickness_apply.setEnabled(
+            proposed.depth != self.app.volume_slab().depth)
+
+    def _refresh_thickness_range(self) -> None:
+        """Follow a window reshape, without disturbing a change being composed.
+
+        Only the travel is touched, and only while the slider is not being
+        dragged; if the new ceiling is below where the slider sits, Qt brings
+        the value down with it, which is the right answer -- that thickness is
+        no longer one this window can be given.
+        """
+        if self.thickness_slider.isSliderDown():
+            return
+        low, high = self.app.volume_depth_limits()
+        wanted = (max(low // DEPTH_STEP, 1), max(high // DEPTH_STEP, 1))
+        current = (self.thickness_slider.minimum(), self.thickness_slider.maximum())
+        if wanted != current:
+            was, self._updating = self._updating, True
+            self.thickness_slider.setRange(*wanted)
+            self._updating = was
+            self._refresh_thickness()
 
     def _current_macros(self) -> Macros:
         macros = Macros()
@@ -463,6 +661,45 @@ class ControlPanel(QtWidgets.QWidget):
                 self._format_macro(name, slider.value() / SLIDER_STEPS)
             )
         self.app.apply_macros(macros)
+
+    def _on_thickness(self) -> None:
+        if self._updating:
+            return
+        # Dragging prices the position; it does not build anything. The button
+        # beside it is the one that touches the field.
+        self._refresh_thickness()
+
+    def _on_thickness_apply(self) -> None:
+        wanted = self.thickness_slider.value() * DEPTH_STEP
+        proposed = self.app.volume_slab(wanted)
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Change how deep the slab is",
+            f"Grow a new slab {proposed.depth} voxels deep?\n\n"
+            "A slab of a different thickness is a differently shaped field, so "
+            "the current one and its saved state are discarded, exactly as a "
+            "reset discards them. The image settles down and grows back over a "
+            f"few minutes, and the new field will hold about "
+            f"{describe_bytes(proposed.field_bytes)} on the graphics card.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            self._sync_thickness()  # put the slider back
+            return
+        try:
+            self.app.set_volume_depth(wanted)
+            self.app.save_config()
+        except Exception as exc:
+            # Nothing was discarded: the new field is built before the old one
+            # is let go, so the session is still running on the old thickness.
+            log.error("could not change the slab's thickness: %s", exc)
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Could not change the thickness",
+                f"The field is still running as it was.\n\n{exc}",
+            )
+        self._sync_thickness()
 
     def _on_preset(self) -> None:
         name = self.preset_combo.currentText()
@@ -507,6 +744,10 @@ class ControlPanel(QtWidgets.QWidget):
         except Exception as exc:
             log.error("could not switch the depth backend: %s", exc)
             QtWidgets.QMessageBox.warning(self, "Could not switch", str(exc))
+        # Unconditionally, success or failure: the combo has to end up where
+        # the application actually is, and the rows below it -- detail and
+        # thickness both -- belong to the volumetric field, so they become live
+        # or dead with this choice. `_load_from_app` does all of that.
         self._load_from_app()
 
     def _on_volume_detail(self) -> None:
@@ -538,8 +779,12 @@ class ControlPanel(QtWidgets.QWidget):
             self.app.set_volume_detail(wanted)
             self.app.save_config()
         except Exception as exc:
+            # Most likely the card refusing to allocate the wider slab, which
+            # the application treats as a reason to keep the field it has.
             log.error("could not change the level of detail: %s", exc)
             QtWidgets.QMessageBox.warning(self, "Could not change", str(exc))
+        # Also rebuilds the thickness travel, whose ceiling is the shorter
+        # lateral axis and therefore moved with the width.
         self._load_from_app()
 
     def _on_save(self) -> None:
@@ -570,6 +815,8 @@ class ControlPanel(QtWidgets.QWidget):
         except Exception as exc:
             log.error("could not reset the simulation: %s", exc)
             QtWidgets.QMessageBox.warning(self, "Could not reset", str(exc))
+        else:
+            self._sync_thickness()
 
     def _on_trigger(self, kind: str) -> None:
         try:
