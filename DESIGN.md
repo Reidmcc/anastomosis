@@ -20,7 +20,7 @@ inside a slowly breathing medium.
 | Slow, reactive colour change | Colour derived from simulation state in Oklab, with a drifting palette anchor; heavy temporal lowpass |
 | Cap 30 FPS | `rendercanvas` `update_mode="continuous", max_fps=30`, vsync on |
 | Leave GPU headroom | Sim decoupled from render (sim ~15 Hz, render 30 Hz, motion-compensated interpolation); sim at fraction of display resolution; explicit frame budget governor |
-| Adjustable parameters | TOML config as source of truth, hot-reloaded; ~6 macro knobs over ~40 primitives; presets |
+| Adjustable parameters | TOML config as source of truth, hot-reloaded; ~8 macro knobs over ~40 primitives; presets |
 
 **Target hardware:** RTX 3080, 2560×1440. Sized in §8.1; 4K is explicitly not a
 requirement, which is what makes a native-resolution front layer affordable.
@@ -237,6 +237,19 @@ reschedules the next automatic arrival: exponential inter-arrivals are
 memoryless, and letting a click move the next one would make the stream
 predictable from the user's own actions, which is the property this section
 exists to prevent.
+
+**Arrival rate is adjustable** from the same panel, as the `event_rate` macro
+(§9) — 0.5 to 20 events/hour, roughly one every two hours to one every three
+minutes, with the centre of the travel at the ~8-minute mean this section
+specifies. It moves `events.rate_per_hour` and nothing else, which is what makes
+it safe to expose without a ceiling of its own: amplitude, radius, envelope
+timings and `max_concurrent` are all untouched, so the fast end of the knob is a
+field that spends more of its time inside an event rather than one perturbed
+harder. Every non-punctuation constraint above holds identically at both ends,
+and the concurrency cap still bounds what can overlap. The readout is in
+minutes between arrivals rather than events per hour, and hedged — "about one
+every 8 min" — because the mean is the only thing a Poisson stream lets you
+promise.
 
 ### 4.4 Staying on the live band — three findings from implementation
 
@@ -1394,12 +1407,24 @@ card, so the depth-backend decision can be made on aesthetics rather than cost.
 
 | Macro | Effect |
 |---|---|
-| Intensity | overall activity, contrast, agent count, event rate |
+| Intensity | overall activity, contrast, agent count |
 | Scale | feature size across all layers |
 | Tempo | sim rate, flow strength, drift rates |
 | Palette | hue anchor, hue rotation rate, chroma cap |
 | Brightness | luminance ceiling and exposure target |
 | Depth | parallax strength, layer separation, DOF, atmospheric falloff |
+| Event rate | mean arrival interval of the slow events, and nothing else (§4.3) |
+
+Event rate was originally folded into intensity, and separating them is the one
+change to this table worth arguing for. The two answer different questions. How
+much material is on screen and how often it is disturbed are independent things
+to want — a dense field left alone for an hour at a time is coherent, and so is
+a sparse one that keeps being interrupted — and while they were one knob, nobody
+could ask for either. It is also the macro most likely to be adjusted *for* a
+state rather than for a look: "not right now" is a thing to be able to say to
+the events without also dimming the network. Presets carry the rate their
+intensity used to imply, so the split moved nothing; configs written before it
+have their old rate recovered from their intensity on load, for the same reason.
 
 Each macro drives many primitives through a curve defined in the config. Presets
 (named macro settings) are first-class — this is a regulation tool, so *quickly

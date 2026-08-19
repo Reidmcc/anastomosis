@@ -66,6 +66,19 @@ over a minute or two, holds, and fades, and it counts against the same limit on
 how many can run at once — so the buttons go quiet while that limit is reached,
 and come back as events fade. Nothing here cuts.
 
+Above the buttons, **How often** sets how frequently those events arrive on
+their own, from about one every two hours at the left to about one every three
+minutes at the right; the reading beside it tells you where you are in plain
+minutes rather than a number. It lives here rather than with the other knobs
+because it belongs with the buttons that ask for the same thing by hand.
+
+This is a timing control and nothing more. An event is the same size, the same
+strength and the same length however often they come, so the fast end is a field
+that spends more of its time inside something happening — not one that gets hit
+harder. Arrivals stay random, too: what the control sets is the *average* gap, so
+any particular wait can be a good deal shorter or longer, and the next one is
+never predictable from the last.
+
 Closing the render window quits: the field is saved, the control panel closes
 with it, and the process ends and gives you your terminal back. `Ctrl-C` in that
 terminal, and `kill` — which is what logging out sends — end the same way, with
@@ -117,17 +130,18 @@ slew limiter as everything else, so it grows in rather than cutting.
 
 ## Adjusting it
 
-Seven knobs, all 0–1:
+Eight knobs, all 0–1:
 
 | Knob | What it changes |
 |---|---|
-| **Intensity** | How much is happening — network density, event rate |
+| **Intensity** | How much is happening — network density, contrast, colour activity |
 | **Scale** | Feature size, from fine filaments to broad forms |
 | **Tempo** | Speed of flow, drift, and colour rotation |
 | **Palette** | Where the colour range sits on the hue circle |
 | **Brightness** | Overall level and the background |
 | **Filament glow** | How luminous the filaments are against the ground |
 | **Depth** | Parallax, focus falloff, and atmosphere |
+| **How often** | How frequently events arrive on their own — under **Events**, not with the rest |
 
 Presets: `default`, `quiet`, `dense`, `deep`, `ember`, `luminous`, `current`.
 All of them keep a dark ground.
@@ -146,6 +160,7 @@ preset_name = "default"
 [macros]
 intensity = 0.5
 filament_glow = 0.45
+event_rate = 0.5
 
 [overrides]
 # Pin individual primitives by dotted path; these beat the macros.

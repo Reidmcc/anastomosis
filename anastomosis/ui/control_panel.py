@@ -21,6 +21,7 @@ from dataclasses import fields
 
 from PySide6 import QtCore, QtWidgets
 
+from .. import config as config_module
 from .. import events as events_module
 from .. import presets as presets_module
 from ..config import Macros
@@ -41,9 +42,17 @@ NOTE_AT_CAP = (
     "as they fade."
 )
 
+# The one macro that does not live in the "Adjust" group: how often events
+# arrive belongs beside the buttons that ask for one, not in a column of
+# sliders about how the image looks. It is an ordinary macro in every other
+# respect -- saved, ramped, carried by presets -- and `_current_macros` finds
+# it through `self.sliders` like any other.
+EVENT_RATE_MACRO = "event_rate"
+EVENT_RATE_PATH = "events.rate_per_hour"
+
 # Ordered for the panel, with a plain-language description of what each does.
 MACRO_LABELS: list[tuple[str, str, str]] = [
-    ("intensity", "Intensity", "How much is happening: density, event rate"),
+    ("intensity", "Intensity", "How much is happening: density, contrast, colour"),
     ("scale", "Scale", "Feature size, from fine filaments to broad forms"),
     ("tempo", "Tempo", "Speed of flow, drift, and colour rotation"),
     ("palette", "Palette", "Where the colour range sits on the hue circle"),
@@ -63,6 +72,23 @@ EVENT_LABELS: dict[str, str] = {
     "tint": "A regional colour shift, with little structural effect",
     "rift": "The network comes apart across the region, rather than thinning",
 }
+
+
+def describe_interval(rate_per_hour: float) -> str:
+    """Plain language for a mean arrival rate.
+
+    Events per hour is the wrong unit for the question the slider answers,
+    which is how long the field goes between things happening. The mean is the
+    only honest summary of that: arrivals are Poisson, so any particular gap
+    can be a good deal shorter or longer than this, and "about" is carrying
+    that rather than being polite.
+    """
+    minutes = 60.0 / max(rate_per_hour, 1e-6)
+    if minutes < 1.5:
+        return "about one a minute"
+    if minutes < 90.0:
+        return f"about one every {minutes:.0f} min"
+    return f"about one every {minutes / 60.0:.1f} h"
 
 
 class ControlPanel(QtWidgets.QWidget):
@@ -138,18 +164,31 @@ class ControlPanel(QtWidgets.QWidget):
         return box
 
     def _build_events(self) -> QtWidgets.QWidget:
-        """Buttons that ask the scheduler for an event of a given kind.
+        """How often events arrive, and buttons that ask for one now.
 
-        These do not bypass anything. The request goes to the same scheduler
-        the simulation uses, which builds the event exactly as it would have
-        built its own -- same envelope, same size cap, same concurrency limit --
-        so pressing one chooses *when* an event arrives and *which* kind, and
-        nothing else. The result is a perturbation that takes a minute or two to
-        come up, not a button that does something to the picture.
+        The buttons do not bypass anything. The request goes to the same
+        scheduler the simulation uses, which builds the event exactly as it
+        would have built its own -- same envelope, same size cap, same
+        concurrency limit -- so pressing one chooses *when* an event arrives and
+        *which* kind, and nothing else. The result is a perturbation that takes
+        a minute or two to come up, not a button that does something to the
+        picture.
+
+        The slider above them is the same restraint applied to the automatic
+        stream: it moves the mean interval between arrivals and reaches nothing
+        else. Every property that keeps an event from reading as punctuation --
+        the raised-cosine envelope, the radius cap, the amplitude, the limit on
+        how many run at once -- is untouched by it, so the fast end of the
+        travel is a field that spends more of its time inside an event, never
+        one that gets hit harder. That is why this one needs no ceiling of its
+        own, where a control over an event's *size* would have to answer to
+        `SAFETY_CEILINGS` before it could be exposed at all.
         """
         box = QtWidgets.QGroupBox("Events")
         column = QtWidgets.QVBoxLayout(box)
         column.setSpacing(6)
+
+        column.addLayout(self._build_event_rate())
 
         grid = QtWidgets.QGridLayout()
         grid.setSpacing(6)
@@ -176,6 +215,41 @@ class ControlPanel(QtWidgets.QWidget):
         self.event_note.setWordWrap(True)
         column.addWidget(self.event_note)
         return box
+
+    def _build_event_rate(self) -> QtWidgets.QLayout:
+        """The "how often" row: caption, slider, and what it currently means.
+
+        The readout is an interval in plain language rather than the 0..1 the
+        other macros show, because a bare number cannot answer the question
+        being asked here. "0.34" is not something anyone can want; "about one
+        every 14 min" is.
+        """
+        tip = (
+            "How often events arrive on their own.\n"
+            "This changes only the timing -- an event is the same size, "
+            "strength and length whatever this is set to."
+        )
+        row = QtWidgets.QHBoxLayout()
+        caption = QtWidgets.QLabel("How often")
+        caption.setToolTip(tip)
+
+        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setRange(0, SLIDER_STEPS)
+        slider.setToolTip(tip)
+        slider.valueChanged.connect(self._on_slider)
+        slider.setTracking(True)
+
+        value = QtWidgets.QLabel("—")
+        value.setMinimumWidth(132)
+        value.setToolTip(tip)
+        value.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+        row.addWidget(caption)
+        row.addWidget(slider, 1)
+        row.addWidget(value)
+        self.sliders[EVENT_RATE_MACRO] = slider
+        self.values[EVENT_RATE_MACRO] = value
+        return row
 
     def _build_status(self) -> QtWidgets.QWidget:
         box = QtWidgets.QGroupBox("Status")
@@ -220,13 +294,28 @@ class ControlPanel(QtWidgets.QWidget):
 
     # -- state --------------------------------------------------------------
 
+    def _format_macro(self, name: str, value: float) -> str:
+        """What the label beside a slider says at this position.
+
+        The event rate is asked what it resolves to rather than being shown
+        raw, and asked of `config` rather than of the live parameters: those are
+        mid-ramp and would show the number crawling towards the one the hand
+        just set, which reads as lag in the control rather than as the smooth
+        transition it actually is.
+        """
+        if name == EVENT_RATE_MACRO:
+            return describe_interval(
+                config_module.curve_value(EVENT_RATE_MACRO, EVENT_RATE_PATH, value)
+            )
+        return f"{value:.2f}"
+
     def _load_from_app(self) -> None:
         self._updating = True
         macros = self.app.config.macros
         for name, slider in self.sliders.items():
             value = float(getattr(macros, name))
             slider.setValue(int(round(value * SLIDER_STEPS)))
-            self.values[name].setText(f"{value:.2f}")
+            self.values[name].setText(self._format_macro(name, value))
         index = self.preset_combo.findText(self.app.config.preset_name)
         if index >= 0:
             self.preset_combo.setCurrentIndex(index)
@@ -247,7 +336,9 @@ class ControlPanel(QtWidgets.QWidget):
             return
         macros = self._current_macros()
         for name, slider in self.sliders.items():
-            self.values[name].setText(f"{slider.value() / SLIDER_STEPS:.2f}")
+            self.values[name].setText(
+                self._format_macro(name, slider.value() / SLIDER_STEPS)
+            )
         self.app.apply_macros(macros)
 
     def _on_preset(self) -> None:
@@ -258,8 +349,9 @@ class ControlPanel(QtWidgets.QWidget):
             return
         self._updating = True
         for field_name, slider in self.sliders.items():
-            slider.setValue(int(round(float(getattr(macros, field_name)) * SLIDER_STEPS)))
-            self.values[field_name].setText(f"{getattr(macros, field_name):.2f}")
+            value = float(getattr(macros, field_name))
+            slider.setValue(int(round(value * SLIDER_STEPS)))
+            self.values[field_name].setText(self._format_macro(field_name, value))
         self._updating = False
         self.app.config.preset_name = name
         # Ramped like any other change, so switching presets is a slow

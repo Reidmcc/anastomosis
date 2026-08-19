@@ -2,7 +2,7 @@
 
 Two tiers, per DESIGN.md §9:
 
-* **Macros** — seven knobs in 0..1, the normal interface.
+* **Macros** — eight knobs in 0..1, the normal interface.
 * **Primitives** — the ~50 values the shaders actually read.
 
 Macros drive primitives through the curve table in :data:`MACRO_CURVES`. The
@@ -439,7 +439,7 @@ class Params:
 
 @dataclass
 class Macros:
-    """The seven knobs the control panel exposes. All in 0..1."""
+    """The knobs the control panel exposes. All in 0..1."""
 
     intensity: float = 0.50
     scale: float = 0.50
@@ -448,6 +448,12 @@ class Macros:
     brightness: float = 0.35
     filament_glow: float = 0.45
     depth: float = 0.60
+    # How often the scheduler's own events arrive. Its own knob rather than a
+    # part of `intensity`, because the two are not the same question: a dense,
+    # busy field that is left alone for an hour at a time is a coherent thing
+    # to want, and so is a sparse one that keeps being interrupted. Coupling
+    # them meant nobody could ask for either. See `MACRO_CURVES`.
+    event_rate: float = 0.50
 
 
 # --------------------------------------------------------------------------
@@ -462,7 +468,6 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("agents.deposit", 0.009, 0.028, 1.0),
         ("agents.fusion_bias", 0.35, 0.72, 1.0),
         ("reaction.trail_feed_gain", 0.012, 0.034, 1.0),
-        ("events.rate_per_hour", 2.5, 14.0, 1.3),
         ("render.chroma_activity_gain", 3.5, 8.0, 1.0),
         ("pigment.inject_rate", 0.032, 0.085, 1.0),
     ],
@@ -513,6 +518,24 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("render.fog_amount", 0.18, 0.62, 1.0),
         ("render.depth_dim", 0.78, 0.38, 1.0),
         ("render.depth_desat", 0.72, 0.30, 1.0),
+    ],
+    # Mean arrival rate of the scheduler's own events, and nothing else: this
+    # knob moves *when* perturbations come, never what they do when they get
+    # here. Amplitude, radius, envelope and the concurrency cap are all
+    # untouched, so turning the rate up cannot make an event punctuate; it can
+    # only make the field spend more of its time inside one (DESIGN.md 4.3).
+    #
+    # The span is wide on purpose -- 0.5/hour is roughly one every two hours,
+    # 20/hour roughly one every three minutes -- because this is the knob whose
+    # useful setting varies most between "background presence" and "something
+    # to watch". gamma 1.5 puts the interesting end where the hand is: the
+    # centre of the travel resolves to 7.4/hour -- the ~8-minute mean interval
+    # 4.3 describes, and within a couple of per cent of the 7.5/hour
+    # `EventParams.rate_per_hour` has always defaulted to -- so an untouched
+    # slider is the setting the field was tuned at, and the top half of the
+    # travel covers everything faster than that.
+    "event_rate": [
+        ("events.rate_per_hour", 0.5, 20.0, 1.5),
     ],
 }
 
@@ -616,6 +639,26 @@ def set_path(obj: Any, path: str, value: Any) -> None:
 
 def _lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
+
+
+def curve_value(macro: str, path: str, value: float) -> float:
+    """The value ``path`` takes when the macro driving it sits at ``value``.
+
+    One curve, evaluated on its own rather than by building a whole
+    :class:`Params`. The control panel needs this to say what a slider position
+    *means* -- "about one every eight minutes" rather than "0.50" -- and the
+    live parameters cannot answer that, because they are ramping and would show
+    the value catching up rather than the one just asked for.
+
+    The macro curve only. An explicit override of the same path beats the macro
+    in :meth:`Config.resolve` and is not visible here, which is the honest
+    answer for a slider readout: the slider is not what is deciding then.
+    """
+    value = min(1.0, max(0.0, float(value)))
+    for entry_path, lo, hi, gamma in MACRO_CURVES.get(macro, ()):
+        if entry_path == path:
+            return _lerp(lo, hi, value**gamma if gamma != 1.0 else value)
+    raise KeyError(f"macro {macro!r} does not drive {path!r}")
 
 
 # --------------------------------------------------------------------------
@@ -789,7 +832,7 @@ _HEADER = """\
 # Edit and save: changes are hot-reloaded, and every parameter is ramped
 # smoothly rather than stepped, so it is safe to adjust while running.
 #
-# [macros] are the normal interface -- seven knobs, all 0..1.
+# [macros] are the normal interface -- eight knobs, all 0..1.
 # [overrides] pins individual primitive parameters by dotted path, e.g.
 #   "render.filament_luma" = 0.42
 # Overrides take precedence over macros.
@@ -798,6 +841,27 @@ _HEADER = """\
 # DESIGN.md §7); an out-of-range value is corrected with a warning rather
 # than rejected.
 """
+
+
+# The arrival rate used to be one of the primitives `intensity` drove, over the
+# curve ``lerp(2.5, 14.0, intensity ** 1.3)``. A config file written before the
+# rate became a knob of its own says nothing about it and yet implies one, and
+# someone who turned the intensity down in order to be left alone should not
+# find the field interrupting them half again as often because they upgraded.
+# So the old curve is inverted here, once, for a file that predates the split.
+_LEGACY_INTENSITY_RATE = (2.5, 14.0, 1.3)
+
+
+def _event_rate_from_intensity(intensity: float) -> float:
+    """The `event_rate` a pre-split file meant by its `intensity`."""
+    lo_was, hi_was, gamma_was = _LEGACY_INTENSITY_RATE
+    was = _lerp(lo_was, hi_was, min(1.0, max(0.0, float(intensity))) ** gamma_was)
+    for path, lo, hi, gamma in MACRO_CURVES["event_rate"]:
+        if path != "events.rate_per_hour" or hi == lo:
+            continue
+        t = min(1.0, max(0.0, (was - lo) / (hi - lo)))
+        return t ** (1.0 / gamma)
+    return Macros().event_rate
 
 
 def load(path: str | Path) -> Config:
@@ -812,11 +876,20 @@ def load(path: str | Path) -> Config:
         data = tomllib.load(fh)
 
     macros = Macros()
-    for key, value in (data.get("macros") or {}).items():
+    table = data.get("macros") or {}
+    for key, value in table.items():
         if hasattr(macros, key):
             setattr(macros, key, min(1.0, max(0.0, float(value))))
         else:
             log.warning("unknown macro %r in %s, ignoring", key, path)
+
+    if "event_rate" not in table and "intensity" in table:
+        macros.event_rate = _event_rate_from_intensity(macros.intensity)
+        log.info(
+            "%s predates the event-rate macro; carrying its intensity of %.2f "
+            "across as an event rate of %.2f",
+            path, macros.intensity, macros.event_rate,
+        )
 
     overrides = {str(k): v for k, v in (data.get("overrides") or {}).items()}
     return Config(
