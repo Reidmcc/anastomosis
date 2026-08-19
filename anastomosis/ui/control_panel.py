@@ -19,11 +19,12 @@ import logging
 import time
 from dataclasses import fields
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from .. import config as config_module
 from .. import events as events_module
 from .. import presets as presets_module
+from .. import window as window_module
 from ..config import Macros
 
 log = logging.getLogger(__name__)
@@ -114,6 +115,8 @@ class ControlPanel(QtWidgets.QWidget):
         layout.addWidget(self._build_status())
         layout.addStretch(1)
         layout.addLayout(self._build_buttons())
+
+        self._bind_fullscreen_key()
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._refresh_events)
@@ -291,6 +294,23 @@ class ControlPanel(QtWidgets.QWidget):
         hide.clicked.connect(self.showMinimized)
         row.addWidget(hide)
         return row
+
+    def _bind_fullscreen_key(self) -> None:
+        """F11 here too, because this is where the keyboard usually is.
+
+        The render window binds F11 itself, but it is the window the user is
+        deliberately *not* interacting with -- it sits on the other display and
+        never takes focus. Pressing F11 while adjusting a slider should still
+        mean what it means everywhere else, so the panel forwards it to the
+        same toggle rather than swallowing it.
+        """
+        key = QtGui.QKeySequence(window_module.FULLSCREEN_KEY)
+        shortcut = QtGui.QShortcut(key, self)
+        shortcut.activated.connect(self._on_fullscreen)
+        self._fullscreen_shortcut = shortcut
+
+    def _on_fullscreen(self) -> None:
+        self.app.toggle_fullscreen()
 
     # -- state --------------------------------------------------------------
 

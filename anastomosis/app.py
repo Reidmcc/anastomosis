@@ -44,6 +44,7 @@ from . import config as config_module
 from . import device as device_module
 from . import engine as engine_module
 from . import events as events_module
+from . import window as window_module
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +109,9 @@ class Application:
         self.panel = None
         self.loop = None
         self.have_qt = False
+        # Set up with the window, in ``_install_fullscreen``. None means this
+        # backend has no window that can be made fullscreen.
+        self._fullscreen = None
 
         # Shutdown state. Once ``_stopped`` is set the world has been saved and
         # taken down; nothing may tick, draw or checkpoint again.
@@ -200,22 +204,78 @@ class Application:
 
         self._start_hot_reload()
         self._watch_for_close()
-        if self.options.fullscreen:
-            self._try_fullscreen()
+        self._install_fullscreen()
 
-    def _try_fullscreen(self) -> None:
-        # Borderless windowed fullscreen only. Exclusive fullscreen can stall the
-        # compositor on the *other* display and steal focus, which defeats the
-        # whole point of running this on a secondary monitor.
-        for name in ("set_fullscreen", "_set_fullscreen"):
-            method = getattr(self.canvas, name, None)
-            if callable(method):
-                try:
-                    method(True)
-                    return
-                except Exception as exc:
-                    log.debug("fullscreen via %s failed: %s", name, exc)
-        log.info("fullscreen not supported by this backend; resize manually")
+    # -- fullscreen ---------------------------------------------------------
+
+    def _install_fullscreen(self) -> None:
+        """Pick the fullscreen strategy, bind F11, and honour ``--fullscreen``.
+
+        The hotkey is bound whether or not a strategy was found, so that a
+        backend without one says so when the key is pressed rather than
+        silently doing nothing.
+        """
+        self._fullscreen = window_module.controller_for(self.canvas)
+        if self._fullscreen is None:
+            log.info(
+                "fullscreen is not available on this backend; resize manually"
+            )
+        else:
+            log.debug("fullscreen via the %s backend", self._fullscreen.name)
+
+        try:
+            self.canvas.add_event_handler(self._on_key, "key_down")
+        except Exception as exc:  # pragma: no cover - a canvas with no events
+            log.debug("could not bind the fullscreen hotkey: %s", exc)
+
+        if self.options.fullscreen:
+            self.set_fullscreen(True)
+
+    def _on_key(self, event) -> None:
+        """F11 toggles borderless fullscreen.
+
+        Modifiers are not checked: F11 is not a prefix for anything else here,
+        and a user reaching for it with a stray Shift held down means the same
+        thing by it either way.
+        """
+        if event.get("key") == window_module.FULLSCREEN_KEY:
+            self.toggle_fullscreen()
+
+    @property
+    def fullscreen(self) -> bool:
+        return self._fullscreen is not None and self._fullscreen.is_fullscreen()
+
+    def toggle_fullscreen(self) -> bool:
+        return self.set_fullscreen(not self.fullscreen)
+
+    def set_fullscreen(self, enabled: bool) -> bool:
+        """Go borderless fullscreen, or come back. Returns the state reached.
+
+        Only the window changes. The canvas reports its new size on the next
+        frame and ``_follow_canvas_size`` rebuilds the presentation chain from
+        there, exactly as it does for a dragged window edge -- so a toggle
+        costs the field nothing, however long it has been growing.
+
+        Never raises. A window manager that refuses the state change is a
+        disappointment, not a reason to end a session that may have been
+        running for days.
+        """
+        if self._fullscreen is None:
+            log.info(
+                "fullscreen is not available on this backend; resize the "
+                "window manually"
+            )
+            return False
+        try:
+            self._fullscreen.set(enabled)
+        except Exception as exc:
+            log.warning(
+                "could not %s fullscreen: %s",
+                "enter" if enabled else "leave", exc,
+            )
+            return self.fullscreen
+        log.info("fullscreen %s", "on" if self.fullscreen else "off")
+        return self.fullscreen
 
     # -- hot reload ---------------------------------------------------------
 
