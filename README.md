@@ -40,6 +40,7 @@ anastomosis                          # windowed, 1280x720
 anastomosis --fullscreen             # borderless fullscreen
 anastomosis --preset quiet           # start from a named preset
 anastomosis --backend volumetric     # the raymarched slab instead of layers
+anastomosis --volume-detail fine     # a sharper slab, if the card has room
 anastomosis --width 2560 --height 1440
 ```
 
@@ -162,14 +163,51 @@ field, so you can try the other one and come back to find yours where you left
 it. Set it permanently with `backend = "volumetric"` in the config file, or for
 one session with `--backend`.
 
+### How finely the volume is simulated
+
+The lateral coarseness above is the volumetric backend's one real weakness, and
+the **Detail** selector under **Depth** is the knob for it. Three sizes, here at
+the default thickness:
+
+| Detail | Slab at 16:9 | Filament width at 1440p | Memory | Simulation cost |
+|---|---|---|---|---|
+| **Standard** | 512 × 288 × 48 | ~5 px | ~650 MB | 1× |
+| **Fine** | 768 × 432 × 48 | ~3.3 px | ~1.5 GB | ~2.3× |
+| **Finest** | 1024 × 576 × 48 | ~2.5 px | ~2.7 GB | ~4× |
+
+Wider is sharper rather than merely bigger: the thickness is a separate knob and
+this one leaves it alone, while the height follows your window, so the voxels
+stay cubic and a filament — which is a fixed handful of voxels across — lands on
+proportionally fewer display pixels. If 1080p looks soft and 1440p softer, this
+is the setting that answers it.
+
+What it costs is the simulation, and only the simulation. Drawing a frame costs
+the same at all three sizes: the raymarch is one ray per output pixel and its
+step count follows the slab's *thickness*, which this setting does not touch. So
+the extra work is the per-tick passes over the volume, which scale with the
+voxel count — the square of the width ratio — along with memory. On the RTX 3080
+of DESIGN.md §8.1 the standard size sits around 3% of the card's bandwidth, so
+even the finest stays inside roughly a tenth of it.
+
+If **Finest** runs long on your card, the cheapest thing to give back is the
+tick rate — `sim_hz = 14` instead of 20. The interpolator hides it completely,
+which is why the budget governor throttles that and nothing else.
+
+Set it with `volume_detail = "fine"` in the config file, or `--volume-detail`
+for one session. Like the backend it is structural, but unlike the backend it
+cannot keep what it is leaving: there is one volumetric field, and a slab of a
+different width is a different field. So changing it grows a new one from
+seeds — the panel asks first, and the **Depth** status line tells you when a
+saved field is still running at a size you have moved away from.
+
 ### How thick the slab is
 
 Under **Volumetric**, the **Thickness** slider below the selector sets how many
 voxels deep the slab is — from 8 up to however many the shorter of its other two
-axes has, which is 288 on a 16:9 display. The default 48 is a slab a ray passes
-one or two filaments through, so the depth cues are all present but quiet; more
-depth means more material between you and the far face, and so more occlusion,
-more shading and more atmosphere.
+axes has, which is 288 on a 16:9 display at **Standard** detail. The default 48
+is a slab a ray passes one or two filaments through, so the depth cues are all
+present but quiet; more depth means more material between you and the far face,
+and so more occlusion, more shading and more atmosphere.
 
 Two things to know before moving it. It is what this view's memory is spent on,
 linearly — about 650 MB at the default and about 3.9 GB at the ceiling — and the
@@ -183,6 +221,11 @@ Changing it grows a new field — a slab of a different depth is a differently
 shaped field, and unlike a backend switch there is nothing to come back to — so
 the button beside the slider asks first, and the image settles down and grows
 back over a few minutes. The setting is saved, so the next launch opens at it.
+
+The two settings meet in one place: the thickness ceiling is the shorter lateral
+axis, so a wider slab can also be a deeper one — at **Finest** the ceiling rises
+from 288 to 576. Memory is the product of both, so if you raise both, read the
+line under the thickness slider before committing.
 
 ## Adjusting it
 
@@ -245,6 +288,7 @@ slow transition rather than a cut.
 ```toml
 preset_name = "default"
 backend = "layered"          # or "volumetric"
+volume_detail = "standard"   # "fine" or "finest"; volumetric only
 
 [macros]
 intensity = 0.5
@@ -336,7 +380,9 @@ unrecoverable:
   carries structure through depth, that the flash-safety bound holds under it
   too, that switching backends keeps both fields, and that changing the slab's
   thickness grows a new field without moving anything the march is calibrated
-  with.
+  with. Also the three lateral sizes: that each grows the shape it names, that
+  a wider one is sharper rather than merely bigger, and that changing size
+  regrows the field at the new width rather than the old.
 
 ## Layout
 

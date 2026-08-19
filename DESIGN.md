@@ -1391,6 +1391,34 @@ timescale, is the same under both. Memory is the other real cost: ~650 MB of
 `rgba16float` against ~90 MB for the 1440p stack, and up to ~3.9 GB if the
 thickness is taken to its ceiling.
 
+**That loss is a budget decision, not a structural one, and it is exposed as a
+setting.** `config.VOLUME_DETAIL` offers the slab at 512, 768 or 1024 voxels
+across — `volume_detail = "standard" | "fine" | "finest"` — and the width is the
+only thing that moves: the thickness is its own knob and this leaves it where
+it is, while the height keeps following the window, so the voxels stay cubic and
+every argument above survives unchanged. What changes is how many display pixels
+a filament covers, which at 1440p goes from about five to about two and a half.
+
+The two slab settings are independent but not unrelated, and the one coupling is
+in the right direction: the thickness ceiling is the shorter lateral axis, so a
+wider slab is also allowed to be a deeper one — 288 voxels at `standard`, 576 at
+`finest`. Memory is the product of both, which is why the panel prices the pair
+rather than either alone.
+
+The asymmetry in what that costs is the reason it is worth offering. Voxel count
+goes with the square of the width, and three things follow it: the per-tick
+passes over the volume, the interpolation pass, and memory — so `finest` is ~4×
+the simulation of `standard`, at ~2.7 GB at the default thickness. The **render** side does not follow it
+at all. The march is one ray per output pixel and its step count is tied to the
+slab's *thickness*, which this setting does not touch, so a 1440p frame costs
+the same at every size and the 5.3 Gsamples/s above is unchanged. Against the ~3% of bandwidth the sim costs at the
+standard size, even `finest` leaves the headroom check of §8.1 intact.
+
+Unlike the backend choice this cannot preserve what it replaces: there is one
+volumetric field, and a slab of a different width is not the same field
+presented differently — every voxel of it is a different voxel. So a size change
+is a reset, and is presented to the user as one.
+
 ---
 
 ## 6. Colour

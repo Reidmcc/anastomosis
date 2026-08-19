@@ -31,10 +31,14 @@ SIZE = (2560, 1440)
 class PanelApp:
     """Just enough of Application for the panel to talk to."""
 
-    def __init__(self, backend: str = "layered") -> None:
-        self.config = config_module.Config(backend=backend)
+    def __init__(
+        self, backend: str = "layered", volume_detail: str = "standard"
+    ) -> None:
+        self.config = config_module.Config(
+            backend=backend, volume_detail=volume_detail)
         self.params = self.config.resolve()
         self.backend = backend
+        self.volume_detail = config_module.normalise_volume_detail(volume_detail)
         self.scheduler = events_module.EventScheduler(seed=1)
         self.engine = None
         self._frame_times = [0.01]
@@ -85,6 +89,19 @@ class PanelApp:
         self.params.volume.depth = int(depth)
         self.config.overrides["volume.depth"] = int(depth)
         return int(depth)
+
+    def set_volume_detail(self, name: str) -> bool:
+        wanted = config_module.normalise_volume_detail(name)
+        if wanted == self.volume_detail:
+            return False
+        self.volume_detail = wanted
+        self.config.volume_detail = wanted
+        # The width feeds the slab the thickness row prices, so the stub has to
+        # carry it into the parameters the way the application does -- a stub
+        # that only recorded the name would let a width/thickness interaction
+        # pass a test it should fail.
+        self.params.volume.width = self.config.resolve().volume.width
+        return True
 
     # -- the window ---------------------------------------------------------
 

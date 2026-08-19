@@ -15,8 +15,11 @@ really does leave the field alone, and that it is dead under a backend with no
 slab to reshape are properties of the wiring rather than of any function, so
 they are checked through the wiring.
 
-These import the panel module, which needs PySide6, but never construct a
-widget -- so they run headless and cost nothing.
+Most import the panel module, which needs PySide6, but never construct a
+widget -- so they run headless and cost nothing. The few that do build a panel
+hand it `panelstub.PanelApp`, which is the one stand-in every panel test
+shares: what is being checked there is the panel's own wiring, and a real
+application would drag a GPU device in behind it.
 """
 
 from __future__ import annotations
@@ -100,9 +103,101 @@ def test_the_readout_agrees_with_the_simulation_across_the_whole_travel():
         )
 
 
-# ---------------------------------------------------------------------------
-# The slab's thickness
-# ---------------------------------------------------------------------------
+def test_every_slab_size_has_a_control():
+    """A size the config offers and the panel does not is a size nobody finds.
+
+    The panel builds its list from `VOLUME_DETAIL_LABELS` and the application
+    reads `config.VOLUME_DETAIL`, so the two drifting apart is invisible until
+    somebody opens the panel looking for a size that is missing -- or picks
+    one the application does not know.
+    """
+    labelled = [name for name, _label, _tip in control_panel.VOLUME_DETAIL_LABELS]
+    assert labelled == list(config.VOLUME_DETAIL), (
+        "the panel's slab sizes and the config's have drifted apart"
+    )
+    for name, label, tip in control_panel.VOLUME_DETAIL_LABELS:
+        # The voxel count belongs in the label: it is the number anyone
+        # comparing these against a GPU budget will be looking for.
+        assert str(config.VOLUME_DETAIL[name]) in label, label
+        assert tip.strip(), f"slab size {name!r} has no explanation"
+
+
+def test_the_slab_size_control_follows_the_backend(monkeypatch):
+    """It is greyed out rather than hidden under the layered view.
+
+    There is no slab to size there, but a control that vanishes is harder to
+    find again than one that is visible and says why it is unavailable.
+    """
+    app, panel = _detail_panel(monkeypatch, None)
+    assert panel.detail_combo.isEnabled()
+    assert panel.detail_combo.currentData() == "fine"
+
+    app.backend = "layered"
+    panel._load_from_app()
+    assert not panel.detail_combo.isEnabled()
+    assert "volumetric" in panel.detail_combo.toolTip()
+
+    app.backend = "volumetric"
+    panel._load_from_app()
+    assert panel.detail_combo.isEnabled()
+    panel.close()
+
+
+def test_the_status_line_says_when_a_saved_field_is_not_the_chosen_size(
+    monkeypatch,
+):
+    """A resumed slab keeps the size it grew at, so the combo can lead.
+
+    Without this the user picks a size in the config, relaunches, sees the old
+    picture and the new name, and has no way to tell that the setting landed
+    and is simply waiting for a reset.
+    """
+    import types
+
+    app, panel = _detail_panel(monkeypatch, None)
+    app.engine = types.SimpleNamespace(
+        tick_count=10,
+        geometry=types.SimpleNamespace(
+            width=512, describe=lambda: "512x288x48 voxels (7.1 M)"),
+        read_stats=lambda: {"mean_v": 0.1, "mean_activity": 0.001},
+    )
+
+    # Chosen "fine" (768), running a saved 512 field: the panel must say so.
+    panel._refresh_status()
+    text = panel.status_labels["depth"].text()
+    assert "512x288x48" in text
+    assert "768" in text, f"no hint that the chosen size is waiting: {text!r}"
+
+    # Once they agree there is nothing to explain, and the row stays quiet.
+    app.volume_detail = "standard"
+    panel._refresh_status()
+    assert "reset" not in panel.status_labels["depth"].text()
+    panel.close()
+
+
+def test_a_wider_slab_reopens_the_thickness_travel(monkeypatch):
+    """The two slab controls meet here, and the panel has to follow.
+
+    The thickness ceiling is the shorter lateral axis, so choosing a wider
+    slab raises it. A slider whose range were fixed when the panel was built
+    would go on refusing a thickness the geometry would now allow.
+    """
+    from PySide6 import QtWidgets
+
+    app, panel = _detail_panel(
+        monkeypatch, QtWidgets.QMessageBox.Yes, volume_detail="standard")
+    narrow = panel.thickness_slider.maximum()
+
+    panel.detail_combo.setCurrentIndex(panel.detail_combo.findData("finest"))
+    panel._on_volume_detail()
+
+    assert app.volume_detail == "finest"
+    assert panel.thickness_slider.maximum() > narrow, (
+        "the thickness travel did not follow the wider slab"
+    )
+    low, high = app.volume_depth_limits()
+    assert panel.thickness_slider.maximum() * control_panel.DEPTH_STEP == high
+    panel.close()
 
 
 def test_the_thickness_slider_counts_in_steps_the_geometry_honours():
@@ -150,6 +245,22 @@ def test_the_memory_readout_reads_as_english(count, expected):
 # ---------------------------------------------------------------------------
 # The thickness row, as a widget
 # ---------------------------------------------------------------------------
+
+
+def _detail_panel(monkeypatch, answer, backend="volumetric",
+                  volume_detail="fine"):
+    """The panel offscreen, with the confirmation answered rather than shown."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+
+    import panelstub
+
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "question", staticmethod(lambda *a, **k: answer)
+    )
+    app = panelstub.PanelApp(backend, volume_detail=volume_detail)
+    return app, control_panel.ControlPanel(app)
 
 
 def _thickness_panel(monkeypatch, answer, backend="volumetric"):

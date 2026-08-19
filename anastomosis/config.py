@@ -408,6 +408,12 @@ class VolumeParams:
     # --- Slab geometry (structural: changing it needs a new field) --------
     # Lateral width in voxels. The height follows the window's aspect, so the
     # voxels stay cubic and a 16:9 display gets exactly the 512x288 of §5.1.
+    #
+    # Normally set by `Config.volume_detail` rather than here: this is the
+    # primitive, and the three named sizes in `VOLUME_DETAIL` are what the
+    # command line and the control panel actually offer. Setting it directly
+    # through `[overrides]` still wins, which is the escape hatch for a size
+    # that is not one of the three.
     width: int = 512
     # Thickness in voxels, and the one piece of the slab's geometry the control
     # panel can move. It is a knob rather than a constant because depth is the
@@ -852,6 +858,42 @@ def curve_value(macro: str, path: str, value: float) -> float:
 BACKENDS = ("layered", "volumetric")
 DEFAULT_BACKEND = "layered"
 
+# The slab's lateral resolution, as three named sizes rather than a free
+# integer. ``volume.width`` is still the primitive the geometry is derived
+# from and a hand-written override of it still wins; what this adds is a small
+# set of sizes that have been costed against each other, so that choosing one
+# does not mean working out for yourself what a given width is worth.
+#
+# Why the width is the knob worth having. Every tier leaves ``volume.depth``
+# wherever the thickness knob has put it, and lets the height follow the
+# window, so the voxels stay cubic and a Gray-Scott feature stays the same
+# handful of voxels across -- which is
+# exactly why a wider slab is sharper rather than merely bigger: the same
+# feature is drawn into more voxels and therefore lands on fewer display
+# pixels. At the standard size a filament is about five pixels wide at 1440p,
+# which is the blur the layered backend does not have (DESIGN.md §5.1); at the
+# finest it is about two and a half.
+#
+# What it costs, and what it does not. Voxel count goes with the square of the
+# ratio, and three things follow it: the simulation passes, the per-frame
+# interpolation over the slab, and memory. The ray march follows none of them
+# -- its cost is output pixels times ``volume.steps``, and the step count
+# follows the depth, which no tier changes. So the render side of a 1440p
+# frame costs the same at every size here, and only the simulation grows.
+#
+# Agent count follows the voxel count too, since ``volume.density`` is per
+# voxel: about 640,000 at the standard size, 1.4 M at fine, 2.6 M at finest.
+# The last of those is above the 1.5 M the layered backend runs at 1440p, so
+# somebody running `finest` on a smaller card may want `volume.density` a
+# little lower; it is left alone here because the deposit is atomic adds into
+# a buffer rather than bandwidth, and it is not what was blurry.
+VOLUME_DETAIL: dict[str, int] = {
+    "standard": 512,
+    "fine": 768,
+    "finest": 1024,
+}
+DEFAULT_VOLUME_DETAIL = "standard"
+
 
 @dataclass
 class Config:
@@ -866,12 +908,21 @@ class Config:
     value it takes effect when a field is grown, so switching it needs a reset
     or a relaunch; the two backends keep separate saved fields, so switching
     away and back resumes what was there.
+
+    ``volume_detail`` chooses how wide the volumetric slab is, from
+    :data:`VOLUME_DETAIL`. It sits beside ``backend`` for the same reasons --
+    it is a name rather than a quantity, nothing ramps it, and it decides the
+    shape a field is grown in -- and it is read only when the volumetric
+    backend is running. Unlike a backend switch there is only one volumetric
+    field, so changing the size does not set the old one aside for later: the
+    saved field keeps the size it was grown at until it is reset.
     """
 
     macros: Macros = field(default_factory=Macros)
     overrides: dict[str, float] = field(default_factory=dict)
     preset_name: str = "default"
     backend: str = DEFAULT_BACKEND
+    volume_detail: str = DEFAULT_VOLUME_DETAIL
 
     def resolve(self) -> Params:
         params = Params()
@@ -887,6 +938,14 @@ class Config:
         params.render.hue_anchor = _palette_hue_anchor(
             min(1.0, max(0.0, self.macros.palette))
         )
+
+        # The named slab size, which is a choice rather than a curve. Applied
+        # after the macros and before the overrides, so that it beats nothing
+        # (no macro drives it) and loses to an explicit `volume.width`, which
+        # is the same precedence every other named setting has.
+        params.volume.width = VOLUME_DETAIL[
+            normalise_volume_detail(self.volume_detail)
+        ]
 
         # Explicit overrides win over macros.
         for path, value in self.overrides.items():
@@ -996,6 +1055,33 @@ def normalise_backend(name: object) -> str:
     return DEFAULT_BACKEND
 
 
+def normalise_volume_detail(name: object) -> str:
+    """The slab size a name asks for, or the default with a warning.
+
+    Untrusted for the same reasons ``normalise_backend``'s argument is, and
+    handled the same way: a size that is not one of the three is a typo, and
+    the standard one is both the smallest and the one every other default was
+    chosen against, so it is the safe thing to open with.
+
+    A bare width is accepted as well as a name, since "1024" is the obvious
+    thing to write in a config file whose neighbouring key is a number of
+    voxels, and refusing it would be pedantry.
+    """
+    text = str(name or "").strip().lower()
+    if text in VOLUME_DETAIL:
+        return text
+    for tier, width in VOLUME_DETAIL.items():
+        if text == str(width):
+            return tier
+    if text:
+        log.warning(
+            "unknown volume detail %r; using %r (known: %s)",
+            name, DEFAULT_VOLUME_DETAIL,
+            ", ".join(f"{t} ({w})" for t, w in VOLUME_DETAIL.items()),
+        )
+    return DEFAULT_VOLUME_DETAIL
+
+
 # --------------------------------------------------------------------------
 # Parameter ramping -- no parameter change is ever a step. DESIGN.md §9.
 # --------------------------------------------------------------------------
@@ -1083,6 +1169,13 @@ _HEADER = """\
 # new field -- reset the simulation, or relaunch. Each backend keeps its own
 # saved field.
 #
+# `volume_detail` is how wide that slab is, and only matters under the
+# volumetric backend: "standard" (512 voxels across), "fine" (768) or
+# "finest" (1024). Wider is sharper and costs more simulation -- roughly the
+# square of the ratio, in both memory and GPU time, while the raymarch itself
+# costs the same at all three. Structural like `backend`, so a saved field
+# keeps the size it grew at until the simulation is reset.
+#
 # [macros] are the normal interface -- eight knobs, all 0..1.
 # [overrides] pins individual primitive parameters by dotted path, e.g.
 #   "render.filament_luma" = 0.42
@@ -1164,6 +1257,8 @@ def load(path: str | Path) -> Config:
         overrides=overrides,
         preset_name=str(data.get("preset_name", "default")),
         backend=normalise_backend(data.get("backend", DEFAULT_BACKEND)),
+        volume_detail=normalise_volume_detail(
+            data.get("volume_detail", DEFAULT_VOLUME_DETAIL)),
     )
 
 
@@ -1180,6 +1275,7 @@ def save(config: Config, path: str | Path) -> None:
 
     doc.add("preset_name", config.preset_name)
     doc.add("backend", normalise_backend(config.backend))
+    doc.add("volume_detail", normalise_volume_detail(config.volume_detail))
 
     macros = tomlkit.table()
     for f in fields(config.macros):
