@@ -65,9 +65,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // field.
     let network = trail / (1.0 + trail);
     let v_gate = mix(1.0, network, params.v_needs_trail);
+
+    // The trail's own contribution goes through a soft knee: near-linear at
+    // filament level, bounded at `trail_knee` above it. The hubs sit around
+    // five times the filaments' trail level, so under a linear term they were
+    // the one thing on screen that cleared the density ceiling and clipped to
+    // a flat white disc. The knee cannot remove a hub -- that is the deposit
+    // capacity's job, in trail.wgsl -- but it keeps whatever mass one holds
+    // from rendering as hard-rimmed white.
+    var trail_shaded = trail;
+    if (params.trail_knee > 0.0) {
+        trail_shaded = params.trail_knee * tanh(trail / params.trail_knee);
+    }
     let structure = clamp(
         params.density_from_v * v_now * v_gate
-            + params.density_from_trail * trail,
+            + params.density_from_trail * trail_shaded,
         0.0,
         1.0,
     );

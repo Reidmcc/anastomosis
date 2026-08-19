@@ -587,6 +587,19 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     it again, hence the seed here. The effect size has been stable across all of
     it: 0.77 on a dense hub before either change, 0.73 and 0.83 after the first,
     0.78 here after the second.
+
+    Trail advection is pinned off, and that is a measurement constraint rather
+    than a dodge. The severance this asserts is a statement about what happens
+    to the ground under the disc, and with the network mobile there is no
+    longer any such ground: material streams through the fixed disc, the
+    starvation feedback never develops on any particular strand, and the
+    seed-anchored precondition cannot be guaranteed -- measured, the same seed's
+    disc sits on 0.57 of trail with advection off and 0.002 with it on. The
+    deposit capacity stays at its default, because it measurably does not
+    interfere (severance 0.80 with it against 0.79 without). What a rift looks
+    like *with* the trail moving -- a zone the network thins while crossing,
+    rather than a growing gap -- is a §13 question for a viewer, not a ratio a
+    seed can anchor.
     """
     device, _ = gpu_device
     size, radius = 128, 0.24
@@ -599,6 +612,7 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     def run(with_event: bool) -> dict[str, tuple[float, float]]:
         params = config.Config().resolve()
         params.render.layers = 1
+        params.agents.trail_advect = 0.0  # see the docstring
         engine = engine_module.Engine(device, size, size, params, seed=13)
         event = events.ActiveEvent(
             x=0.5, y=0.5, radius=radius, peak=params.events.strength,
@@ -1058,3 +1072,83 @@ def test_a_demanded_change_in_feature_size_is_answered(gpu_device):
                 f"[{lo:.5f}, {hi:.5f}]; moving feature size is moving what the "
                 f"controller defends, and so the exposure governor with it"
             )
+
+
+# ---------------------------------------------------------------------------
+# Deposit capacity -- the counter to winner-take-all trail following
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_the_deposit_capacity_dissolves_hubs_without_draining_the_network(
+    gpu_device,
+):
+    """The de-hubbing claim, held to the prune postmortem's checklist.
+
+    Three things, and the order matters. The concentration must actually fall
+    -- the network holding half its mass in its top 2% of texels is the white
+    dots. Trail mass must match the uncapped control, because the capacity is
+    only allowed to *redistribute*: what it withholds at the hubs is measured
+    and handed back through the agent deposit, and a return that has quietly
+    become a sink shows up here first. And `cap_return` must sit well inside
+    its clamp, because a pinned return is exactly how it becomes a sink -- the
+    measured failure at cap = 0.6, where the deposit-weighted withheld ratio
+    exceeded the bound, mass fell 11%, and the hubs survived better than at
+    the shipped 1.2.
+    """
+    device, _ = gpu_device
+    width, height, ticks = 128, 128, 1400
+
+    def run(cap: float) -> dict:
+        params = config.Config().resolve()
+        params.render.layers = 1
+        params.agents.deposit_cap = cap
+        # Isolated from the other step-6 mechanism, so a regression here names
+        # its culprit.
+        params.agents.trail_advect = 0.0
+        engine = engine_module.Engine(device, width, height, params, seed=23)
+        for _ in range(ticks):
+            engine.tick(params, [])
+        layer = engine.layers[0]
+        raw = device.queue.read_texture(
+            {"texture": layer.trail.textures[layer.trail.index], "mip_level": 0,
+             "origin": (0, 0, 0)},
+            {"offset": 0, "bytes_per_row": width * 8, "rows_per_image": height},
+            (width, height, 1),
+        )
+        trail = np.frombuffer(raw, dtype=np.float16).reshape(
+            height, width, 4)[..., 0].astype(np.float64)
+        stats = engine.read_stats()
+        flat = np.sort(trail.ravel())
+        return {
+            "mass": float(trail.mean()),
+            "top2": float(flat[-int(flat.size * 0.02):].sum() / max(flat.sum(), 1e-9)),
+            "cap_return": float(stats["cap_return"]),
+            "corr_decay": float(stats["corr_decay"]),
+        }
+
+    control = run(0.0)
+    capped = run(config.Config().resolve().agents.deposit_cap)
+
+    assert control["cap_return"] == 0.0, (
+        "the capacity is not inert at zero cap, so it is not off when off"
+    )
+    assert capped["top2"] < control["top2"] * 0.85, (
+        f"the network still holds {capped['top2']:.2f} of its mass in its top "
+        f"2% of texels against a control of {control['top2']:.2f}; the "
+        f"capacity is not dissolving the hubs"
+    )
+    drift = abs(capped["mass"] - control["mass"]) / max(control["mass"], 1e-9)
+    assert drift < 0.12, (
+        f"trail mass moved {drift:.1%} against the uncapped control; the "
+        f"return accounting is not putting back what the capacity withholds"
+    )
+    assert 0.05 < capped["cap_return"] < 2.5, (
+        f"cap_return settled at {capped['cap_return']:.2f}: either the "
+        f"capacity is withholding nothing, or the return is pinned at its "
+        f"clamp and has become a sink"
+    )
+    assert abs(capped["corr_decay"] - control["corr_decay"]) < 0.002, (
+        "the homeostat is correcting for the capacity; the redistribution is "
+        "not mass-neutral where it matters"
+    )

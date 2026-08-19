@@ -221,7 +221,8 @@ def test_reaction_matches_numpy_with_a_varying_du(gpu_device, substeps):
     )
 
 
-def _run_trail_on_gpu(device, trail, income, deposited, params, prune_gain, prune_climate):
+def _run_trail_on_gpu(device, trail, income, deposited, params, prune_gain,
+                      prune_climate, deposit_cap=0.0):
     """Run trail.wgsl once and read back (trail, income, prune_relative)."""
     size = trail.shape[0]
     module = device.create_shader_module(code=shaders.load("trail.wgsl"))
@@ -271,6 +272,10 @@ def _run_trail_on_gpu(device, trail, income, deposited, params, prune_gain, prun
         "trail_decay": params.trail_decay,
         "income_rate": params.income_rate,
         "prune_gain": prune_gain,
+        "deposit_cap": deposit_cap,
+        # Advection off: it is a resampling rather than arithmetic, and its
+        # parity is the translation test in test_agents.py.
+        "trail_advect": 0.0,
         "range_decay": 0.0,
         "range_prune": config.Config().resolve().climate.range_prune,
     }
@@ -300,6 +305,7 @@ def _run_trail_on_gpu(device, trail, income, deposited, params, prune_gain, prun
             {"binding": 6, "resource": sampler},
             {"binding": 7, "resource": {"buffer": stats_buf, "offset": 0,
                                         "size": stats_buf.size}},
+            {"binding": 8, "resource": climate_b.create_view()},
         ],
     )
     encoder = device.create_command_encoder()
@@ -316,16 +322,20 @@ def _run_trail_on_gpu(device, trail, income, deposited, params, prune_gain, prun
         (size, size, 1),
     )
     out = np.frombuffer(raw, dtype=np.float16).reshape(size, size, 4).astype(np.float32)
-    return out[..., 0], out[..., 1], out[..., 2]
+    return out[..., 0], out[..., 1], out[..., 2], out[..., 3]
 
 
-@pytest.mark.parametrize("prune_gain", [0.0, 3.0])
-def test_trail_matches_numpy(gpu_device, prune_gain):
-    """Flux pruning is arithmetic in a shader with no assertions in it.
+@pytest.mark.parametrize(
+    "prune_gain,deposit_cap", [(0.0, 0.0), (3.0, 0.0), (0.0, 1.2), (3.0, 1.2)]
+)
+def test_trail_matches_numpy(gpu_device, prune_gain, deposit_cap):
+    """Flux pruning and the deposit capacity are arithmetic in a shader with no
+    assertions in it.
 
-    Run with pruning off and on: off must reproduce the plain decay-plus-deposit
-    the trail pass has always done, on must reproduce the pruned version. The
-    inputs deliberately span the interesting cases -- texels with traffic and no
+    Run across the off/on grid of both mechanisms: all-off must reproduce the
+    plain decay-plus-deposit the trail pass has always done, and each mechanism
+    must reproduce its reference alone and composed with the other. The inputs
+    deliberately span the interesting cases -- texels with traffic and no
     trail, trail and no traffic, and every ratio between.
     """
     device, _ = gpu_device
@@ -341,18 +351,20 @@ def test_trail_matches_numpy(gpu_device, prune_gain):
     prune_climate = np.broadcast_to(prune_climate[:, None], (SIZE, SIZE))
     prune_climate = prune_climate.astype(np.float16).astype(np.float32)
 
-    gpu_trail, gpu_income, gpu_prune = _run_trail_on_gpu(
-        device, trail, income, deposited, agents, prune_gain, prune_climate)
+    gpu_trail, gpu_income, gpu_prune, gpu_withheld = _run_trail_on_gpu(
+        device, trail, income, deposited, agents, prune_gain, prune_climate,
+        deposit_cap=deposit_cap)
 
     # The shader reads the deposit accumulator back as fixed point, so the
     # reference has to see the same quantised value.
     quantised = np.round(deposited * 1048576.0) / 1048576.0
     range_prune = config.Config().resolve().climate.range_prune
     local_gain = prune_gain * np.exp(range_prune * prune_climate)
-    ref_trail, ref_income, ref_prune = R.trail_step(
+    ref_trail, ref_income, ref_prune, ref_withheld = R.trail_step(
         trail.astype(np.float64), income.astype(np.float64),
         quantised.astype(np.float64), agents.trail_decay,
         agents.income_rate, local_gain.astype(np.float64),
+        deposit_cap=deposit_cap,
     )
 
     assert np.abs(gpu_trail - ref_trail).max() < F16_ATOL, (
@@ -364,6 +376,10 @@ def test_trail_matches_numpy(gpu_device, prune_gain):
     assert np.abs(gpu_prune - ref_prune).max() < 2e-2, (
         f"prune channel diverged: max |delta| = "
         f"{np.abs(gpu_prune - ref_prune).max():.5f}"
+    )
+    assert np.abs(gpu_withheld - ref_withheld).max() < F16_ATOL, (
+        f"withheld channel diverged: max |delta| = "
+        f"{np.abs(gpu_withheld - ref_withheld).max():.5f}"
     )
 
 
@@ -386,9 +402,9 @@ def test_pruning_only_ever_raises_decay(gpu_device):
     deposited = (rng.random((SIZE, SIZE)) * 0.02).astype(np.float32)
     flat = np.zeros((SIZE, SIZE), dtype=np.float32)
 
-    kept_off, _, prune_off = _run_trail_on_gpu(
+    kept_off, _, prune_off, _ = _run_trail_on_gpu(
         device, trail, income, deposited, agents, 0.0, flat)
-    kept_on, _, prune_on = _run_trail_on_gpu(
+    kept_on, _, prune_on, _ = _run_trail_on_gpu(
         device, trail, income, deposited, agents, 6.0, flat)
 
     assert (prune_off == 0.0).all(), "the prune channel is not inert at zero gain"

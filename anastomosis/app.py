@@ -878,7 +878,8 @@ class Application:
         window = self._frame_times[-30:] or [0.0]
         log.info(
             "tick=%d  mean_v=%.4f var=%.5f activity=%.5f  ell=%.2f (%+.3f)  "
-            "exposure=%.2f  sim=%.1fHz (x%.2f)  frame=%.1fms  events=[%s]",
+            "cap=%.2f  exposure=%.2f  sim=%.1fHz (x%.2f)  frame=%.1fms  "
+            "events=[%s]",
             self.engine.tick_count,
             stats["mean_v"], stats["var_v"], stats["mean_activity"],
             # Feature size and the correction the loop is holding to get it.
@@ -887,6 +888,9 @@ class Application:
             # steady ell with the correction parked at its bound is the loop
             # asking for something the field will not give (DESIGN.md 4.7).
             stats["ell"], stats["corr_du"],
+            # The capacity return must sit clear of its clamp (3.0) or the
+            # capacity has become a deposit sink; see AgentParams.deposit_cap.
+            stats["cap_return"],
             stats["exposure"],
             self.params.sim_hz * self._sim_hz_scale, self._sim_hz_scale,
             1000.0 * (sum(window) / len(window)),

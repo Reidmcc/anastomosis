@@ -39,6 +39,7 @@
 
 var<workgroup> totals: array<vec4<f32>, 256>;
 var<workgroup> flux_totals: array<vec4<f32>, 256>;
+var<workgroup> dep_totals: array<vec4<f32>, 256>;
 
 // Slew on the measured prune return. It is already an average over the whole
 // field and so barely moves, but it scales every agent's deposit and a tick of
@@ -88,21 +89,25 @@ fn reduce_final(@builtin(local_invocation_index) lid: u32) {
 
     var acc = vec4<f32>(0.0);
     var acc_flux = vec4<f32>(0.0);
+    var acc_dep = vec4<f32>(0.0);
     var i = lid;
     loop {
         if (i >= n) { break; }
         acc = acc + partials_in[i].field;
         acc_flux = acc_flux + partials_in[i].flux;
+        acc_dep = acc_dep + partials_in[i].dep;
         i = i + 256u;
     }
     totals[lid] = acc;
     flux_totals[lid] = acc_flux;
+    dep_totals[lid] = acc_dep;
     workgroupBarrier();
 
     for (var stride = 128u; stride > 0u; stride = stride >> 1u) {
         if (lid < stride) {
             totals[lid] = totals[lid] + totals[lid + stride];
             flux_totals[lid] = flux_totals[lid] + flux_totals[lid + stride];
+            dep_totals[lid] = dep_totals[lid] + dep_totals[lid + stride];
         }
         workgroupBarrier();
     }
@@ -135,6 +140,24 @@ fn reduce_final(@builtin(local_invocation_index) lid: u32) {
     let flux = flux_totals[0];
     let measured_return = clamp(flux.y / max(flux.x, 1e-6), 0.0, 2.0);
     stats.prune_return = mix(stats.prune_return, measured_return, PRUNE_RETURN_RATE);
+
+    // What the deposit capacity withheld, against what it let through: income
+    // EMA minus withheld EMA is the deposit that actually landed, and boosting
+    // the deposit by withheld/landed is what makes the total deposited mass
+    // come out the same as if the capacity were not there -- taken from the
+    // hubs, returned wherever traffic is. Slewed at the same rate as the
+    // pruning return and for the same reason: it scales every agent's deposit,
+    // so a tick of jitter here is a tick of jitter in the whole trail field.
+    // The bound needs more headroom than the pruning return's. Deposits land
+    // on the network by construction -- agents ride the strands they follow --
+    // so the deposit-weighted trail level is several times the field mean, and
+    // the equilibrium ratio is well above one. A bound the measurement rests
+    // against would under-return, and an under-returned capacity is a net
+    // deposit sink the homeostat then cancels through corr_decay: a globally
+    // weaker network and hubs intact, the opposite of the intent.
+    let dep = dep_totals[0];
+    let measured_cap = clamp(dep.y / max(dep.x - dep.y, 1e-6), 0.0, 3.0);
+    stats.cap_return = mix(stats.cap_return, measured_cap, PRUNE_RETURN_RATE);
 
     let err_mass = banded_error(params.target_mass, mean_v, params.deadband);
 

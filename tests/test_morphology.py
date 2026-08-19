@@ -235,23 +235,18 @@ def test_a_drifting_climate_makes_the_arrangement_churn():
 def test_the_shading_ceiling_falls_between_the_reaction_and_the_network():
     """The other half of the trypophobia complaint, and it is not in the physics.
 
-    ``advect.wgsl`` builds the density it shades as
-    ``density_from_v * V + density_from_trail * trail``, clamped to 1. Where
-    that ceiling falls in the two distributions decides what the picture is made
-    of, and at the weights this shipped with it fell in the wrong place twice
-    over: a single reaction spot cleared it on its own with no filament under
-    it, so every feature on screen was drawn as a flat-topped disc with a hard
-    rim, while the network contributed about 8% of the mean density and was
-    effectively invisible. The lattice of similar-sized round holes DESIGN.md
-    4.7 calls a functional defect was not merely being passed through by the
-    last stage before colour; it was being picked out and clipped.
+    ``advect.wgsl`` builds the density it shades from the reaction and the
+    trail, clamped to 1, and where that ceiling falls decides what the picture
+    is made of. Two failure modes have been measured on the way here. At the
+    original weights a single reaction spot cleared the ceiling on its own, so
+    every feature rendered as a flat-topped disc with a hard rim. And after the
+    rebalance, the *hubs* -- the trail field's round agent-congregation knots,
+    at five times the filament level -- became the thing that clipped: a third
+    of the bright-blob texels sat on the ceiling.
 
-    Three statements, and together they pin the balance from both sides. The
-    reaction must not reach the ceiling alone. The network must be able to.
-    And it must not do so over any large part of the field, because where the
-    trail term fills the ceiling by itself the reaction's contribution is
-    discarded -- which would move the clipping from the spots to the filaments
-    rather than removing it.
+    The trail term therefore goes through a soft knee,
+    ``knee * tanh(trail / knee)``: near-linear at filament level, bounded at
+    ``knee`` above it. Four statements pin the shape from every side.
     """
     resolved = config.Config().resolve()
     reaction, pigment = resolved.reaction, resolved.pigment
@@ -263,16 +258,44 @@ def test_the_shading_ceiling_falls_between_the_reaction_and_the_network():
         f"the shading ceiling (peak V {peak:.3f} x {pigment.density_from_v}); "
         f"spots clip to flat discs before any filament is involved"
     )
-    assert M.TRAIL_QUANTILES[0.99] * pigment.density_from_trail >= 1.0, (
-        f"the network never reaches the ceiling even on its strongest 1% "
-        f"({M.TRAIL_QUANTILES[0.99]} x {pigment.density_from_trail}); the "
-        f"filaments cannot carry the picture"
+
+    knee = pigment.trail_knee
+    assert knee > 0.0, "the knee is disabled; hubs render as clipped discs again"
+
+    def shaded(trail: float) -> float:
+        return pigment.density_from_trail * knee * float(np.tanh(trail / knee))
+
+    # No amount of trail can clip on its own: the term is bounded by design.
+    assert pigment.density_from_trail * knee < 0.8, (
+        f"the trail term's asymptote is "
+        f"{pigment.density_from_trail * knee:.2f}; a hub still fills the "
+        f"ceiling before the reaction has contributed anything"
     )
-    assert M.TRAIL_QUANTILES[0.9] * pigment.density_from_trail < 1.0, (
-        f"the top 10% of the network already fills the ceiling "
-        f"({M.TRAIL_QUANTILES[0.9]} x {pigment.density_from_trail}), so the "
-        f"reaction's texture is discarded across it; the clipping has moved to "
-        f"the filaments rather than gone away"
+    # ...and a typical hub -- saturated trail plus the reaction it carries --
+    # stays under the ceiling too, which is the statement the eye cares about.
+    hub_gate = (1 - pigment.v_needs_trail) + pigment.v_needs_trail * (
+        M.TRAIL_QUANTILES[0.99] / (1 + M.TRAIL_QUANTILES[0.99])
+    )
+    hub_total = (pigment.density_from_v * M.V_HUB_P50 * hub_gate
+                 + shaded(M.TRAIL_MAX))
+    assert hub_total < 1.0, (
+        f"a typical hub shades at {hub_total:.2f}; it still clips to a disc"
+    )
+
+    # Near-linear where the filaments live, or the knee dims the network it
+    # exists to protect...
+    fil = M.TRAIL_QUANTILES[0.9]
+    assert shaded(fil) > 0.85 * pigment.density_from_trail * fil, (
+        f"the knee takes filament brightness to "
+        f"{shaded(fil) / (pigment.density_from_trail * fil):.2f} of linear"
+    )
+    # ...and genuinely compressive where the hubs live, or it is not doing
+    # anything.
+    hub = M.TRAIL_QUANTILES[0.99]
+    assert shaded(hub) < 0.65 * pigment.density_from_trail * hub, (
+        f"the knee leaves a hub at "
+        f"{shaded(hub) / (pigment.density_from_trail * hub):.2f} of linear; "
+        f"hubs still render at full weight"
     )
 
 

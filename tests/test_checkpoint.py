@@ -27,6 +27,7 @@ from anastomosis import (
     config,
     engine as engine_module,
     events,
+    gpu_params,
     shaders,
 )
 
@@ -927,6 +928,23 @@ def test_the_checkpoint_lives_in_the_state_directory(monkeypatch, tmp_path):
     )
 
 
+def _stats_blob_for_version(current_blob: np.ndarray, version: int) -> np.ndarray:
+    """A current stats capture re-laid-out as the given version wrote it.
+
+    The compatibility tests need genuinely old-shaped files, and slicing the
+    current bytes does not make one -- both widenings inserted fields
+    mid-struct, so an old file's tail sits at different offsets, which is the
+    exact hazard the migration exists to handle.
+    """
+    record = np.frombuffer(current_blob.tobytes(), dtype=gpu_params.STATS_DTYPE)[0]
+    names = checkpoint.STATS_FIELDS_BY_VERSION[version]
+    old_dtype = np.dtype([(name, np.float32) for name in names])
+    out = np.zeros(1, dtype=old_dtype)
+    for name in names:
+        out[name] = record[name]
+    return np.frombuffer(out.tobytes(), dtype=np.uint8).copy()
+
+
 def test_a_checkpoint_from_before_the_feature_size_loop_is_readable(gpu_device):
     """The stats block got wider; a file written before that must still load.
 
@@ -950,7 +968,7 @@ def test_a_checkpoint_from_before_the_feature_size_loop_is_readable(gpu_device):
     meta["version"] = 4
     meta["engine"]["du_walk"] = meta["engine"].pop("ell_walk")
     arrays = dict(snapshot.arrays)
-    arrays["stats"] = arrays["stats"][: checkpoint.STATS_BYTES_BEFORE_ELL]
+    arrays["stats"] = _stats_blob_for_version(arrays["stats"], 4)
     old = checkpoint.Checkpoint(meta=meta, arrays=arrays)
 
     assert not checkpoint.compatibility_problems(engine, old), (
@@ -968,6 +986,48 @@ def test_a_checkpoint_from_before_the_feature_size_loop_is_readable(gpu_device):
         "the feature-size loop resumed with state a version 4 file cannot have "
         "carried"
     )
+    # The migration is by field name, not by byte offset: everything the old
+    # file *did* carry must land in the right field. Exposure is the one that
+    # catches an offset error -- under a byte copy it resumes as the
+    # feature-size reference and the image restarts dim.
+    assert stats["exposure"] == pytest.approx(engine.read_stats()["exposure"]), (
+        "a field the version 4 file carried was misfiled by the migration"
+    )
+
+
+def test_a_version_5_stats_block_is_readable(gpu_device):
+    """The block widened twice; each older width must stay loadable.
+
+    Version 5 files carry the feature-size loop's state but not the deposit
+    capacity's return, so a resume from one starts the return at zero and lets
+    the measurement re-derive it within a few time constants -- the same shape
+    of statement the version-4 test makes one widening earlier.
+    """
+    params = _params()
+    engine = _make_engine(gpu_device, params)
+    for _ in range(3):
+        engine.tick(params)
+    snapshot = checkpoint.capture(engine, sim_hz=params.sim_hz)
+
+    meta = json.loads(json.dumps(snapshot.meta))
+    meta["version"] = 5
+    arrays = dict(snapshot.arrays)
+    arrays["stats"] = _stats_blob_for_version(arrays["stats"], 5)
+    old = checkpoint.Checkpoint(meta=meta, arrays=arrays)
+
+    assert not checkpoint.compatibility_problems(engine, old)
+    resumed = _make_engine(gpu_device, params, seed=7)
+    assert checkpoint.restore(resumed, old)
+    stats = resumed.read_stats()
+    before = engine.read_stats()
+    assert stats["cap_return"] == 0.0, (
+        "the capacity return resumed with state a version 5 file cannot have "
+        "carried"
+    )
+    for name in ("ell_ref", "ell_samples", "exposure"):
+        assert stats[name] == pytest.approx(before[name]), (
+            f"{name} was misfiled by the version 5 migration"
+        )
 
 
 def test_a_truncated_stats_block_is_refused(gpu_device):

@@ -143,6 +143,52 @@ class AgentParams:
     # The mechanism is built, plumbed and tested; see DESIGN.md 4.7 for what
     # would have to change for it to earn being switched on.
     prune_gain: float = 0.0
+    # Deposit capacity -- the counter to winner-take-all trail following, and
+    # the mechanism behind the persistent white dots (DESIGN.md 4.7, "what the
+    # dots turned out to be"). Trail following has no capacity limit (4.9):
+    # agents pile onto the strongest signal and their deposits make it
+    # stronger, so the network ends up holding almost half its mass in its top
+    # 2% of texels -- round, stationary hubs five times the level of the
+    # filaments between them. A deposit landing on trail at this level is
+    # halved (`1 / (1 + trail / cap)`), so hubs stop out-competing while bare
+    # ground and ordinary filaments -- an order of magnitude below the cap --
+    # barely notice; founding cohorts land on bare ground and are untouched.
+    #
+    # What the capacity withholds is measured (the trail texture's `.a` channel
+    # carries a withheld EMA alongside the income EMA in `.g`) and handed back
+    # through the agent deposit, exactly as flux pruning's removal is: the
+    # capacity is a redistribution from hubs to wherever traffic is, not a
+    # sink, so the homeostat has nothing to cancel. Zero disables.
+    #
+    # The value is measured, and lower is not stronger. At 1.2, across three
+    # seeds, the network's top-2% mass share falls 0.49 -> 0.33 and the
+    # bright-blob count roughly halves (72 -> 34 on average), with trail mass
+    # matching the uncapped control to 1% and the return settling around 1
+    # against its bound of 3. At 2.0 the effect fades (0.42); at 0.6 the
+    # deposit-weighted withheld ratio exceeds the bound, the return pins, and
+    # the capacity becomes exactly the sink it must not be: trail mass falls
+    # 11% and the hubs survive *better* than at 1.2. If this is ever lowered,
+    # cap_return in the telemetry must stay clear of its clamp.
+    deposit_cap: float = 1.2
+    # How much of the velocity field the trail rides -- DESIGN.md 4.7 step 6,
+    # at last. Pigment is advected at 1.0; the trail at this fraction, so the
+    # network is carried and sheared by the same flow that carries the colour,
+    # instead of sitting bolted to the grid while the picture slides over it.
+    # A hub under shear stops being a stationary circle, which is the half of
+    # the dot complaint no morphology lever could reach. Zero disables, and
+    # the trail pass is then texel-exact.
+    #
+    # What is verified is the mechanism and the invariants, in step 4's
+    # tradition: a blob rides a known velocity at exactly this fraction of it
+    # (test_agents), and across seeds the sweep shows mass, mean V, activity
+    # and corr_decay unmoved with it on. The aggregate -- whether the network's
+    # 400-tick autocorrelation actually falls -- did not resolve above
+    # run-to-run variance at test resolution, exactly as step 4's churn did
+    # not. Two costs are measured and accepted: the capacity's de-hubbing
+    # weakens somewhat with the trail sliding under the depositors (top-2%
+    # mass share 0.33 -> 0.39 across three seeds), and cap_return rides
+    # higher (~1.6 against ~1.0), still well inside its bound.
+    trail_advect: float = 0.5
     starve_threshold: float = 0.004
     max_age: float = 2400.0  # ticks before forced respawn
 
@@ -364,6 +410,17 @@ class PigmentParams:
     # This is the single default most likely to want moving once someone has
     # watched the result on real hardware; see DESIGN.md 13.
     v_needs_trail: float = 0.25
+    # Soft knee on the trail's rendered contribution. The hubs sit at trail
+    # levels around five times the filaments', so under a linear term they are
+    # the one thing on screen that reaches the density ceiling and clips to a
+    # flat white disc -- measured, a third of the bright-blob texels were
+    # clipped. `knee * tanh(trail / knee)` is within 12% of linear at the
+    # filament level (trail ~0.07-0.3) and bounded at `knee` above it, which
+    # takes the clipped fraction to 3% while moving filament brightness by
+    # less than 0.003. It dims hubs rather than removes them -- the removal is
+    # `deposit_cap`'s job -- but a soft translucent maximum is a different
+    # thing to look at than a hard-rimmed white circle. Zero means linear.
+    trail_knee: float = 0.45
     activity_rate: float = 0.020  # lowpass on |dV/dt|; deliberately very slow
     activity_gain: float = 26.0
     # Material keeps the hue it was born with and carries it along the flow.

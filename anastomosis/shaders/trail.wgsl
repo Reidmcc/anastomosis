@@ -1,4 +1,22 @@
-// Trail decay plus deposit application, and flux-based pruning.
+// Trail advection, decay, deposit application with a capacity, and
+// flux-based pruning.
+//
+// The advection is DESIGN.md 4.7 step 6: the trail rides the same velocity
+// field the pigment does, at `trail_advect` of its rate, so the network is
+// carried and sheared by the flow instead of sitting bolted to the grid while
+// the picture slides over it. Semi-Lagrangian like advect.wgsl, and for the
+// same reason: unconditionally stable, and mildly diffusive in a field that
+// is deliberately blurred every tick anyway.
+//
+// The capacity is the counter to winner-take-all trail following. Agents pile
+// onto the strongest signal and their deposits make it stronger, with nothing
+// anywhere pushing back -- 4.9 notes the missing limit -- and the measured
+// result is a network holding half its mass in round stationary hubs. A
+// deposit landing on trail at `deposit_cap` is halved; what is withheld is
+// tracked as an EMA in `.a` (the income EMA's sibling, same rate) so the
+// homeostat can measure the withheld fraction and hand it back through the
+// agent deposit, exactly as flux pruning's removal is returned. Capacity is
+// therefore a redistribution from hubs to wherever traffic is, not a sink.
 //
 // `atomicExchange` both reads and clears the deposit accumulator, so a single
 // pass consumes this tick's deposits and leaves the buffer ready for the next
@@ -38,6 +56,7 @@
 @group(0) @binding(5) var clim_c: texture_2d<f32>;
 @group(0) @binding(6) var samp: sampler;
 @group(0) @binding(7) var<storage, read> stats: Stats;
+@group(0) @binding(8) var velocity_tex: texture_2d<f32>;
 
 const DEPOSIT_SCALE: f32 = 1048576.0;
 
@@ -60,9 +79,35 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         0.5,
     );
 
-    let prior = textureLoad(trail_in, vec2<i32>(gid.xy), 0).rg;
+    // Carry the strand before updating it. At zero gain this is a texel load,
+    // exactly; the sampled path is only taken when it can move something. All
+    // four channels ride together -- the income and withheld EMAs belong to
+    // the strand, not to the texel it happened to cross.
+    var prior = textureLoad(trail_in, vec2<i32>(gid.xy), 0);
+    if (params.trail_advect > 0.0) {
+        let velocity = textureLoad(velocity_tex, vec2<i32>(gid.xy), 0).rg;
+        let src = wrap_uv(
+            uv - velocity * params.advect_dt * params.trail_advect
+                / vec2<f32>(dims));
+        prior = finite_or4(textureSampleLevel(trail_in, samp, src, 0.0), 0.0);
+    }
     let previous = finite_or(prior.r, 0.0);
+    // Income measures *traffic* -- the raw arrivals, before the capacity has
+    // its say -- because it feeds the pruning deficit, and a hub whose
+    // deposits are being withheld is still a hub agents are visiting.
     let income = mix(finite_or(prior.g, 0.0), deposited, params.income_rate);
+
+    // Deposit capacity: a deposit landing on trail at `deposit_cap` is halved,
+    // and beyond it asymptotically refused. Filaments sit an order of
+    // magnitude below the cap and barely notice; bare ground -- founding
+    // cohorts included -- is untouched.
+    var applied = deposited;
+    var withheld_now = 0.0;
+    if (params.deposit_cap > 0.0) {
+        applied = deposited / (1.0 + previous / params.deposit_cap);
+        withheld_now = deposited - applied;
+    }
+    let withheld = mix(finite_or(prior.a, 0.0), withheld_now, params.income_rate);
 
     // What decay will take this tick, against what traffic is bringing in. A
     // strand carrying enough agents to replace what it loses runs no deficit; a
@@ -94,15 +139,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let prune_relative = prune_gain * deficit;
     let decay_eff = clamp(decay * (1.0 + prune_relative), 0.001, 0.5);
 
-    var value = previous * (1.0 - decay_eff) + deposited;
+    var value = previous * (1.0 - decay_eff) + applied;
     value = clamp(finite_or(value, 0.0), 0.0, 8.0);
 
     // `.b` carries the relative extra removal, which the reduce pass weights by
     // trail to get the fraction of the field's throughput that pruning takes.
     // That is the quantity the deposit compensation needs, and measuring it
     // rather than deriving it keeps the accounting right when `prune_gain`
-    // varies by region.
+    // varies by region. `.a` carries the capacity's withheld EMA, which the
+    // reduce pass sums against the income EMA for the same kind of return.
     textureStore(
         trail_out, vec2<i32>(gid.xy),
-        vec4<f32>(value, clamp(income, 0.0, 8.0), clamp(prune_relative, 0.0, 8.0), 1.0));
+        vec4<f32>(value, clamp(income, 0.0, 8.0), clamp(prune_relative, 0.0, 8.0),
+                  clamp(withheld, 0.0, 8.0)));
 }

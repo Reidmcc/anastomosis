@@ -27,6 +27,7 @@
 
 var<workgroup> tile: array<vec4<f32>, 256>;
 var<workgroup> tile_flux: array<vec4<f32>, 256>;
+var<workgroup> tile_dep: array<vec4<f32>, 256>;
 
 @compute @workgroup_size(4, 4, 16)
 fn reduce_tiles(
@@ -39,6 +40,7 @@ fn reduce_tiles(
     let idims = vec3<i32>(dims);
     var sample = vec4<f32>(0.0);
     var flux = vec4<f32>(0.0);
+    var dep = vec4<f32>(0.0);
     if (gid.x < dims.x && gid.y < dims.y && gid.z < dims.z) {
         let p = vec3<i32>(gid);
         let v = finite_or(textureLoad(reaction_cur, p, 0).g, 0.0);
@@ -72,16 +74,22 @@ fn reduce_tiles(
             (vxp - vxm) * 0.5, (vyp - vym) * 0.5, (vzp - vzm) * 0.5));
 
         flux = vec4<f32>(trail, trail * prune_relative, grad, 0.0);
+        dep = vec4<f32>(
+            clamp(finite_or(t.g, 0.0), 0.0, 8.0),
+            clamp(finite_or(t.a, 0.0), 0.0, 8.0),
+            0.0, 0.0);
     }
 
     tile[lid] = sample;
     tile_flux[lid] = flux;
+    tile_dep[lid] = dep;
     workgroupBarrier();
 
     for (var stride = 128u; stride > 0u; stride = stride >> 1u) {
         if (lid < stride) {
             tile[lid] = tile[lid] + tile[lid + stride];
             tile_flux[lid] = tile_flux[lid] + tile_flux[lid + stride];
+            tile_dep[lid] = tile_dep[lid] + tile_dep[lid + stride];
         }
         workgroupBarrier();
     }
@@ -90,5 +98,6 @@ fn reduce_tiles(
         let index = (wid.z * nwg.y + wid.y) * nwg.x + wid.x;
         partials[index].field = tile[0];
         partials[index].flux = tile_flux[0];
+        partials[index].dep = tile_dep[0];
     }
 }

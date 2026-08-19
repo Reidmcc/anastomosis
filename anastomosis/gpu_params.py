@@ -56,6 +56,14 @@ SIM_FIELDS: list[Field] = [
     ("trail_diffuse", "f32"),
     ("income_rate", "f32"),
     ("prune_gain", "f32"),
+    # Deposit capacity: trail level at which a deposit is halved. The counter
+    # to winner-take-all trail following -- DESIGN.md 4.9 notes the layer has
+    # "no capacity limit", and the measured consequence is a network holding
+    # half its mass in its top 2% of texels: the white hubs. Zero disables.
+    ("deposit_cap", "f32"),
+    # Fraction of the velocity field the trail is advected by (pigment gets
+    # 1.0). Zero disables, and the pass is then texel-exact.
+    ("trail_advect", "f32"),
     ("starve_threshold", "f32"),
     ("max_age", "f32"),
     ("found_fraction", "f32"),
@@ -113,6 +121,11 @@ SIM_FIELDS: list[Field] = [
     ("density_from_v", "f32"),
     ("density_from_trail", "f32"),
     ("v_needs_trail", "f32"),
+    # Soft knee on the trail's rendered contribution: the shaded term is
+    # `density_from_trail * knee * tanh(trail / knee)`, near-linear below the
+    # knee and bounded above it, so a hub cannot clip to a flat disc however
+    # much mass it holds. Zero or negative means linear.
+    ("trail_knee", "f32"),
     # Generic blur pass control (reused by trail diffuse and DOF)
     ("blur_radius", "f32"),
     ("blur_dir_x", "f32"),
@@ -289,11 +302,15 @@ PARTIAL_WGSL = """\
 struct Partial {
     field: vec4<f32>,  // sum V, sum V^2, sum |dV/dt|, count
     flux: vec4<f32>,   // sum trail, sum trail*deficit, sum |grad V|, spare
+    dep: vec4<f32>,    // sum income EMA, sum withheld EMA, spare, spare
 };"""
 
-# Two vec4s. std430 gives a vec4 16-byte alignment and this struct holds
-# nothing else, so the stride is exactly the sum of the members.
-PARTIAL_SIZE = 32
+# Three vec4s. std430 gives a vec4 16-byte alignment and this struct holds
+# nothing else, so the stride is exactly the sum of the members. The third was
+# added for the deposit-capacity accounting: the return needs both what the
+# capacity let through and what it withheld, and the second vec4 had one lane
+# left where two were needed.
+PARTIAL_SIZE = 48
 
 
 def wgsl_struct(name: str, fields: list[Field]) -> str:
@@ -369,6 +386,12 @@ STATS_FIELDS: list[Field] = [
     # prune term is a net mass sink that the homeostat cancels through
     # corr_decay.
     ("prune_return", "f32"),
+    # What the deposit capacity withheld, as a fraction of what it let through,
+    # measured from the trail texture's income and withheld EMAs and handed
+    # back through the agent deposit exactly as `prune_return` is. Without the
+    # return the capacity is a net deposit sink; with it, capacity is a pure
+    # redistribution from hubs to wherever traffic is.
+    ("cap_return", "f32"),
     # The feature-size loop, DESIGN.md 4.7 step 5. `ell` is the characteristic
     # length scale `mean V / mean |grad V|` in cells -- the one measure of the
     # field that is *not* invariant under rearrangement, which is why the

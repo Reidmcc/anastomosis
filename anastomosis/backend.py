@@ -495,6 +495,8 @@ class Backend:
             "trail_diffuse": a.trail_diffuse * feature,
             "income_rate": a.income_rate,
             "prune_gain": a.prune_gain,
+            "deposit_cap": a.deposit_cap,
+            "trail_advect": a.trail_advect,
             "starve_threshold": a.starve_threshold,
             "max_age": a.max_age,
             "found_fraction": a.found_fraction,
@@ -545,6 +547,7 @@ class Backend:
             "density_from_v": pg.density_from_v,
             "density_from_trail": pg.density_from_trail,
             "v_needs_trail": pg.v_needs_trail,
+            "trail_knee": pg.trail_knee,
 
             "feature_scale": feature, "tempo_scale": tempo,
 

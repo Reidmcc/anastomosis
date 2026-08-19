@@ -84,7 +84,7 @@ from . import volume as volume_module
 
 log = logging.getLogger(__name__)
 
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 # Version 1 recorded the *window* size where version 2 records the simulation's
 # own, which are the same number unless that session was resized after starting.
 # Version 3 adds the morphology climate pair and the feature-size walk, both of
@@ -95,6 +95,11 @@ FORMAT_VERSION = 5
 # step 5) and renames the walk it drives; an older file's shorter stats blob is
 # zero-extended, which starts the loop's reference unseeded and so takes it
 # from the first live measurement, exactly as a fresh field does.
+# Version 6 widens it again for the deposit capacity's return, and changes what
+# the trail texture's `.a` channel means -- it used to be written as a constant
+# 1.0 and now carries the withheld EMA. An older file's 1.0 washes out of the
+# EMA within a hundred ticks; the transient return it produces is bounded by
+# the clamp and slewed below anything visible.
 # Reading them costs a few lines and saves anyone upgrading their mature field.
 OLDEST_READABLE_VERSION = 1
 
@@ -122,12 +127,34 @@ BACKEND_SINCE = 4
 
 # The stats buffer is a raw byte blob rather than a named array per field, so
 # its *size* is the only thing a reader can check it against -- and that size
-# has changed, which makes it the one array whose expected shape is a function
-# of the version. Versions 1-4 wrote the 20-field block that predates the
-# feature-size loop. Recorded as a number rather than derived, because the
-# point of the entry is to describe a layout this build no longer has.
-STATS_BYTES_BEFORE_ELL = 80
-STATS_ELL_SINCE = 5
+# changes as controllers grow state, which makes it the one array whose
+# expected shape is a function of the version. Versions 1-4 wrote the 20-field
+# block that predates the feature-size loop; version 5 the 25-field block that
+# predates the deposit capacity's return. Recorded as numbers rather than
+# derived, because the point of each entry is to describe a layout this build
+# no longer has.
+STATS_BYTES_BY_VERSION = {1: 80, 2: 80, 3: 80, 4: 80, 5: 100}
+
+# The stats block's field order at each historical width, so a resume can carry
+# every quantity across a widening *by name*. Zero-extending the raw bytes is
+# not enough: both widenings inserted fields mid-struct rather than appending,
+# so under the new layout an old file's tail lands in the wrong fields -- a
+# version-4 exposure would resume as a feature-size reference. Fields all being
+# f32 is what keeps this a list of names rather than a schema.
+_STATS_COMMON = (
+    "sum_v", "sum_v2", "sum_activity", "count", "mean_v", "var_v",
+    "mean_activity", "alive_frac", "corr_feed", "corr_kill", "corr_deposit",
+    "corr_decay", "int_mass", "int_var", "int_activity", "prune_return",
+)
+_STATS_IMAGE = ("img_sum_l", "img_max_l", "img_count", "exposure")
+STATS_FIELDS_BY_VERSION = {
+    4: _STATS_COMMON + _STATS_IMAGE,
+    5: _STATS_COMMON
+        + ("mean_grad_v", "ell", "ell_ref", "corr_du", "ell_samples")
+        + _STATS_IMAGE,
+}
+for _v in (1, 2, 3):
+    STATS_FIELDS_BY_VERSION[_v] = STATS_FIELDS_BY_VERSION[4]
 
 # Rewritten from scratch every tick before anything reads them, so they are not
 # saved. Named here so the tests can check that this stays true.
@@ -708,9 +735,7 @@ def stats_bytes_for(version: int) -> int:
     unlike every texture here, that size is a function of the build rather than
     of the geometry.
     """
-    if version >= STATS_ELL_SINCE:
-        return gpu_params.STATS_DTYPE.itemsize
-    return STATS_BYTES_BEFORE_ELL
+    return STATS_BYTES_BY_VERSION.get(version, gpu_params.STATS_DTYPE.itemsize)
 
 
 def _expected_arrays(
@@ -848,13 +873,32 @@ def _write_texture3(device, texture, data: np.ndarray) -> None:
     )
 
 
-def _fit_stats(saved: np.ndarray) -> bytes:
-    """The saved stats blob at this build's width, zero-padded if it is older."""
+def _fit_stats(saved: np.ndarray, version: int) -> bytes:
+    """The saved stats blob under this build's layout, migrated field by field.
+
+    A file of the current version is passed through byte-for-byte. An older one
+    is parsed under the layout its version wrote (`STATS_FIELDS_BY_VERSION`)
+    and each field is copied into a fresh current-layout record by *name*;
+    fields the old build did not have start at zero, which for every widening
+    so far means the new controller re-derives its state from the restored
+    field within a few time constants. Copying bytes instead would misfile
+    everything after the insertion point -- the version-4 exposure multiplier,
+    for instance, would resume as the feature-size reference.
+    """
     payload = np.asarray(saved, dtype=np.uint8).reshape(-1)
-    width = gpu_params.STATS_DTYPE.itemsize
-    if payload.size >= width:
+    names = STATS_FIELDS_BY_VERSION.get(version)
+    if names is None:  # current layout, or a future one already refused
+        width = gpu_params.STATS_DTYPE.itemsize
         return payload[:width].tobytes()
-    return np.pad(payload, (0, width - payload.size)).tobytes()
+
+    old_dtype = np.dtype([(name, np.float32) for name in names])
+    record = np.frombuffer(
+        payload[: old_dtype.itemsize].tobytes(), dtype=old_dtype)[0]
+    current = np.zeros(1, dtype=gpu_params.STATS_DTYPE)
+    for name in names:
+        if name in gpu_params.STATS_DTYPE.names:
+            current[name] = record[name]
+    return current.tobytes()
 
 
 def _restore_walk(engine, saved: dict[str, Any]) -> None:
@@ -913,13 +957,15 @@ def restore(engine, checkpoint: Checkpoint, scheduler=None) -> bool:
     device = engine.device
     layout_for(engine.name).restore_arrays(engine, checkpoint.arrays)
 
-    # Zero-extended if it came from a build with a narrower block. Zero is the
-    # right filler for every field the widening added: the feature-size loop's
-    # sample counter is then zero, so it seeds its reference from the first live
-    # measurement of the restored field rather than from whatever a shorter file
-    # implied.
+    # Migrated by field name if it came from a build with a different layout.
+    # Fields a narrower file did not carry start at zero, which is the right
+    # value for every one so far: the controllers they belong to re-derive
+    # their state from the restored field within a few time constants.
     device.queue.write_buffer(
-        engine.stats_buf, 0, _fit_stats(checkpoint.arrays["stats"]))
+        engine.stats_buf, 0,
+        _fit_stats(
+            checkpoint.arrays["stats"],
+            int(checkpoint.meta.get("version") or FORMAT_VERSION)))
 
     saved = checkpoint.meta.get("engine") or {}
     engine.tick_count = int(saved.get("tick_count", 0))

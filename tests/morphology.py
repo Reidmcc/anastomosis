@@ -192,6 +192,9 @@ CLIMATE_SD = 0.11
 # asserted against them is an assertion about the default.
 TRAIL_QUANTILES = {0.5: 0.009, 0.9: 0.291, 0.99: 0.934}
 TRAIL_MAX = 3.01
+# Median V inside the bright-blob mask on the same field: the reaction level a
+# hub typically carries, for reasoning about the combined shaded density there.
+V_HUB_P50 = 0.21
 
 
 def climate_scale_field(

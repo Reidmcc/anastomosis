@@ -562,7 +562,10 @@ climate-varying `du` stays covered by `test_parity.py`.
 5. ~~ℓ in the reduce pass, with a drifting setpoint.~~ **Built**, and it is
    the step that turns the mean from an open-loop guess into something the
    controller can be held to; see below.
-6. Trail advection, behind a knob, once the rest is tuned.
+6. ~~Trail advection, behind a knob, once the rest is tuned.~~ **Built**,
+   alongside two mechanisms this list never anticipated, because the dots
+   turned out to live in a different field than every step above assumed;
+   see below.
 
 ~~Steps 1–3 should carry most of the value: polydisperse, migrating feature
 sizes plus genuine edge severance.~~ Step 2 carries the value. Step 3 works
@@ -1153,6 +1156,103 @@ advection) remains the largest untried lever, and is now more attractive than it
 was: with the shading gated on the network, shear that stretches and pinches
 filaments would reach the image far more directly than it would have when the
 picture was made of spots.
+
+### What the dots turned out to be, and what step 6 actually did
+
+Step 5 shipped, was watched on real hardware, and the report came back: sizes
+now vary, but the dots are still there — hundreds of them, still mostly
+circular. Attributing the bright blobs to a field and a layer, instead of
+assuming, settled it in one measurement: the blobs are **73% trail term**, at
+the front layer's own scale, and the network is holding **46% of its mass in
+its top 2% of texels**. The white dots are not Gray–Scott spots. They are
+*trail hubs* — the ordinary winner-take-all of trail following, which §4.9
+names in passing ("no capacity limit and no exit but `max_age`") and nothing
+anywhere counteracted. The reaction, which every §4.7 mechanism so far acts
+on, is the *background* texture — elongated, varied, and fine. Everything
+built above this line moved the field that was not the dots. (Founding
+respawn was ruled out as the hub source: a `found_fraction = 0` fork is
+statistically identical to its control.)
+
+A hub is round because agent congregation is isotropic plus a Gaussian blur,
+and stationary because nothing moves the trail field. So the fixes are a
+capacity, a carrier, and a knee.
+
+**Deposit capacity.** A deposit landing on trail at `deposit_cap` is halved
+(`1 / (1 + trail / cap)`), so hubs stop out-competing while filaments — an
+order of magnitude below the cap — barely notice, and founding cohorts on bare
+ground are untouched. What the capacity withholds is tracked as an EMA in the
+trail texture's spare `.a` channel, summed in the reduce pass against the
+income EMA, and handed back through the agent deposit exactly as flux
+pruning's removal is: a redistribution from hubs to wherever traffic is, not a
+sink.
+
+Two calibration findings, both of which invert naive intuition:
+
+- *Lower is not stronger.* At cap 1.2, across three seeds, the top-2% mass
+  share falls 0.49 → 0.33 and the bright-blob count roughly halves, with trail
+  mass matching the uncapped control to 1% and `corr_decay` unmoved — the
+  prune postmortem's full checklist. At cap 0.6 the return **pins its clamp**
+  and the capacity becomes exactly the sink it must not be: mass falls 11% and
+  the hubs survive *better* than at 1.2. The reason is that deposits land on
+  the network by construction — agents ride the strands they follow — so the
+  deposit-weighted trail level is several times the field mean and the
+  equilibrium withheld/landed ratio is well above one. The return's bound is
+  3, sized from that, and `cap_return` is in the telemetry line because a
+  pinned return is the failure to watch for.
+- At cap 2.0 the effect fades (top-2% share 0.42): the band is real on both
+  sides.
+
+**Trail advection — step 6, at last.** The trail rides the velocity field at
+`trail_advect` of the pigment's rate, all four channels together, in the same
+semi-Lagrangian form. The velocity pass moved ahead of the trail pass in the
+tick for it, so `velocity` stays a derived field — written every tick before
+anything reads it — rather than becoming checkpoint state; the
+structure-following flow component consequently reads the previous tick's
+reaction, one diffusion step behind, which nothing can see.
+
+What is verified is the mechanism and the invariants, in step 4's tradition: a
+blob under a known velocity translates by exactly `velocity · advect_dt ·
+trail_advect` per tick with the carry conserving mass to 0.5%, and across
+seeds the sweep shows mass, mean V, activity and every homeostat correction
+unmoved with it on. The aggregate — whether the network's 400-tick
+autocorrelation falls — did **not** resolve above run-to-run variance at test
+resolution (0.89 and 0.99 on two seeds at gain 0.5), exactly as step 4's churn
+did not; §13's caveat applies. One measured cost is accepted: with the trail
+sliding under the depositors the capacity de-hubs somewhat less (top-2% share
+0.33 → 0.39), which is the price of the hubs being moving objects rather than
+fixed ones.
+
+**The knee.** The step-5 rebalance stopped the *reaction* clipping and thereby
+handed the ceiling to the hubs — a third of the bright-blob texels sat clipped
+flat. The trail's rendered term is now `knee · tanh(trail / knee)`: within 12%
+of linear at filament level, bounded at `knee` above it, so no amount of hub
+mass renders as a hard-rimmed white disc. Chosen against dumped fields —
+knee 0.45 takes the clipped fraction of blob texels from 32% to 3% while
+moving filament brightness by under 0.003 — and it dims hubs rather than
+removes them, which is the capacity's job. The two compose: the capacity
+thins the hubs' mass, the knee stops whatever remains from clipping, and the
+advection keeps it moving.
+
+Together, on the pigment structure term at test scale: bright-blob count 72 →
+34 (three-seed means, capacity alone; 56 with advection on), no invariant
+moved, and the picture's brightest object is now the network. Whether that is
+*enough* is the same §13 question as ever — these are numbers about a field,
+and the complaint is about a picture.
+
+**One interaction found by a failing test, and what it turned out to mean.**
+With the trail mobile, the rift soak test's severance ratio went to noise —
+and isolating it cleared the suspect the arithmetic pointed at: the capacity
+does not blunt rifts at all (severance 0.80 with it, 0.79 without, same seed
+and ground). What advection does is dissolve the *measurement*: severance is a
+statement about the ground under a fixed disc, and a mobile network has no
+such ground — the same seed's disc sits on trail at 0.57 with advection off
+and 0.002 with it on, because the network had drifted elsewhere. The rift
+itself still works at shipped defaults whenever there is ground to sever:
+on a seed whose disc lands on material, severance measures 0.53 with the
+usual heal behind it. Its appearance shifts from "a gap grows and heals"
+toward "a zone the network thins while crossing", which may well be the
+better look and is a §13 question. The test now asserts the mechanism with
+the trail held still, and says why.
 
 ---
 
@@ -1888,8 +1988,8 @@ Steps 1–6 produce something already usable for its purpose.
 
 Built and verified headless against a software adapter (Mesa lavapipe), so every
 shader compiles and the full tick/render sequence runs in CI without a GPU. The
-suite is 269 tests and takes eight to fourteen minutes there depending on the
-machine: 258 pass and 11 skip for want of a display. The checkpoint-determinism check that this section previously
+suite is 273 tests and takes eight to fifteen minutes there depending on the
+machine: 262 pass and 11 skip for want of a display. The checkpoint-determinism check that this section previously
 recorded as failing on that adapter passes on the llvmpipe build measured here;
 it was never explained, so treat that as an observation about one adapter build
 rather than as a fix.
@@ -1911,20 +2011,19 @@ one saved field each so switching between them is not destructive.
 
 **Not implemented:**
 
-- **The morphology work in §4.7**, step 6. Feature size is now polydisperse
-  and migrating — the third climate pair drives the reaction's diffusion rate
-  per region — and the global mean of that rate is no longer an open-loop
-  guess: step 5 is in, so the characteristic length scale is measured in the
-  reduce pass and a controller holds it to a setpoint that is itself a slow
-  walk referenced to the field's own. Step 4 is in: agents repel from junctions
-  where the climate asks them to, respawns land in founding cohorts on bare
-  ground, and a `rift` event takes a region's network apart and lets it heal.
-  Its individual mechanisms are asserted and its invariants hold, but the
-  aggregate churn it was meant to buy could not be resolved above run-to-run
-  variance at test resolution — see §4.7. Flux pruning (step 3) is still
-  switched off; the founding respawn it was waiting for exists now, but nothing
-  measured says it has earned being switched on. Outstanding: trail advection
-  (step 6), which step 5's shading change makes more attractive than it was.
+- **The morphology work in §4.7 is now built through step 6.** Feature size is
+  polydisperse and migrating (the third climate pair), its global mean is
+  closed-loop (step 5's ℓ controller), the trail hubs that turned out to *be*
+  the reported dots have a deposit capacity working against them and a shading
+  knee stopping what remains from clipping, and the trail rides the velocity
+  field (step 6). Step 4 is in: agents repel from junctions where the climate
+  asks them to, respawns land in founding cohorts on bare ground, and a `rift`
+  event takes a region's network apart and lets it heal. As with step 4, what
+  the tests assert for the trail advection is the mechanism and the
+  invariants; its aggregate effect did not resolve above run-to-run variance
+  at test resolution — see §4.7. Flux pruning (step 3) is still switched off;
+  the founding respawn it was waiting for exists now, but nothing measured
+  says it has earned being switched on.
 - **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is
   untested, since a software adapter offers no way to provoke a device loss.
 
