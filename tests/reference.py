@@ -7,8 +7,8 @@ Two jobs:
 * fast offline exploration of the Gray-Scott parameter map, which is how the
   defaults in :mod:`anastomosis.config` were chosen rather than guessed.
 
-These must stay in step with ``reaction.wgsl``, ``trail.wgsl`` and
-``advect.wgsl``.
+These must stay in step with ``reaction.wgsl``, ``trail.wgsl``,
+``advect.wgsl`` and ``psi.wgsl``.
 """
 
 from __future__ import annotations
@@ -166,3 +166,163 @@ def linear_srgb_to_oklab(rgb: np.ndarray) -> np.ndarray:
 def lightness(rgb: np.ndarray) -> np.ndarray:
     """Oklab L only, which is what the flash-safety bound is expressed in."""
     return linear_srgb_to_oklab(rgb)[..., 0]
+
+
+# ---------------------------------------------------------------------------
+# The flow's vector potential, matching psi.wgsl and the tiling noise in
+# common.wgsl.
+#
+# Ported because the property that matters here is not visible in any single
+# value: the noise has to *close on the domain*, and the cost of it not closing
+# is a statistic of the field it drives, measured over hundreds of ticks
+# (tests/test_seam.py).
+# ---------------------------------------------------------------------------
+
+MASK32 = 0xFFFFFFFF
+
+
+def pcg(values: np.ndarray) -> np.ndarray:
+    """The PRNG from ``common.wgsl``. Carried in uint64 and masked, because
+    numpy's uint32 overflow behaviour has varied across versions and the hash
+    is only the hash if it wraps."""
+    v = np.asarray(values, dtype=np.uint64) & MASK32
+    state = (v * np.uint64(747796405) + np.uint64(2891336453)) & MASK32
+    shift = (state >> np.uint64(28)) + np.uint64(4)
+    word = (((state >> shift) ^ state) * np.uint64(277803737)) & MASK32
+    return ((word >> np.uint64(22)) ^ word) & MASK32
+
+
+def pcg3(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
+    return pcg(a ^ pcg(b ^ pcg(c)))
+
+
+def hash_grid(ix: np.ndarray, iy: np.ndarray, s: int) -> np.ndarray:
+    """Lattice value in [-1, 1], matching ``hash_grid`` in common.wgsl."""
+    ix = np.asarray(ix, dtype=np.uint64) & MASK32
+    iy = np.asarray(iy, dtype=np.uint64) & MASK32
+    h = pcg3(
+        (ix * np.uint64(374761393)) & MASK32,
+        (iy * np.uint64(668265263)) & MASK32,
+        np.full(ix.shape, s & MASK32, dtype=np.uint64),
+    )
+    return h.astype(np.float64) * 2.3283064365386963e-10 * 2.0 - 1.0
+
+
+def value_noise_tiled(
+    px: np.ndarray, py: np.ndarray, period: int, s: int
+) -> np.ndarray:
+    """``value_noise_tiled`` from common.wgsl: the lattice index wraps at
+    ``period``, so the result repeats exactly every ``period`` units."""
+    ix, iy = np.floor(px), np.floor(py)
+    fx, fy = px - ix, py - iy
+    wx = fx * fx * fx * (fx * (fx * 6.0 - 15.0) + 10.0)
+    wy = fy * fy * fy * (fy * (fy * 6.0 - 15.0) + 10.0)
+    i, j = ix.astype(np.int64), iy.astype(np.int64)
+    lo_x, lo_y = i % period, j % period
+    hi_x, hi_y = (i + 1) % period, (j + 1) % period
+    a = hash_grid(lo_x, lo_y, s)
+    b = hash_grid(hi_x, lo_y, s)
+    c = hash_grid(lo_x, hi_y, s)
+    d = hash_grid(hi_x, hi_y, s)
+    top = a + (b - a) * wx
+    bottom = c + (d - c) * wx
+    return top + (bottom - top) * wy
+
+
+# The per-octave offsets and seed mixes of ``value_noise_octaves_tiled``. The
+# offsets exist to keep the three lattices off each other's grid lines; being
+# constants, they cannot affect the period.
+_OCTAVES = (
+    (1, 0.37, 0.11, 0x00000000, 0.62),
+    (2, 4.19, 7.53, 0x9E3779B9, 0.26),
+    (4, 2.71, 5.09, 0x85EBCA6B, 0.12),
+)
+
+
+def value_noise_octaves_tiled(
+    u: np.ndarray, v: np.ndarray, period: int, s: int
+) -> np.ndarray:
+    """``value_noise_octaves_tiled`` from common.wgsl, over uv in [0, 1]."""
+    n = max(int(period), 1)
+    # The period is folded into the stream, so that two calls at neighbouring
+    # periods are independent rather than sharing lattice values.
+    stream = (s ^ ((n * 0x27D4EB2F) & MASK32)) & MASK32
+    total = np.zeros(np.broadcast(u, v).shape, dtype=np.float64)
+    for multiple, off_x, off_y, mix, weight in _OCTAVES:
+        cells = n * multiple
+        total += value_noise_tiled(
+            u * cells + off_x, v * cells + off_y, cells, stream ^ mix
+        ) * weight
+    return total
+
+
+def psi_increment(
+    u: np.ndarray, v: np.ndarray, noise_scale: float, s: int
+) -> np.ndarray:
+    """The OU forcing of ``psi.wgsl``: two bracketing integer periods,
+    crossfaded, with the weights normalised in quadrature so that a
+    non-integer ``psi_noise_scale`` does not thin the forcing."""
+    scale = max(float(noise_scale), 1.0)
+    period = int(np.floor(scale))
+    blend = scale - np.floor(scale)
+    norm = 1.0 / np.sqrt(max((1.0 - blend) ** 2 + blend ** 2, 1e-6))
+    return norm * (
+        value_noise_octaves_tiled(u, v, period, s) * (1.0 - blend)
+        + value_noise_octaves_tiled(u, v, period + 1, s) * blend
+    )
+
+
+def psi_run(
+    width: int = 64,
+    height: int = 48,
+    ticks: int = 700,
+    theta: float = 0.0022,
+    sigma: float = 0.085,
+    noise_scale: float = 3.0,
+    seed: int = 0x5EED,
+    increment=psi_increment,
+) -> np.ndarray:
+    """Evolve psi for `ticks`, matching ``psi.wgsl``.
+
+    ``increment`` is injectable so that a test can drive the same integrator
+    with a forcing that does *not* tile and show that the difference is the
+    forcing, not the integrator.
+    """
+    u, v = np.meshgrid(
+        (np.arange(width) + 0.5) / width, (np.arange(height) + 0.5) / height
+    )
+    psi = np.zeros((height, width), dtype=np.float64)
+    for tick in range(ticks):
+        neighbours = (
+            np.roll(psi, 1, 1) + np.roll(psi, -1, 1)
+            + np.roll(psi, 1, 0) + np.roll(psi, -1, 0)
+        )
+        smoothed = psi + (neighbours * 0.25 - psi) * 0.25
+        s = (tick ^ seed ^ 0x5BF03635) & MASK32
+        psi = np.clip(
+            smoothed * (1.0 - theta) + increment(u, v, noise_scale, s) * sigma,
+            -8.0, 8.0,
+        )
+    return psi
+
+
+def seam_curvature(field: np.ndarray, margin: int = 4) -> tuple[float, float]:
+    """How much more sharply the field bends across each wrap seam than inside.
+
+    Curvature, not gradient, because the artefact is a *kink*. A forcing that
+    does not close on the domain leaves the field it drives continuous but bent
+    along u=0 and v=0, and a second difference is what a bend shows up in; the
+    first difference is dominated by the field's own large-scale slope, which
+    varies enough between runs to swamp the thing being measured.
+
+    Returns the ratio for each axis. 1.0 means the seam bends no more than
+    anywhere else, which is what a genuinely toroidal field looks like.
+    """
+    height, width = field.shape
+    bend_x = np.abs(np.roll(field, -1, 1) - 2.0 * field + np.roll(field, 1, 1))
+    bend_y = np.abs(np.roll(field, -1, 0) - 2.0 * field + np.roll(field, 1, 0))
+    across_u = bend_x[:, [width - 1, 0]].mean()
+    across_v = bend_y[[height - 1, 0], :].mean()
+    inside_u = bend_x[:, margin:width - margin].mean()
+    inside_v = bend_y[margin:height - margin, :].mean()
+    return float(across_u / inside_u), float(across_v / inside_v)

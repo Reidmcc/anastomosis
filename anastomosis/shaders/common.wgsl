@@ -47,38 +47,6 @@ fn gauss(seed: ptr<function, u32>) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
-// Smooth spatial noise, used only as the *increment* to a stored field.
-// White in time, smooth in space; the field's own integration supplies temporal
-// smoothness.
-// ---------------------------------------------------------------------------
-
-fn hash_grid(ix: i32, iy: i32, s: u32) -> f32 {
-    let h = pcg3(u32(ix) * 374761393u, u32(iy) * 668265263u, s);
-    return f32(h) * U32_TO_UNIT * 2.0 - 1.0;
-}
-
-fn value_noise(p: vec2<f32>, s: u32) -> f32 {
-    let i = floor(p);
-    let f = p - i;
-    // Quintic fade: C2 continuous, so the derivative (which becomes velocity
-    // via curl) has no visible creases.
-    let w = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    let ix = i32(i.x);
-    let iy = i32(i.y);
-    let a = hash_grid(ix, iy, s);
-    let b = hash_grid(ix + 1, iy, s);
-    let c = hash_grid(ix, iy + 1, s);
-    let d = hash_grid(ix + 1, iy + 1, s);
-    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
-}
-
-fn value_noise_octaves(p: vec2<f32>, s: u32) -> f32 {
-    return value_noise(p, s) * 0.62
-         + value_noise(p * 2.03, s ^ 0x9e3779b9u) * 0.26
-         + value_noise(p * 4.11, s ^ 0x85ebca6bu) * 0.12;
-}
-
-// ---------------------------------------------------------------------------
 // Sampling
 // ---------------------------------------------------------------------------
 
@@ -90,6 +58,74 @@ fn wrap_uv(uv: vec2<f32>) -> vec2<f32> {
 
 fn wrap_texel(p: vec2<i32>, dims: vec2<i32>) -> vec2<i32> {
     return ((p % dims) + dims) % dims;
+}
+
+// ---------------------------------------------------------------------------
+// Smooth spatial noise, used only as the *increment* to a stored field.
+// White in time, smooth in space; the field's own integration supplies temporal
+// smoothness.
+//
+// The noise *tiles*: its lattice wraps at a whole number of cells across the
+// domain, so the field it produces is exactly periodic. That is not a nicety.
+// Every field this drives is toroidal, and a forcing that does not close on
+// the domain puts a permanent discontinuity along the wrap seam of whatever
+// integrates it -- see psi.wgsl, where the untiled version left a line of
+// steep gradient at u=0 and v=0 that curl turned into a jet.
+// ---------------------------------------------------------------------------
+
+fn hash_grid(ix: i32, iy: i32, s: u32) -> f32 {
+    let h = pcg3(u32(ix) * 374761393u, u32(iy) * 668265263u, s);
+    return f32(h) * U32_TO_UNIT * 2.0 - 1.0;
+}
+
+// `period` is the lattice size the index wraps at, so sampling p over any
+// interval of length `period` gives a field with f(p + period) == f(p),
+// interpolation across the join included: the two lattice rows either side of
+// it are the same row. The identity is exact in the maths and holds to the
+// rounding of the sample coordinate in floats, which is ~1e-7 here against
+// texel-to-texel steps of ~1e-2 in the field itself.
+fn value_noise_tiled(p: vec2<f32>, period: vec2<i32>, s: u32) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    // Quintic fade: C2 continuous, so the derivative (which becomes velocity
+    // via curl) has no visible creases.
+    let w = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let lo = wrap_texel(vec2<i32>(i), period);
+    let hi = wrap_texel(vec2<i32>(i) + vec2<i32>(1, 1), period);
+    let a = hash_grid(lo.x, lo.y, s);
+    let b = hash_grid(hi.x, lo.y, s);
+    let c = hash_grid(lo.x, hi.y, s);
+    let d = hash_grid(hi.x, hi.y, s);
+    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
+
+// Three octaves over `uv` in [0, 1], at `period` cells across the domain.
+//
+// The frequency ratios are integers, which is what tiling requires: a 2.03x
+// octave has no period on the domain at all. What those non-integer ratios
+// were avoiding -- every octave's lattice landing on the same grid lines, which
+// leaves a visible square signature -- is dealt with by offsetting each octave
+// instead. A constant offset cannot affect the period, since f(p + c) repeats
+// exactly where f does.
+fn value_noise_octaves_tiled(uv: vec2<f32>, period: i32, s: u32) -> f32 {
+    let n = max(period, 1);
+    // The period is folded into the stream because `hash_grid` does not take
+    // it: two calls at neighbouring periods walk overlapping lattice indices
+    // and would otherwise draw the same lattice *values*, leaving the two
+    // correlated. psi.wgsl crossfades neighbouring periods and normalises the
+    // weights in quadrature, which is only right if they are independent --
+    // measured, sharing the stream left the forcing 15% strong halfway between
+    // two periods.
+    let stream = s ^ (u32(n) * 0x27d4eb2fu);
+    return value_noise_tiled(
+               uv * f32(n) + vec2<f32>(0.37, 0.11),
+               vec2<i32>(n), stream) * 0.62
+         + value_noise_tiled(
+               uv * f32(2 * n) + vec2<f32>(4.19, 7.53),
+               vec2<i32>(2 * n), stream ^ 0x9e3779b9u) * 0.26
+         + value_noise_tiled(
+               uv * f32(4 * n) + vec2<f32>(2.71, 5.09),
+               vec2<i32>(4 * n), stream ^ 0x85ebca6bu) * 0.12;
 }
 
 // ---------------------------------------------------------------------------

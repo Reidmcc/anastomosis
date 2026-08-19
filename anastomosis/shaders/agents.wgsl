@@ -145,7 +145,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cc = textureSampleLevel(clim_c, samp, wrap_uv(uv), 0.0);
 
     let sensor_angle = max(0.02, params.sensor_angle + params.range_sensor_angle * ca.z);
-    let sensor_dist = max(1.0, params.sensor_distance + params.range_sensor_distance * ca.w);
+    // Sensing reach, bounded against the width of what it senses (DESIGN.md
+    // §4.9). Past roughly four times the trail's diffusion sigma an agent stops
+    // following the strand it is on and starts steering at whatever it can see
+    // from a distance; the runs that produces are straight, and on a torus a
+    // straight run closes on itself, so it reinforces every lap. Measured, the
+    // whole population ends on one axis-aligned strand within 1500 ticks.
+    //
+    // The ceiling is a clamp rather than a smaller `range_sensor_distance`
+    // because the climate reaches its own bounds in the tails: a region that
+    // wandered over the threshold for a few hundred ticks would nucleate a line
+    // that outlives the excursion. Must stay in step with
+    // config.clamp_sensor_distance.
+    let sensor_dist = clamp(
+        params.sensor_distance + params.range_sensor_distance * ca.w,
+        1.0,
+        max(params.sensor_distance_max, 1.0));
     // Flux pruning removes a fraction of the trail field's throughput from
     // strands that traffic has abandoned (trail.wgsl). It is handed back here,
     // scaled onto the deposit, so pruning redistributes rather than drains: the

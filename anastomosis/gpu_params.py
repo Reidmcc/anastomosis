@@ -38,6 +38,7 @@ SIM_FIELDS: list[Field] = [
     ("speed", "f32"),
     ("sensor_angle", "f32"),
     ("sensor_distance", "f32"),
+    ("sensor_distance_max", "f32"),
     ("turn_rate", "f32"),
     ("jitter", "f32"),
     ("deposit", "f32"),

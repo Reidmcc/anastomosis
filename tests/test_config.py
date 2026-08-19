@@ -199,3 +199,45 @@ def test_hue_anchor_covers_the_circle():
     high = config.Config(macros=config.Macros(palette=1.0)).resolve()
     assert low.render.hue_anchor == pytest.approx(0.0)
     assert high.render.hue_anchor == pytest.approx(math.tau)
+
+
+def test_the_sensing_reach_stays_inside_the_band_it_is_stable_in():
+    """DESIGN.md §4.9: sensing reach is bounded by the width of what it senses.
+
+    An agent that senses much further than a strand is wide cuts corners hard
+    enough to straighten the strand it is following, and a straight strand on a
+    torus closes on itself after one lap and is then reinforced every lap. Past
+    a ratio of about four the whole population ends up on one such strand.
+
+    The bound has to hold in three places at once, which is why this asserts all
+    three: the base value, the `scale` macro that overrides it -- the macro used
+    to sweep from 4.7 to 6.3 and so was over the threshold along its entire
+    length, default included -- and the climate deviation on top of that, which
+    reaches its own clamp in the tails. The last of those is the shader's job;
+    :func:`config.clamp_sensor_distance` mirrors it.
+    """
+    for step in range(21):
+        cfg = config.Config()
+        cfg.macros.scale = step / 20.0
+        params = cfg.resolve()
+        agents = params.agents
+        ceiling = agents.sensor_reach_max * agents.trail_diffuse
+
+        ratio = agents.sensor_distance / agents.trail_diffuse
+        assert ratio < 2.8, (
+            f"scale={cfg.macros.scale:.2f} sets a sensing reach of "
+            f"{ratio:.2f}x the trail width; measured, 2.5 holds a network and "
+            f"3.2 was still half-condensed on a small field"
+        )
+
+        spread = params.climate.range_sensor_distance
+        for deviation in (-1.0, -0.5, 0.5, 1.0):
+            reach = config.clamp_sensor_distance(
+                agents.sensor_distance + spread * deviation, agents)
+            assert 1.0 <= reach <= ceiling + 1e-9, (
+                f"a climate deviation of {deviation:+.1f} reaches {reach:.2f}, "
+                f"outside the clamp's own band"
+            )
+
+    # And the ceiling itself must stay under what was measured to survive.
+    assert config.Config().resolve().agents.sensor_reach_max <= 3.7

@@ -38,8 +38,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Spatially smooth increment: sampled from coarse value noise so that psi
     // gains large-scale structure rather than per-texel hash.
+    //
+    // The noise has to *close on the domain*, and this is the field where that
+    // matters most, because psi is both toroidal and integrated: a forcing that
+    // jumps across the wrap seam is re-applied there every tick, and what
+    // accumulates is a permanent ridge of steep gradient along u=0 and v=0.
+    // Curl turns a ridge in psi into a jet in the velocity field -- measured at
+    // 9x the interior shear with the untiled noise -- and pigment, trail and
+    // climate all stretch along it. That was the line-like structure visible
+    // near the window edges: not an edge in the simulation, but the seam of the
+    // noise lattice, drawn inward by the compositor's aspect and depth scaling.
+    //
+    // Tiling needs a whole number of lattice cells across the domain, and
+    // `psi_noise_scale` is continuous -- the `scale` macro drives it -- so the
+    // two bracketing periods are crossfaded. The weights are normalised in
+    // quadrature rather than summing to one, because the two fields are
+    // incoherent: linear weights would thin the increment by 30% halfway
+    // between periods, which would quietly slow the weather down at half the
+    // settings of a knob that is not supposed to touch it.
     let uv = (vec2<f32>(gid.xy) + 0.5) / vec2<f32>(dims);
-    let increment = value_noise_octaves(uv * params.psi_noise_scale, params.tick ^ params.seed ^ 0x5bf03635u);
+    let noise_scale = max(params.psi_noise_scale, 1.0);
+    let period = i32(floor(noise_scale));
+    let blend = noise_scale - floor(noise_scale);
+    let norm = inverseSqrt(
+        max((1.0 - blend) * (1.0 - blend) + blend * blend, 1e-6));
+    let noise_seed = params.tick ^ params.seed ^ 0x5bf03635u;
+    let increment = norm * (
+        value_noise_octaves_tiled(uv, period, noise_seed) * (1.0 - blend)
+        + value_noise_octaves_tiled(uv, period + 1, noise_seed) * blend);
 
     var value = smoothed * (1.0 - params.psi_theta) + increment * params.psi_sigma;
     value = clamp(finite_or(value, 0.0), -8.0, 8.0);
