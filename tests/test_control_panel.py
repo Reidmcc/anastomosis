@@ -1,10 +1,19 @@
 """The panel's side of the parameter model -- DESIGN.md §9.
 
-Two things are worth pinning without standing up a window for them: that every
-macro is reachable from the panel, and that the one macro shown as something
-other than a bare number says the right thing. Both are the kind of mistake
-that is invisible until someone opens the panel and finds a knob missing or a
-readout that disagrees with the simulation.
+Three things are worth pinning without standing up a window for them: that
+every macro is reachable from the panel, that the controls shown as something
+other than a bare number say the right thing, and that the slab's thickness
+slider can only propose thicknesses the geometry would actually build. All are
+the kind of mistake that is invisible until someone opens the panel and finds a
+knob missing, a readout that disagrees with the simulation, or a slider that
+does not land where it says it does.
+
+The thickness row is then exercised as a widget, offscreen and against the
+shared stand-in application, because what it does is destructive: it discards a
+field that may have been growing for days. That it asks first, that declining
+really does leave the field alone, and that it is dead under a backend with no
+slab to reshape are properties of the wiring rather than of any function, so
+they are checked through the wiring.
 
 These import the panel module, which needs PySide6, but never construct a
 widget -- so they run headless and cost nothing.
@@ -89,3 +98,136 @@ def test_the_readout_agrees_with_the_simulation_across_the_whole_travel():
         assert control_panel.describe_interval(from_curve) == (
             control_panel.describe_interval(resolved)
         )
+
+
+# ---------------------------------------------------------------------------
+# The slab's thickness
+# ---------------------------------------------------------------------------
+
+
+def test_the_thickness_slider_counts_in_steps_the_geometry_honours():
+    """A slider position that rounds to a different slab is a control that
+    does not land where it says it does. The geometry rounds the thickness up
+    to a multiple of eight, so the slider counts in eights."""
+    from anastomosis import volume as volume_module
+
+    params = config.Config().resolve()
+    low, high = volume_module.depth_limits(2560, 1440, params)
+    assert low % control_panel.DEPTH_STEP == 0
+    assert high % control_panel.DEPTH_STEP == 0
+
+    for position in range(low // control_panel.DEPTH_STEP,
+                          high // control_panel.DEPTH_STEP + 1):
+        wanted = position * control_panel.DEPTH_STEP
+        params.volume.depth = wanted
+        built = volume_module.VolumeGeometry.derive(2560, 1440, params)
+        assert built.depth == wanted, (
+            f"the slider can ask for {wanted} and would get {built.depth}")
+
+
+def test_the_thickness_readout_prices_the_slab_it_describes():
+    from anastomosis import volume as volume_module
+
+    params = config.Config().resolve()
+    geometry = volume_module.VolumeGeometry.derive(2560, 1440, params)
+    line = control_panel.describe_slab(geometry)
+    assert "512 x 288 x 48" in line
+    assert control_panel.describe_bytes(geometry.field_bytes) in line
+
+
+@pytest.mark.parametrize(
+    "count, expected",
+    [
+        (650 << 20, "650 MB"),
+        (1 << 30, "1.0 GB"),
+        ((1 << 30) * 39 // 10, "3.9 GB"),
+    ],
+)
+def test_the_memory_readout_reads_as_english(count, expected):
+    assert control_panel.describe_bytes(count) == expected
+
+
+# ---------------------------------------------------------------------------
+# The thickness row, as a widget
+# ---------------------------------------------------------------------------
+
+
+def _thickness_panel(monkeypatch, answer, backend="volumetric"):
+    """The panel offscreen, with the confirmation answered rather than shown."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+
+    import panelstub
+
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "question", staticmethod(lambda *a, **k: answer)
+    )
+
+    class App(panelstub.PanelApp):
+        def __init__(self):
+            super().__init__(backend)
+            self.asked: list[int] = []
+
+        def set_volume_depth(self, depth: int) -> int:
+            self.asked.append(int(depth))
+            return super().set_volume_depth(depth)
+
+    app = App()
+    return app, control_panel.ControlPanel(app)
+
+
+def test_the_thickness_row_offers_the_range_the_geometry_allows(monkeypatch):
+    """The slider spans the whole travel and starts where the field is."""
+    app, panel = _thickness_panel(monkeypatch, None)
+    low, high = app.volume_depth_limits()
+    assert panel.thickness_slider.minimum() * control_panel.DEPTH_STEP == low
+    assert panel.thickness_slider.maximum() * control_panel.DEPTH_STEP == high
+    assert (panel.thickness_slider.value() * control_panel.DEPTH_STEP
+            == app.volume_slab().depth)
+    # Nothing to do until the slider has been moved off where the field is.
+    assert not panel.thickness_apply.isEnabled()
+    assert control_panel.describe_slab(app.volume_slab()) == (
+        panel.thickness_note.text())
+    panel.close()
+
+
+def test_confirming_a_new_thickness_grows_a_new_slab(monkeypatch):
+    from PySide6 import QtWidgets
+
+    app, panel = _thickness_panel(monkeypatch, QtWidgets.QMessageBox.Yes)
+    wanted = 144
+    panel.thickness_slider.setValue(wanted // control_panel.DEPTH_STEP)
+    assert panel.thickness_apply.isEnabled(), (
+        "a thickness other than the running one and nothing to press")
+    assert str(wanted) in panel.thickness_note.text()
+
+    panel.thickness_apply.click()
+    assert app.asked == [wanted]
+    # And the row settles onto the new thickness, with nothing left to apply.
+    assert (panel.thickness_slider.value() * control_panel.DEPTH_STEP) == wanted
+    assert not panel.thickness_apply.isEnabled()
+    panel.close()
+
+
+def test_declining_leaves_the_field_at_the_thickness_it_had(monkeypatch):
+    """Hours of accumulated field, so "no" has to mean nothing happened."""
+    from PySide6 import QtWidgets
+
+    app, panel = _thickness_panel(monkeypatch, QtWidgets.QMessageBox.No)
+    was = panel.thickness_slider.value()
+    panel.thickness_slider.setValue(144 // control_panel.DEPTH_STEP)
+    panel.thickness_apply.click()
+    assert app.asked == []
+    assert panel.thickness_slider.value() == was, "the slider kept the refusal"
+    panel.close()
+
+
+def test_the_thickness_row_is_dead_under_the_layered_backend(monkeypatch):
+    """There is no slab to reshape, and a control that silently does nothing is
+    worse than one that says why it cannot."""
+    app, panel = _thickness_panel(monkeypatch, None, backend="layered")
+    assert not panel.thickness_slider.isEnabled()
+    assert not panel.thickness_apply.isEnabled()
+    assert panel.thickness_note.text() == control_panel.THICKNESS_FOR_LAYERED
+    panel.close()

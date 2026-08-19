@@ -52,12 +52,13 @@
 // Normalising by the *slab's* thickness instead -- so that a ray crossing the
 // whole depth at density one accumulates `extinction` -- is the obvious
 // alternative and is the wrong reading. A filament occupies a few voxels of
-// forty-eight, so under that rule it would pick up about an eighth of the
-// optical depth the same setting gives it in the compositor, and
-// `filament_glow` would mean two different things depending on which backend
-// was running. The exposure governor would hide most of the difference by
-// lifting the whole image, ground included, which is the wrong correction
-// applied to the wrong thing.
+// however many the slab is deep, so under that rule it would pick up a small
+// fraction of the optical depth the same setting gives it in the compositor --
+// an eighth of it at the default thickness -- and `filament_glow` would mean
+// two different things depending on which backend was running, and a third
+// thing again whenever the thickness moved. The exposure governor would hide
+// most of the difference by lifting the whole image, ground included, which is
+// the wrong correction applied to the wrong thing.
 //
 // Six voxels is the width of a Gray-Scott feature at the default `scale`,
 // taken as the full width of a filament rather than as the trail's diffusion
@@ -65,8 +66,9 @@
 // `scale` macro and with the climate, so it is an approximation on purpose --
 // the alternative is a per-voxel feature-size estimate, and nothing here needs
 // that precision. Expressed in voxels rather than as a fraction of the depth
-// so that changing `volume.depth` alters how much material a ray passes
-// through -- which it should -- without also altering how opaque any of it is.
+// so that changing `volume.depth` -- which the control panel does -- alters how
+// much material a ray passes through, which is the entire point of moving it,
+// without also altering how opaque any of that material is.
 const FEATURE_VOXELS: f32 = 6.0;
 
 // Once this little light is still getting through, everything left behind is
@@ -145,8 +147,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         vec3<f32>(render.light_x, render.light_y, render.light_z)
         + vec3<f32>(0.0, 0.0, 1e-5));
     let shadow_steps = render.shadow_steps;
-    let shadow_step = render.shadow_reach * render.slab_depth
-        / f32(max(shadow_steps, 1u));
+    // `shadow_reach` arrives as a world length rather than as a fraction of
+    // the slab's thickness, because what the shadow ray is probing is a
+    // filament and not the slab: a few filament widths toward the light is
+    // what gives structure interior shading, whether the slab is forty-eight
+    // voxels deep or three hundred.
+    let shadow_step = render.shadow_reach / f32(max(shadow_steps, 1u));
 
     // Depth of field: lateral blur radius in *voxels* at the far face. Kept in
     // voxels right up to the tap, and divided by each axis's own resolution

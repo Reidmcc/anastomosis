@@ -1201,9 +1201,10 @@ the layered path.
 
 ### 5.1 Volumetric slab (alternate backend)
 
-A thin slab — `512 × 288 × 48` ≈ 7.1 M voxels — keeps usable lateral resolution while
-giving genuine volume. 48 depth slices is ample for parallax and occlusion given that
-DOF blurs the far field anyway.
+A thin slab — `512 × 288 × 48` ≈ 7.1 M voxels at the default thickness — keeps usable
+lateral resolution while giving genuine volume. 48 depth slices is enough for parallax
+and occlusion given that DOF blurs the far field anyway, and it is where the thickness
+starts rather than where it stays: see *How thick* below.
 
 - Sim: 7.1 M voxels × 6 passes × 20 Hz ≈ 850 M voxel-ops/s ≈ **20 GB/s** — ~3% of a
   3080's bandwidth.
@@ -1280,13 +1281,52 @@ would give every structure at a given (x, y) the same feed, the same kill and th
 same feature size however far apart in z, and the volume would read as a thick
 sheet. A regime is a region of the slab.
 
+#### How thick
+
+Forty-eight voxels is a slab a ray crosses one or two filaments of, and that is
+about as subtle as genuine volume gets: the mechanisms are all working, and there
+is not much material for them to work *on*. So the thickness is a knob — the only
+piece of the slab's geometry the control panel moves — running from 8 voxels up to
+the shorter lateral axis, which is 288 on a 16:9 display. It is structural, so it
+grows a new field; and unlike the backend switch it cannot keep the old one, since
+a slab of a different depth is a differently shaped array and nothing resamples one
+into the other.
+
+What it costs is memory, linearly and almost exactly: ~92 bytes per voxel, so ~13 MB
+per slice at 512 × 288, from ~650 MB at the default to ~3.9 GB at the ceiling. The
+panel quotes the figure beside the slider rather than leaving it to be discovered.
+
+What it buys stops arriving before the ceiling does, and for a reason worth stating:
+extinction is calibrated *per filament* (see `raymarch.wgsl`), so a ray's optical
+depth grows with the number of filaments it crosses, which grows with the thickness.
+Six times the depth is roughly six times the accumulated optical depth, and past some
+thickness — dependent on the `intensity` macro, since that sets how much material
+there is — the near structure is opaque enough that the far face contributes nothing
+the eye can find. Beyond that point the extra voxels are memory spent on material
+the camera cannot see. The ceiling is where the shape stops being a slab; the useful
+range ends somewhere below it, and where exactly is a judgement for a real GPU.
+
+Making the thickness a knob also forced a re-expression that was overdue. Three of
+the march's quantities were fractions of the slab's depth, which is harmless while
+the depth is fixed and wrong once it moves: held as fractions, a slab six times
+deeper would fade six times as much of its crisp near face at the toroidal seam, and
+send its shadow rays six times as far on the same six steps — blotches rather than
+shading. Both were calibrated against a *filament*, not against the slab, so both are
+now lengths in voxels (`depth_window_voxels`, `shadow_voxels`) and come out the same
+absolute size at every thickness. The third is the march itself, which takes one step
+per slice up to a ceiling (`volume.steps`, 160), because a thick slab marched at a
+thin slab's step count is a ray stepping over whole filaments. Only the amount of
+material a ray passes through is left to vary with the knob, which is the whole point
+of moving it.
+
 The one thing genuinely lost is lateral resolution, and it is the reason the
 layered path remains the default: 512 voxels across against 2560, so filaments are
 about five display pixels wide rather than one. Motion is unaffected in the way
 that matters — features are five times larger *and* move five times faster in
 absolute terms, so feature-widths per second, which is what the eye reads at this
 timescale, is the same under both. Memory is the other real cost: ~650 MB of
-`rgba16float` against ~90 MB for the 1440p stack.
+`rgba16float` against ~90 MB for the 1440p stack, and up to ~3.9 GB if the
+thickness is taken to its ceiling.
 
 ---
 
@@ -1649,7 +1689,9 @@ shutdown as a single idempotent path reached from the window closing, a signal,
 or the loop ending, so closing the window saves the field and ends the process;
 and **both depth backends** -- the layered 2.5D stack and the volumetric slab of
 §5.1 -- selectable from the config, the command line or the control panel, with
-one saved field each so switching between them is not destructive.
+one saved field each so switching between them is not destructive. The slab's
+thickness is a control panel knob as well, from 8 voxels to the shorter lateral
+axis, priced in graphics memory beside the slider.
 
 **Not implemented:**
 
@@ -1690,5 +1732,8 @@ a volume "makes every parameter harder to reason about" is unaddressed by any of
 that. The numbers a slab needs are not the numbers a sheet
 needs, and the ones most likely to want moving once someone has watched it are
 the agent density (a filament network occupies a much smaller fraction of a
-volume than of a plane), the depth anisotropy, and the light's ambient floor.
+volume than of a plane), the depth anisotropy, the light's ambient floor, and
+now the thickness -- which has a defensible range and a cost curve but no
+measured answer for where inside that range the image stops improving, since
+that is exactly the judgement a software adapter cannot make.
 The layered path stays the default until that judgement has been made.

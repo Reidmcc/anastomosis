@@ -162,6 +162,28 @@ field, so you can try the other one and come back to find yours where you left
 it. Set it permanently with `backend = "volumetric"` in the config file, or for
 one session with `--backend`.
 
+### How thick the slab is
+
+Under **Volumetric**, the **Thickness** slider below the selector sets how many
+voxels deep the slab is — from 8 up to however many the shorter of its other two
+axes has, which is 288 on a 16:9 display. The default 48 is a slab a ray passes
+one or two filaments through, so the depth cues are all present but quiet; more
+depth means more material between you and the far face, and so more occlusion,
+more shading and more atmosphere.
+
+Two things to know before moving it. It is what this view's memory is spent on,
+linearly — about 650 MB at the default and about 3.9 GB at the ceiling — and the
+line under the slider prices whatever it is pointing at. And the returns flatten
+before the ceiling does: past some thickness the near structure is opaque enough
+that the far face is no longer contributing anything you can see, and where that
+happens depends on **Intensity**, since that is what decides how much material
+there is. Somewhere in the low hundreds is where it is worth looking first.
+
+Changing it grows a new field — a slab of a different depth is a differently
+shaped field, and unlike a backend switch there is nothing to come back to — so
+the button beside the slider asks first, and the image settles down and grows
+back over a few minutes. The setting is saved, so the next launch opens at it.
+
 ## Adjusting it
 
 Eight knobs, all 0–1:
@@ -201,6 +223,7 @@ event_rate = 0.5
 # Pin individual primitives by dotted path; these beat the macros.
 "render.filament_luma" = 0.42
 "reaction.feed" = 0.019
+"volume.depth" = 96          # what the Thickness slider writes
 ```
 
 There are around 70 primitive parameters underneath the macros; the field names
@@ -277,7 +300,9 @@ unrecoverable:
   divergence-free (checked numerically, because the failure it prevents is
   pigment slowly pooling over hours), that the slab wraps on all three axes and
   carries structure through depth, that the flash-safety bound holds under it
-  too, and that switching backends keeps both fields.
+  too, that switching backends keeps both fields, and that changing the slab's
+  thickness grows a new field without moving anything the march is calibrated
+  with.
 
 ## Layout
 

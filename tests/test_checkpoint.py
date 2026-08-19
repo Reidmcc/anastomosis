@@ -20,6 +20,7 @@ import json
 import time
 
 import numpy as np
+import panelstub
 import pytest
 
 from anastomosis import (
@@ -701,28 +702,17 @@ def test_opting_out_writes_nothing(gpu_device, monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class _StubApp:
-    """Just enough of Application for the panel to talk to."""
+class _StubApp(panelstub.PanelApp):
+    """The shared panel stand-in, counting what this module watches."""
 
     def __init__(self):
-        self.config = config.Config()
-        self.params = self.config.resolve()
-        self.scheduler = events.EventScheduler(seed=1)
-        self.engine = None
-        self._frame_times = [0.01]
-        self._sim_hz_scale = 1.0
+        super().__init__()
         self.resets = 0
         self.fullscreen_toggles = 0
-
-    def apply_macros(self, macros):
-        self.config.macros = macros
 
     def toggle_fullscreen(self) -> bool:
         self.fullscreen_toggles += 1
         return False
-
-    def save_config(self):
-        pass
 
     def checkpoint_status(self):
         return "saved 3m ago"
@@ -780,6 +770,10 @@ def test_the_panel_reports_the_saved_state(monkeypatch):
 
     class Engine:
         tick_count = 1200
+        # The status line names the shape the field is actually running at, so
+        # a stand-in engine has to have one.
+        geometry = engine_module.Geometry.derive(
+            *panelstub.SIZE, config.Config().resolve())
 
         def read_stats(self):
             return {"mean_v": 0.12, "mean_activity": 0.0012}

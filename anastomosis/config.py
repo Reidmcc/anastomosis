@@ -398,13 +398,28 @@ class VolumeParams:
     Memory is the one place the slab is genuinely more expensive than the
     layers: at the default size a field is about 650 MB of rgba16float, against
     roughly 90 MB for the 1440p layered stack. That is comfortable on the
-    target card (DESIGN.md §8.1) and the size is a knob for anything smaller.
+    target card (DESIGN.md §8.1), and it is also why ``depth`` -- the knob the
+    control panel exposes -- is the parameter that decides what this backend
+    costs. Everything below that is calibrated against a *filament*, in voxels,
+    rather than against the slab's thickness, so that moving it changes how
+    much material a ray passes through and nothing else.
     """
 
     # --- Slab geometry (structural: changing it needs a new field) --------
     # Lateral width in voxels. The height follows the window's aspect, so the
     # voxels stay cubic and a 16:9 display gets exactly the 512x288 of §5.1.
     width: int = 512
+    # Thickness in voxels, and the one piece of the slab's geometry the control
+    # panel can move. It is a knob rather than a constant because depth is the
+    # entire point of this backend and forty-eight voxels of it is a subtle
+    # effect: a ray crosses one or two filaments, so there is not much
+    # occlusion for the eye to read. The ceiling is the shorter of the two
+    # lateral axes -- past that this is not a slab, and `VolumeGeometry.derive`
+    # enforces it. What thickness costs is memory, linearly: about 13 MB per
+    # slice at the default 512x288, so the 288 ceiling is about 3.9 GB against
+    # the default's 650 MB. What it buys stops arriving somewhere short of that
+    # ceiling, when the near material has become opaque enough to hide the far
+    # face -- see DESIGN.md §5.1.
     depth: int = 48
     base_scale: float = 1.0  # fraction of `width` actually allocated
     # Agents per voxel, against 0.27 per cell in the plane. Not a like-for-like
@@ -436,20 +451,34 @@ class VolumeParams:
     depth_agent: float = 0.45
 
     # --- Raymarch ---------------------------------------------------------
-    # 48 steps, one per slice: ample for parallax and occlusion given that the
-    # far field is fogged and blurred anyway (§5.1).
-    steps: int = 48
+    # A *ceiling* on the march, which otherwise takes one step per slice --
+    # ample for parallax and occlusion given that the far field is fogged and
+    # blurred anyway (§5.1). At the 48-deep default the two are the same
+    # number and this changes nothing; past 160 slices the step grows longer
+    # than a voxel, which the march's static jitter turns into fixed noise
+    # rather than into banding, and which the depth-of-field blur is already
+    # doing much worse to at that end of the slab. Render cost is linear in it,
+    # so this is the value to lower first if a thick slab will not hold the
+    # frame budget.
+    steps: int = 160
     # How far off orthographic the rays are. Small on purpose: a
     # near-orthographic camera keeps ray coherence excellent, and the depth cue
     # this application wants comes from occlusion and attenuation rather than
     # from perspective.
     converge: float = 0.055
-    # The fraction of the slab's depth each face fades over. Material leaving
-    # the near face reappears at the far one -- the domain is toroidal in all
-    # three axes, exactly as it is in two under the layered backend -- and this
-    # window is what makes that arrival and departure a fade rather than a
-    # step.
-    depth_window: float = 0.18
+    # How far each face fades over, in voxels. Material leaving the near face
+    # reappears at the far one -- the domain is toroidal in all three axes,
+    # exactly as it is in two under the layered backend -- and this window is
+    # what makes that arrival and departure a fade rather than a step.
+    #
+    # In voxels rather than as a fraction of the thickness, because what has to
+    # be smooth is material's *arrival*, and that happens at a rate set by how
+    # fast the material moves and how large it is -- neither of which knows how
+    # deep the slab is. Held as a fraction, a thick slab would dim its whole
+    # crisp near face to hide a seam that a few voxels already hide. 8.6 voxels
+    # is what the 0.18 of the depth this used to be came to at the 48-deep slab
+    # it was chosen on.
+    depth_window_voxels: float = 8.6
 
     # --- The single soft light -------------------------------------------
     # Direction the light comes *from*, in slab coordinates. Slightly above,
@@ -466,7 +495,15 @@ class VolumeParams:
     light_ambient: float = 0.55
     shadow_steps: int = 6
     shadow_density: float = 1.8
-    shadow_reach: float = 0.45  # shadow ray length, in slab depths
+    # How far the shadow ray probes, in voxels -- filament-relative rather than
+    # slab-relative, for the same reason the face window is. Self-shadowing is
+    # interior shading of a structure about six voxels across, so the useful
+    # reach is a few filament widths whatever the slab's thickness; measured in
+    # slab depths it would grow with the thickness and six steps would be
+    # sampling a reach they cannot resolve, which is blotches rather than
+    # shading. 21.6 voxels is what the 0.45 slab depths this used to be came to
+    # at the 48-deep slab it was calibrated on.
+    shadow_voxels: float = 21.6
 
 
 @dataclass
@@ -859,19 +896,27 @@ def validate(params: Params) -> Params:
         64, min(1 << 24, int(params.agents.found_site_cells)))
 
     # The slab's own structural values. The ceilings are core WebGPU's
-    # guaranteed maxTextureDimension3D (2048) with room to spare, and the
-    # floors are what the passes need to be meaningful at all: a slab one voxel
-    # deep is the layered backend with extra steps, and a march of a couple of
-    # steps cannot resolve occlusion.
+    # guaranteed maxTextureDimension3D (2048), and the floors are what the
+    # passes need to be meaningful at all: a slab one voxel deep is the layered
+    # backend with extra steps, and a march of a couple of steps cannot resolve
+    # occlusion. The thickness gets the full 2048 here because the bound that
+    # actually applies to it is relative -- no deeper than the shorter lateral
+    # axis -- and `VolumeGeometry.derive` is where that can be known.
     volume = params.volume
     volume.width = max(32, min(2048, int(volume.width)))
-    volume.depth = max(8, min(512, int(volume.depth)))
+    volume.depth = max(8, min(2048, int(volume.depth)))
     volume.climate_width = max(4, min(256, int(volume.climate_width)))
     volume.climate_height = max(4, min(256, int(volume.climate_height)))
     volume.climate_depth = max(2, min(64, int(volume.climate_depth)))
     volume.psi_scale = max(1, min(32, int(volume.psi_scale)))
     volume.steps = max(8, min(256, int(volume.steps)))
     volume.shadow_steps = max(0, min(32, int(volume.shadow_steps)))
+    # Both are lengths in voxels. The floor on the window is what keeps the
+    # toroidal seam a fade: at zero it is a step, which is exactly the
+    # punctuation §7 exists to prevent.
+    volume.depth_window_voxels = min(
+        max(float(volume.depth_window_voxels), 1.0), 4096.0)
+    volume.shadow_voxels = min(max(float(volume.shadow_voxels), 0.0), 4096.0)
     return params
 
 
