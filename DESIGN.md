@@ -1528,6 +1528,69 @@ the layered path.
 - **Parallax** offset per layer driven by an extremely slow drift (and optionally by
   cursor position, if the cursor is on that display — probably not, since the point
   is the user is working elsewhere).
+
+  Two things about that drift were wrong for as long as it existed, and both are
+  worth recording because neither is visible as a fault — a viewpoint that does
+  not move produces a perfectly good-looking image. It was an Ornstein–Uhlenbeck
+  walk with a fixed *per-frame* decay of 0.02 against a `sqrt(dt)` noise term,
+  which gave it a stationary spread of 3e-4 across a travel of 1: at
+  `render.parallax = 0.02` that is a viewpoint displaced by a few hundredths of a
+  pixel, and over two hours of simulation it never left a thousandth of its
+  range. Parallax was, in effect, switched off in both backends — including the
+  volumetric one, where it is the *whole* of the camera's motion. It is now
+  written in the same form as the feature-size walk (`_advance_du_walk`):
+  unit-variance, `sqrt(1 - (1-θ)²)` noise, θ from `dt/τ`, so the excursion is a
+  property of the walk and not of the frame rate.
+
+  The second correction is that an OU process is smooth in its envelope and
+  *white* in its increments. That is fine for an amplitude and disastrous for a
+  position: the raw walk moves the image about half a pixel per frame, at
+  random, which is precisely the per-pixel temporal noise §7 and the dither
+  design exist to avoid. The walk therefore reaches the viewpoint through one
+  first-order lag at a sixth of its own time constant, which makes the position
+  C¹ and costs almost none of the travel — measured over an hour at 1440p, the
+  frame-to-frame step falls from 0.54 px to 0.020 px while the peak excursion
+  stays at 49 px of 50. What is left is about 0.6 px/s, which is what the
+  parallax actually is.
+
+  What that fix did *not* settle is whether the amount of parallax on offer was
+  ever enough to see, since the range it moved over — 0.006 to 0.038 of the
+  screen's width — was chosen against a mechanism that did not work and is
+  therefore not evidence of anything. It is now its own macro, split out of
+  `depth` exactly as `event_rate` was split out of `intensity` and for the same
+  reason: the two answer different questions. Everything left under `depth` is
+  a shading trick applied to a *normalised* depth and says the same thing about
+  the far face however far away it is; parallax is the only cue that comes from
+  the scene moving. The new knob reaches a quarter of the screen's width at
+  about 8 px/s, and a config written before the split takes the new default
+  rather than inheriting the old one — there is nothing to carry across from a
+  setting that did nothing.
+
+  **And the volumetric backend holds itself to what its slab has earned.**
+  Parallax is thickness times the tangent of the viewing angle, which is the
+  geometry underneath the whole complaint that a thin slab reads flat: 48 voxels
+  against 512 is a sheet of paper, and there is not much depth to be found by
+  walking around a sheet of paper. Swinging further does not buy more depth, it
+  buys the same slab seen edge-on — a long oblique smear through it, with a path
+  length (and so an optical depth) that grows with the swing. So the drift's
+  amplitude is scaled — not clipped, which would put a corner in the viewpoint's
+  path — to `PARALLAX_MAX_TANGENT` (0.8, about 39°) times the thickness. At the
+  default slab that caps the travel at about 8% of the width; at 144 voxels deep
+  it is 22%. The thickness knob and the parallax knob therefore compound, and
+  the control panel's readout reports the *effective* travel so that a knob
+  which has stopped doing anything visibly stops moving.
+
+  The safety stage is deliberately not told about the viewpoint. It reprojects
+  its history through the screen-space velocity of the *material* (§7), so a
+  moving camera leaves an uncompensated residual — 0.02 px per frame against
+  material moving several, three orders of magnitude below anything the limiter
+  responds to. At the top of the parallax knob it is 0.3 px per frame, which is
+  the same argument with less margin — and still not a visible artefact, because
+  a rate limiter tracking a steadily moving edge settles at a constant lag
+  rather than suppressing the motion: the displayed edge trails the true one by
+  the sub-pixel offset at which demand equals budget. What is bounded here is
+  the *rate* of change, and a smooth pan is exactly the case that costs it
+  nothing.
 - **Depth-of-field**: per-layer blur radius increases with distance. Because the
   layers are separate render targets this is one cheap separable blur each, not a
   gather.
@@ -1540,9 +1603,10 @@ the layered path.
 
 ### 5.1 Volumetric slab (alternate backend)
 
-A thin slab — `512 × 288 × 48` ≈ 7.1 M voxels — keeps usable lateral resolution while
-giving genuine volume. 48 depth slices is ample for parallax and occlusion given that
-DOF blurs the far field anyway.
+A thin slab — `512 × 288 × 48` ≈ 7.1 M voxels at the default thickness — keeps usable
+lateral resolution while giving genuine volume. 48 depth slices is enough for parallax
+and occlusion given that DOF blurs the far field anyway, and it is where the thickness
+starts rather than where it stays: see *How thick* below.
 
 - Sim: 7.1 M voxels × 6 passes × 20 Hz ≈ 850 M voxel-ops/s ≈ **20 GB/s** — ~3% of a
   3080's bandwidth.
@@ -1619,13 +1683,80 @@ would give every structure at a given (x, y) the same feed, the same kill and th
 same feature size however far apart in z, and the volume would read as a thick
 sheet. A regime is a region of the slab.
 
+#### How thick
+
+Forty-eight voxels is a slab a ray crosses one or two filaments of, and that is
+about as subtle as genuine volume gets: the mechanisms are all working, and there
+is not much material for them to work *on*. So the thickness is a knob — the only
+piece of the slab's geometry the control panel moves — running from 8 voxels up to
+the shorter lateral axis, which is 288 on a 16:9 display. It is structural, so it
+grows a new field; and unlike the backend switch it cannot keep the old one, since
+a slab of a different depth is a differently shaped array and nothing resamples one
+into the other.
+
+What it costs is memory, linearly and almost exactly: ~92 bytes per voxel, so ~13 MB
+per slice at 512 × 288, from ~650 MB at the default to ~3.9 GB at the ceiling. The
+panel quotes the figure beside the slider rather than leaving it to be discovered.
+
+What it buys stops arriving before the ceiling does, and for a reason worth stating:
+extinction is calibrated *per filament* (see `raymarch.wgsl`), so a ray's optical
+depth grows with the number of filaments it crosses, which grows with the thickness.
+Six times the depth is roughly six times the accumulated optical depth, and past some
+thickness — dependent on the `intensity` macro, since that sets how much material
+there is — the near structure is opaque enough that the far face contributes nothing
+the eye can find. Beyond that point the extra voxels are memory spent on material
+the camera cannot see. The ceiling is where the shape stops being a slab; the useful
+range ends somewhere below it, and where exactly is a judgement for a real GPU.
+
+Making the thickness a knob also forced a re-expression that was overdue. Three of
+the march's quantities were fractions of the slab's depth, which is harmless while
+the depth is fixed and wrong once it moves: held as fractions, a slab six times
+deeper would fade six times as much of its crisp near face at the toroidal seam, and
+send its shadow rays six times as far on the same six steps — blotches rather than
+shading. Both were calibrated against a *filament*, not against the slab, so both are
+now lengths in voxels (`depth_window_voxels`, `shadow_voxels`) and come out the same
+absolute size at every thickness. The third is the march itself, which takes one step
+per slice up to a ceiling (`volume.steps`, 160), because a thick slab marched at a
+thin slab's step count is a ray stepping over whole filaments. Only the amount of
+material a ray passes through is left to vary with the knob, which is the whole point
+of moving it.
+
 The one thing genuinely lost is lateral resolution, and it is the reason the
 layered path remains the default: 512 voxels across against 2560, so filaments are
 about five display pixels wide rather than one. Motion is unaffected in the way
 that matters — features are five times larger *and* move five times faster in
 absolute terms, so feature-widths per second, which is what the eye reads at this
 timescale, is the same under both. Memory is the other real cost: ~650 MB of
-`rgba16float` against ~90 MB for the 1440p stack.
+`rgba16float` against ~90 MB for the 1440p stack, and up to ~3.9 GB if the
+thickness is taken to its ceiling.
+
+**That loss is a budget decision, not a structural one, and it is exposed as a
+setting.** `config.VOLUME_DETAIL` offers the slab at 512, 768 or 1024 voxels
+across — `volume_detail = "standard" | "fine" | "finest"` — and the width is the
+only thing that moves: the thickness is its own knob and this leaves it where
+it is, while the height keeps following the window, so the voxels stay cubic and
+every argument above survives unchanged. What changes is how many display pixels
+a filament covers, which at 1440p goes from about five to about two and a half.
+
+The two slab settings are independent but not unrelated, and the one coupling is
+in the right direction: the thickness ceiling is the shorter lateral axis, so a
+wider slab is also allowed to be a deeper one — 288 voxels at `standard`, 576 at
+`finest`. Memory is the product of both, which is why the panel prices the pair
+rather than either alone.
+
+The asymmetry in what that costs is the reason it is worth offering. Voxel count
+goes with the square of the width, and three things follow it: the per-tick
+passes over the volume, the interpolation pass, and memory — so `finest` is ~4×
+the simulation of `standard`, at ~2.7 GB at the default thickness. The **render** side does not follow it
+at all. The march is one ray per output pixel and its step count is tied to the
+slab's *thickness*, which this setting does not touch, so a 1440p frame costs
+the same at every size and the 5.3 Gsamples/s above is unchanged. Against the ~3% of bandwidth the sim costs at the
+standard size, even `finest` leaves the headroom check of §8.1 intact.
+
+Unlike the backend choice this cannot preserve what it replaces: there is one
+volumetric field, and a slab of a different width is not the same field
+presented differently — every voxel of it is a different voxel. So a size change
+is a reset, and is presented to the user as one.
 
 ---
 
@@ -1836,7 +1967,8 @@ card, so the depth-backend decision can be made on aesthetics rather than cost.
 | Tempo | sim rate, flow strength, drift rates |
 | Palette | hue anchor, hue rotation rate, chroma cap |
 | Brightness | luminance ceiling and exposure target |
-| Depth | parallax strength, layer separation, DOF, atmospheric falloff |
+| Depth | layer separation, DOF, atmospheric falloff |
+| Parallax | how far the viewpoint drifts, and how briskly |
 | Event rate | mean arrival interval of the slow events, and nothing else (§4.3) |
 
 Event rate was originally folded into intensity, and separating them is the one
@@ -2007,7 +2139,9 @@ shutdown as a single idempotent path reached from the window closing, a signal,
 or the loop ending, so closing the window saves the field and ends the process;
 and **both depth backends** -- the layered 2.5D stack and the volumetric slab of
 §5.1 -- selectable from the config, the command line or the control panel, with
-one saved field each so switching between them is not destructive.
+one saved field each so switching between them is not destructive. The slab's
+thickness is a control panel knob as well, from 8 voxels to the shorter lateral
+axis, priced in graphics memory beside the slider.
 
 **Not implemented:**
 
@@ -2072,5 +2206,8 @@ a volume "makes every parameter harder to reason about" is unaddressed by any of
 that. The numbers a slab needs are not the numbers a sheet
 needs, and the ones most likely to want moving once someone has watched it are
 the agent density (a filament network occupies a much smaller fraction of a
-volume than of a plane), the depth anisotropy, and the light's ambient floor.
+volume than of a plane), the depth anisotropy, the light's ambient floor, and
+now the thickness -- which has a defensible range and a cost curve but no
+measured answer for where inside that range the image stops improving, since
+that is exactly the judgement a software adapter cannot make.
 The layered path stays the default until that judgement has been made.

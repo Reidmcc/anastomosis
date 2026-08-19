@@ -15,6 +15,7 @@ jump to.
 
 from __future__ import annotations
 
+import panelstub
 import pytest
 
 from anastomosis import window as window_module
@@ -422,31 +423,12 @@ def test_a_refused_state_change_does_not_reach_the_loop(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class PanelStubApp:
-    """Just enough of Application for the panel to talk to."""
+class PanelStubApp(panelstub.PanelApp):
+    """The shared panel stand-in, counting the toggles this module watches."""
 
     def __init__(self) -> None:
-        from anastomosis import config, events
-
-        self.config = config.Config()
-        self.params = self.config.resolve()
-        self.scheduler = events.EventScheduler(seed=1)
-        self.engine = None
-        self._frame_times = [0.01]
-        self._sim_hz_scale = 1.0
+        super().__init__()
         self.toggles = 0
-
-    def apply_macros(self, macros):
-        self.config.macros = macros
-
-    def save_config(self):
-        pass
-
-    def checkpoint_status(self):
-        return "off"
-
-    def reset_simulation(self):
-        pass
 
     def toggle_fullscreen(self) -> bool:
         self.toggles += 1

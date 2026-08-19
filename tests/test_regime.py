@@ -22,9 +22,18 @@ SIZE = 96
 TICKS = 1100
 WARMUP = 400
 
+# A run is a pure function of (feed, kill) -- fixed seed, fixed everything
+# else -- and the same pair comes up repeatedly: the default regime anchors
+# four different tests, and several of the climate-range corners collapse to
+# the same point once the clamps are applied. Cache by exact value.
+_RUNS: dict[tuple[float, float], dict[str, float]] = {}
 
-def _run(feed, kill, **kwargs):
-    return R.run(feed, kill, ticks=TICKS, warmup=WARMUP, size=SIZE, **kwargs)
+
+def _run(feed, kill):
+    key = (float(feed), float(kill))
+    if key not in _RUNS:
+        _RUNS[key] = R.run(feed, kill, ticks=TICKS, warmup=WARMUP, size=SIZE)
+    return _RUNS[key]
 
 
 def test_default_regime_stays_alive():

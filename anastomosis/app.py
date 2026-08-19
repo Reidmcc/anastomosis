@@ -31,6 +31,7 @@ a process they have to go and kill by hand.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import signal
 import time
@@ -98,6 +99,11 @@ class AppOptions:
     # file. Structural either way -- it decides which engine class exists, so
     # it takes effect when a field is grown.
     backend: str | None = None
+    # How wide the volumetric slab is, from `config.VOLUME_DETAIL`. ``None``
+    # takes the config's, as with ``backend``, and it is structural in the same
+    # way -- it decides the shape a field is grown in. Ignored under the
+    # layered backend, which has no slab.
+    volume_detail: str | None = None
     ui: bool = True
     telemetry_seconds: float = 60.0
     # Checkpointing. Resuming is the default: the whole point of a mature field
@@ -114,6 +120,7 @@ class Application:
         self.options = options
         self.config_path = options.config_path or config_module.default_config_path()
         self.config = config_module.load(self.config_path)
+        self._pin_volume_detail()
         resolved = self.config.resolve()
         # Cap the canvas rate from the config, but never above the requested max.
         resolved.max_fps = min(resolved.max_fps, options.max_fps)
@@ -357,14 +364,32 @@ class Application:
         except Exception as exc:  # pragma: no cover - platform watcher quirks
             log.debug("could not stop the config watcher: %s", exc)
 
+    def _pin_volume_detail(self) -> None:
+        """Settle which slab size is in force, after any load of the config.
+
+        A ``--volume-detail`` on the command line is a property of the launch
+        rather than of the file, so a hot reload must not quietly undo it --
+        the same reasoning that keeps ``--backend`` on the application rather
+        than in the config. Without the flag the file decides, and a reload
+        picks up an edit to it.
+
+        Only the *name* settles here. Nothing is rebuilt: the size is
+        structural, so it reaches the image when a field is next grown, which
+        is ``reset_simulation`` or a relaunch.
+        """
+        if self.options.volume_detail:
+            self.config.volume_detail = self.options.volume_detail
+        self.volume_detail = config_module.normalise_volume_detail(
+            self.config.volume_detail)
+        self.config.volume_detail = self.volume_detail
+
     def reload_config(self) -> None:
         try:
             self.config = config_module.load(self.config_path)
-            resolved = self.config.resolve()
-            resolved.max_fps = min(resolved.max_fps, self.options.max_fps)
+            self._pin_volume_detail()
             # Ramped, never stepped: adjusting a control must not itself be
             # visual punctuation.
-            self.ramp.set_target(resolved)
+            self._retarget()
             log.info("reloaded %s", self.config_path)
         except Exception as exc:
             # A malformed file must not take down a session that has been
@@ -374,9 +399,20 @@ class Application:
     def apply_macros(self, macros: config_module.Macros) -> None:
         """Called by the control panel."""
         self.config.macros = macros
+        self._retarget()
+
+    def _retarget(self) -> config_module.Params:
+        """Re-resolve the config and ramp towards it. Returns what it resolved to.
+
+        Every route by which a setting changes -- a slider, a preset, a file
+        edit, the thickness knob -- ends here, so there is one place where the
+        macro curves, the overrides and the session's frame cap are combined,
+        and one place a change becomes a ramp target rather than a step.
+        """
         resolved = self.config.resolve()
         resolved.max_fps = min(resolved.max_fps, self.options.max_fps)
         self.ramp.set_target(resolved)
+        return resolved
 
     def trigger_event(self, kind: str) -> bool:
         """Start one event of `kind` now. Called by the control panel.
@@ -545,19 +581,33 @@ class Application:
         even then it is not allowed to be a step.
 
         This is also the moment the structural config values land. A resumed
-        field keeps the geometry it was grown at, so changing the layer count or
-        the base scale does nothing until there is a new field to apply it to,
-        and here there is one.
+        field keeps the geometry it was grown at, so changing the layer count,
+        the base scale or the slab's thickness does nothing until there is a new
+        field to apply it to, and here there is one.
         """
         width, height = self._size
+        self._adopt(self._make_engine(
+            width, height, self._derive_geometry(width, height)))
+        log.info("simulation reset; growing a new field from seeds")
+
+    def _adopt(self, engine) -> None:
+        """Put a freshly grown field on screen, discarding what was there.
+
+        The engine is built by the caller and handed over already made, which
+        is what lets a failed allocation be a message rather than a lost
+        session: nothing here is destroyed until there is something to replace
+        it with. The cost is that both fields exist at once for a moment, which
+        matters when the new one is several times the size of the old -- and
+        which is still the better trade, since the alternative is a card that
+        cannot allocate the new field and no longer holds the old one either.
+        """
         # Wait for any in-flight write first, or it would land on disk after the
         # file it describes has been deleted.
         self._saver.join()
         checkpoint_module.discard(self.checkpoint_path)
 
         self.scheduler = events_module.EventScheduler(seed=self.options.seed)
-        self.engine = self._make_engine(
-            width, height, self._derive_geometry(width, height))
+        self.engine = engine
         self._accumulator = 0.0
         self._sim_hz_scale = 1.0
         self._frame_times.clear()
@@ -565,7 +615,152 @@ class Application:
         self._last_checkpoint = time.perf_counter()
         self._checkpoint_saved_at = None
         self.resumed_from = None
-        log.info("simulation reset; growing a new field from seeds")
+
+    # -- the slab's thickness -----------------------------------------------
+
+    def volume_slab(self, depth: int | None = None):
+        """The slab a fresh volumetric field would be, at this thickness.
+
+        Answers for the volumetric backend whether or not it is the one
+        running, because the control panel has to be able to say what a setting
+        would cost before the user commits to it -- and, when the layered
+        backend is up, what the thickness knob it can see is currently set to.
+        """
+        params = self.params
+        if depth is not None and int(depth) != params.volume.depth:
+            params = dataclasses.replace(
+                params,
+                volume=dataclasses.replace(params.volume, depth=int(depth)),
+            )
+        width, height = self._size
+        return volume_module.VolumeGeometry.derive(
+            max(width, 1), max(height, 1), params)
+
+    def volume_depth_limits(self) -> tuple[int, int]:
+        """The thinnest and thickest slab this window allows, in voxels."""
+        width, height = self._size
+        return volume_module.depth_limits(
+            max(width, 1), max(height, 1), self.params)
+
+    def set_volume_depth(self, depth: int) -> int:
+        """Grow a new slab this many voxels deep. Returns the thickness taken.
+
+        Structural, and unlike the backend switch it is not a change the saved
+        field can survive: a slab of a different thickness is a differently
+        shaped array, nothing resamples one into the other, and a launch that
+        found the old checkpoint would rebuild the old thickness from it. So
+        this discards the field and grows a new one, exactly as a reset does,
+        and the panel asks before calling it.
+
+        The new field is built before anything is thrown away. Thickness is
+        what this backend's memory is spent on -- the ceiling is some six times
+        the default -- so "the card would not allocate that" is a normal answer
+        to get, and it leaves the running field untouched and raises.
+        """
+        low, high = self.volume_depth_limits()
+        wanted = max(low, min(high, int(depth)))
+        # The geometry rounds to a multiple of eight, so ask it what the number
+        # actually means rather than storing something it will not honour.
+        wanted = self.volume_slab(wanted).depth
+        if wanted == self.volume_slab().depth:
+            return wanted  # already the thickness a fresh slab would have
+
+        previous = self.config.overrides.get("volume.depth")
+        self.config.overrides["volume.depth"] = wanted
+        resolved = self._retarget()
+        # Structural, and the field is grown from `self.params` in a moment
+        # rather than on the next frame. Integers snap through the ramp anyway;
+        # this only moves one of them a frame earlier.
+        self.params.volume.depth = resolved.volume.depth
+
+        if self.backend != "volumetric":
+            # Nothing to rebuild: the setting lands the next time a slab is
+            # grown, which is what switching to this backend does.
+            log.info("the slab will be %d voxels deep when one is next grown", wanted)
+            return wanted
+
+        width, height = self._size
+        try:
+            engine = self._make_engine(
+                width, height, self._derive_geometry(width, height))
+        except Exception:
+            if previous is None:
+                self.config.overrides.pop("volume.depth", None)
+            else:
+                self.config.overrides["volume.depth"] = previous
+            self.params.volume.depth = self._retarget().volume.depth
+            raise
+        self._adopt(engine)
+        log.info(
+            "slab is now %s; growing a new field from seeds",
+            engine.geometry.describe(),
+        )
+        return wanted
+
+    def set_volume_detail(self, name: str) -> bool:
+        """Change how wide the volumetric slab is, growing a new field.
+
+        The lateral counterpart of :meth:`set_volume_depth`, and structural for
+        the same reason: a slab of a different width is a differently shaped
+        array, nothing resamples one into the other, and a launch that found
+        the old checkpoint would rebuild the old width from it. So this
+        discards the field and grows a new one, and the panel asks first.
+
+        Built before anything is thrown away, exactly as the thickness is, and
+        for a sharper version of the same reason. Width is the more expensive
+        of the two axes -- it enters the voxel count twice, since the height
+        follows it -- so the widest size is some four times the memory of the
+        standard one, and "the card would not allocate that" is an ordinary
+        answer to get. It leaves the running field untouched and raises.
+
+        Under the layered backend the size is recorded and nothing is regrown:
+        there is no slab on screen for it to change, and discarding a mature
+        layered field to apply a setting that backend never reads would be a
+        pure loss. It lands when a slab is next grown.
+
+        Returns False if the named size is already the one running.
+        """
+        wanted = config_module.normalise_volume_detail(name)
+        if wanted == self.volume_detail:
+            return False
+
+        previous_name = self.volume_detail
+        previous_pin = self.options.volume_detail
+        self.volume_detail = wanted
+        self.config.volume_detail = wanted
+        # A command-line size would otherwise be re-pinned over this one at the
+        # next hot reload, and the change the user just asked for would come
+        # undone the next time they saved the file.
+        self.options.volume_detail = None
+
+        # Structural, and the field is grown from `self.params` in a moment
+        # rather than on the next frame. Integers snap through the ramp anyway;
+        # this only moves one of them a frame earlier.
+        self.params.volume.width = self._retarget().volume.width
+
+        if self.backend != "volumetric":
+            log.info(
+                "the slab will be %d voxels across when one is next grown",
+                config_module.VOLUME_DETAIL[wanted],
+            )
+            return True
+
+        width, height = self._size
+        try:
+            engine = self._make_engine(
+                width, height, self._derive_geometry(width, height))
+        except Exception:
+            self.volume_detail = previous_name
+            self.config.volume_detail = previous_name
+            self.options.volume_detail = previous_pin
+            self.params.volume.width = self._retarget().volume.width
+            raise
+        self._adopt(engine)
+        log.info(
+            "slab is now %s; growing a new field from seeds",
+            engine.geometry.describe(),
+        )
+        return True
 
     def switch_backend(self, name: str) -> bool:
         """Change how depth is drawn, without restarting the process.

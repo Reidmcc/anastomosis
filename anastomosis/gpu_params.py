@@ -233,10 +233,13 @@ RENDER_FIELDS: list[Field] = [
     # World thickness of the slab, as a fraction of its lateral extent. Voxels
     # are cubic, so this is just depth/width.
     ("slab_depth", "f32"),
-    # The soft window that fades the two faces. The slab is a 3-torus like the
-    # rest of the domain (there are no walls anywhere in this simulation), so
-    # material leaving the near face reappears at the far one; without a window
-    # that arrival and departure would be a step at the depth extremes.
+    # The soft window that fades the two faces, as a fraction of the thickness.
+    # The slab is a 3-torus like the rest of the domain (there are no walls
+    # anywhere in this simulation), so material leaving the near face reappears
+    # at the far one; without a window that arrival and departure would be a
+    # step at the depth extremes. Configured in voxels -- see
+    # `VolumeParams.depth_window_voxels` -- and divided by the thickness on the
+    # way here, since a fraction is the coordinate the march has.
     ("depth_window", "f32"),
     # Atmospheric attenuation with depth, matching the layered backend's
     # per-layer values at the backmost layer.
@@ -252,6 +255,9 @@ RENDER_FIELDS: list[Field] = [
     ("light_z", "f32"),
     ("light_ambient", "f32"),
     ("shadow_density", "f32"),
+    # How far the shadow ray probes, as a world length -- the lateral extent of
+    # the slab is 1. Configured in voxels for the same reason the face window
+    # is: it is calibrated against a filament, not against the thickness.
     ("shadow_reach", "f32"),
 ]
 

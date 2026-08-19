@@ -171,14 +171,18 @@ def test_a_drifting_climate_makes_the_arrangement_churn():
     first = M.climate_scale_field(size, factor=20, seed=1)
     second = M.climate_scale_field(size, factor=20, seed=2)
 
+    # Both arms warm up identically -- same seed, and the drift only starts
+    # after the warmup -- so the warmup is run once and forked.
+    u0, v0 = M.seed_field(size, seed=1)
+    for _ in range(warmup):
+        for _ in range(2):
+            u0, v0 = M.gray_scott_step(
+                u0, v0, reaction.feed, reaction.kill,
+                du=reaction.du, dv=reaction.dv)
+
     results = {}
     for mode in ("fixed", "drift"):
-        u, v = M.seed_field(size, seed=1)
-        for _ in range(warmup):
-            for _ in range(2):
-                u, v = M.gray_scott_step(
-                    u, v, reaction.feed, reaction.kill,
-                    du=reaction.du, dv=reaction.dv)
+        u, v = u0.copy(), v0.copy()
 
         features: list[int] = []
         holes: list[int] = []

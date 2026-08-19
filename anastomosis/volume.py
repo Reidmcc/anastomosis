@@ -33,7 +33,19 @@ fork"; the shared base class is what keeps that true as both sides change.
 Memory is the one place the slab is materially more expensive. At the default
 size it holds about 650 MB of ``rgba16float`` against roughly 90 MB for the
 1440p layered stack -- comfortable on the target card (§8.1), and
-``volume.width`` / ``volume.depth`` are there for anything smaller.
+``volume.width`` is there for anything smaller.
+
+**Thickness is a knob, and it is the only geometry the panel moves.**
+Forty-eight voxels is a slab a ray crosses one or two filaments of, which is
+about as subtle as genuine volume gets, so ``volume.depth`` runs from 8 up to
+the shorter of the two lateral axes -- 288 on a 16:9 display -- and
+:meth:`VolumeGeometry.field_bytes` says what each setting costs, since the cost
+is linear in it and reaches about 3.9 GB at the top. Everything the march is
+calibrated with is expressed in *voxels* rather than as a fraction of the
+thickness so that moving the knob changes how much material a ray passes
+through and nothing else: the face window, the shadow reach, and the extinction
+coefficient's filament width are all lengths, and the step count follows the
+slice count up to ``volume.steps``.
 """
 
 from __future__ import annotations
@@ -71,6 +83,32 @@ AGENT_STRIDE = 36
 # to catch nonsense.
 MAX_AGENTS_PER_VOXEL = 4
 
+# The thinnest slab worth building, and a multiple of the 8 the depth axis
+# rounds to. Below this the trail's diffusion kernel is wider than the axis it
+# is separable along, and what is left is the layered backend with a great deal
+# of extra work.
+MIN_DEPTH = 8
+
+# The steepest the camera is allowed to look through the slab, as a tangent:
+# 0.8 is about 39 degrees off the slab's normal.
+#
+# Parallax is thickness times the tangent of the viewing angle, which is the
+# geometric fact underneath every complaint that a thin slab looks flat -- 48
+# voxels against 512 is a sheet of paper, and there is only so much depth to be
+# had by walking around a sheet of paper. Swinging the viewpoint further does
+# not buy more depth: it buys the same slab seen edge-on, with the march
+# tracing a long oblique smear through it and the near and far faces sliding
+# past each other faster than anything in between can explain. So the drift's
+# amplitude is held to what the current thickness justifies, which is also what
+# makes the thickness knob and the parallax knob compound rather than compete.
+PARALLAX_MAX_TANGENT = 0.8
+
+# What one voxel of slab costs on the card: eleven `rgba16float` volumes --
+# three ping-pong pairs and five singles, see `Slab` -- plus the u32 deposit
+# accumulator. Thickness is paid for exactly here, linearly, which is why the
+# control panel quotes it.
+BYTES_PER_VOXEL = 11 * 8 + 4
+
 
 @dataclass(frozen=True)
 class VolumeGeometry:
@@ -107,6 +145,36 @@ class VolumeGeometry:
     def voxels(self) -> int:
         return self.width * self.height * self.depth
 
+    @property
+    def max_depth(self) -> int:
+        """The thickest this slab is allowed to be, at this lateral shape.
+
+        Both lateral axes are multiples of eight, so this is a thickness the
+        depth axis can actually be built at as well as one it is allowed.
+        """
+        return min(self.width, self.height)
+
+    @property
+    def field_bytes(self) -> int:
+        """Roughly what a field of this shape occupies on the card.
+
+        Quoted by the control panel beside the thickness slider, because memory
+        is what thickness costs and a user moving that slider is entitled to
+        know the price before paying it rather than by watching the card run
+        out. The full-slab volumes dominate; the agent buffer is counted
+        because the agent count follows the voxel count, and the psi and
+        climate grids are counted because they are cheap to count, not because
+        they matter.
+        """
+        psi_voxels = self.psi_width * self.psi_height * self.psi_depth
+        climate_voxels = (
+            self.climate_width * self.climate_height * self.climate_depth)
+        return (
+            BYTES_PER_VOXEL * self.voxels
+            + AGENT_STRIDE * self.agent_count
+            + 8 * (2 * psi_voxels + 6 * climate_voxels)
+        )
+
     @classmethod
     def derive(cls, width: int, height: int, params: Params) -> "VolumeGeometry":
         """The slab a fresh field of this configuration would have.
@@ -115,7 +183,14 @@ class VolumeGeometry:
         *window's* aspect so the voxels stay cubic, which is what lets the
         renderer treat the slab as a box of world extent (1, h/w, d/w) and the
         simulation treat every axis alike. A 16:9 display therefore gets
-        exactly the 512 x 288 x 48 of §5.1.
+        exactly the 512 x 288 x 48 of §5.1 at the default thickness.
+
+        The thickness is capped at the shorter lateral axis. That is the bound
+        the control panel offers, and it is applied here rather than there so
+        that a hand-edited config cannot ask for something outside it either:
+        past that point the shape is not a slab, and the extra voxels have in
+        any case stopped arriving on screen -- a ray that already crosses that
+        much material is opaque long before the far face.
         """
         vol = params.volume
         w = round_up(max(int(vol.width * vol.base_scale), 64), 32)
@@ -123,7 +198,8 @@ class VolumeGeometry:
         # Rounded to 8 so the 4-deep workgroups tile it without a large
         # remainder; the depth axis gets the same treatment.
         h = max(round_up(int(w * aspect), 8), 32)
-        d = max(round_up(int(vol.depth * vol.base_scale), 8), 8)
+        d = max(round_up(int(vol.depth * vol.base_scale), 8), MIN_DEPTH)
+        d = min(d, min(w, h))
 
         psi_w = max(w // vol.psi_scale, 8)
         psi_h = max(h // vol.psi_scale, 8)
@@ -196,6 +272,17 @@ class VolumeGeometry:
             f"{self.width}x{self.height}x{self.depth} voxels "
             f"({self.voxels / 1e6:.1f} M)"
         )
+
+
+def depth_limits(width: int, height: int, params: Params) -> tuple[int, int]:
+    """The thinnest and thickest slab this window and configuration allow.
+
+    The ceiling is a property of the lateral shape, which the thickness does
+    not enter into, so this can be asked before deciding what to ask for -- it
+    is what the control panel's slider spans.
+    """
+    geometry = VolumeGeometry.derive(width, height, params)
+    return MIN_DEPTH, geometry.max_depth
 
 
 class Slab:
@@ -733,20 +820,34 @@ class VolumeEngine(Backend):
         zoom_x, zoom_y = aspect_correction(
             self.width, self.height, geometry.width, geometry.height)
 
+        # Voxels are cubic, so the slab's world thickness is just its aspect
+        # against the lateral extent.
+        slab_depth = geometry.depth / max(geometry.width, 1)
+        # Scaled rather than clipped: clipping the drift where it ran past the
+        # limit would put a corner in the viewpoint's path, and a corner in a
+        # motion is exactly the punctuation nothing here is allowed to be.
+        reach = min(render.parallax, PARALLAX_MAX_TANGENT * slab_depth)
+
         values = self._common_render_values(params, frac, frame_dt)
         values.update(
             layer_count=1,
             vol_w=geometry.width, vol_h=geometry.height, vol_d=geometry.depth,
-            march_steps=vol.steps,
+            # One step per slice, up to the configured ceiling. The count has
+            # to follow the thickness or a thick slab would be marched at the
+            # same number of samples as a thin one, which is a ray stepping
+            # straight over whole filaments.
+            march_steps=min(vol.steps, geometry.depth),
             shadow_steps=vol.shadow_steps,
             zoom_x=zoom_x, zoom_y=zoom_y,
-            cam_shear_x=drift[0] * render.parallax,
-            cam_shear_y=drift[1] * render.parallax,
+            cam_shear_x=drift[0] * reach,
+            cam_shear_y=drift[1] * reach,
             converge=vol.converge,
-            # Voxels are cubic, so the slab's world thickness is just its
-            # aspect against the lateral extent.
-            slab_depth=geometry.depth / max(geometry.width, 1),
-            depth_window=vol.depth_window,
+            slab_depth=slab_depth,
+            # A length in voxels on this side, a fraction of the depth on the
+            # shader's -- which is the coordinate the march has. The shader
+            # clamps it, so a window wider than the slab is a fully faded slab
+            # rather than an error.
+            depth_window=vol.depth_window_voxels / max(geometry.depth, 1),
             depth_dim=render.depth_dim,
             depth_desat=render.depth_desat,
             depth_fog=render.fog_amount,
@@ -754,7 +855,9 @@ class VolumeEngine(Backend):
             light_x=vol.light_x, light_y=vol.light_y, light_z=vol.light_z,
             light_ambient=vol.light_ambient,
             shadow_density=vol.shadow_density,
-            shadow_reach=vol.shadow_reach,
+            # Also voxels here, world length there: the lateral extent is 1
+            # across `vol_w` cubic voxels, so this is the conversion.
+            shadow_reach=vol.shadow_voxels / max(geometry.width, 1),
         )
         self.device.queue.write_buffer(
             self.render_buf, 0,
