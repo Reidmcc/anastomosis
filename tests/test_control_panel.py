@@ -154,12 +154,14 @@ def test_the_status_line_says_when_a_saved_field_is_not_the_chosen_size(
     """
     import types
 
+    import panelstub
+
     app, panel = _detail_panel(monkeypatch, None)
     app.engine = types.SimpleNamespace(
         tick_count=10,
         geometry=types.SimpleNamespace(
             width=512, describe=lambda: "512x288x48 voxels (7.1 M)"),
-        read_stats=lambda: {"mean_v": 0.1, "mean_activity": 0.001},
+        read_stats=lambda: panelstub.stats(mean_v=0.1, mean_activity=0.001),
     )
 
     # Chosen "fine" (768), running a saved 512 field: the panel must say so.

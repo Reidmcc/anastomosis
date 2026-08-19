@@ -2120,11 +2120,15 @@ Steps 1–6 produce something already usable for its purpose.
 
 Built and verified headless against a software adapter (Mesa lavapipe), so every
 shader compiles and the full tick/render sequence runs in CI without a GPU. The
-suite is 273 tests and takes eight to fifteen minutes there depending on the
-machine: 262 pass and 11 skip for want of a display. The checkpoint-determinism check that this section previously
-recorded as failing on that adapter passes on the llvmpipe build measured here;
-it was never explained, so treat that as an observation about one adapter build
-rather than as a fix.
+suite is 351 tests, split the way their costs are: `.github/workflows/ci.yml`
+runs everything not marked `slow` on every push, across three Python versions
+plus a leg with no PySide6 that holds the README's promise that the panel is
+optional, and runs the `slow` marks -- drift, morphology, regime occupancy,
+the long soaks -- nightly and on demand, where minutes are affordable. The
+checkpoint-determinism check that this section previously recorded as failing
+on that adapter passes on the llvmpipe build measured here; it was never
+explained, so treat that as an observation about one adapter build rather than
+as a fix.
 
 **Complete:** all 30 WGSL modules; the three-system substrate with agents, trail,
 reaction, curl-noise flow and pigment advection; the climate field and the

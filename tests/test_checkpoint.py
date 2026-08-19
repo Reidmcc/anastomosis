@@ -811,7 +811,7 @@ def test_the_panel_reports_the_saved_state(monkeypatch):
             *panelstub.SIZE, config.Config().resolve())
 
         def read_stats(self):
-            return {"mean_v": 0.12, "mean_activity": 0.0012}
+            return panelstub.stats()
 
     app.engine = Engine()
     panel._refresh_status()
