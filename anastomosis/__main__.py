@@ -100,6 +100,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--checkpoint-interval", type=float, default=None, metavar="SECONDS",
         help="how often to save simulation state (default: 300)",
     )
+    parser.add_argument(
+        "--stall-timeout", type=float, default=None, metavar="SECONDS",
+        help=(
+            "how long the frame loop may sit in one phase before it is "
+            "reported as a freeze, with every thread's stack written to a "
+            "file (default: 10). 0 turns the watchdog off"
+        ),
+    )
+    parser.add_argument(
+        "--diagnostics-dir", type=Path, default=None, metavar="PATH",
+        help=(
+            "where stall reports and the crash log go "
+            "(default: ~/.local/state/anastomosis/diagnostics)"
+        ),
+    )
     parser.add_argument("--list-presets", action="store_true")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
@@ -195,7 +210,11 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint=not args.no_checkpoint,
         resume=not args.reset,
         checkpoint_path=args.checkpoint,
+        diagnostics_dir=args.diagnostics_dir,
     )
+    # Left unset unless asked for, so the default has one home, as above.
+    if args.stall_timeout is not None:
+        options.stall_seconds = args.stall_timeout
     # Left unset unless asked for, so the default interval has one home.
     if args.checkpoint_interval is not None:
         options.checkpoint_seconds = args.checkpoint_interval

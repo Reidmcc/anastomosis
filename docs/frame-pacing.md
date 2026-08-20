@@ -78,3 +78,46 @@ card, so the depth-backend decision can be made on aesthetics rather than cost.
   toroidal field along the axis that grew, rather than by stretching it. Sizes are
   applied once they have held for ~150 ms, so dragging an edge reallocates once.
 - Optionally drop to a lower sim rate when the window is not visible.
+
+### 8.2 When the loop stops — `diagnostics.py`
+
+Everything above is about a loop that runs slowly. A loop that stops is a
+different failure with a different problem attached to it: it produces no
+evidence. There is no exception, so no traceback; the window keeps showing the
+last frame it drew, so nothing changes on screen except that it stopped
+changing; the process stays up, so the shell says nothing; and the log's last
+line is an ordinary telemetry line from a minute before it went wrong. A user
+who reports one has nothing to hand over, and the state that would explain it
+dies with the process they eventually have to kill.
+
+So the evidence is taken while the freeze is still happening, by a thread that
+is not the one that is stuck. The frame loop marks each phase as it enters it —
+`tick`, `acquire`, `render`, `telemetry`, `checkpoint`, and `idle` for the gap
+between frames — which is one tuple assignment and one clock read, cheap enough
+for a path that runs thirty times a second. A watchdog thread notices those
+marks stop moving and writes a report: the phase, the simulation's state going
+into it, and a stack for every thread in the process.
+
+Three constraints shape it, and each rules something out:
+
+- **It cannot need the stuck thread.** No lock the frame loop could hold, no
+  GPU call — the readback it would queue is quite possibly the thing that is
+  stuck — and no wgpu or Qt. The phase mark is a whole-tuple rebind rather than
+  two fields precisely so that reading it needs no lock.
+- **A single stack cannot tell a deadlock from slowness.** So the report is
+  sampled again every 30 seconds while the freeze lasts, with the process CPU
+  counters beside each sample. Identical stacks and unmoving counters mean
+  wedged; either one moving means grinding.
+- **Some freezes stop Python itself.** A driver call that wedges while holding
+  the GIL stops every Python thread, the watchdog's included. That case cannot
+  be covered from inside, so it is covered from outside: `faulthandler`'s
+  C-level handlers, one armed for a hard crash and one on `SIGUSR1`, both
+  writing to a file opened at startup because a handler that has to allocate is
+  a handler that cannot run.
+
+The design pressure that is easy to miss is **false alarms**. A report written
+every time the window is minimised is a report nobody reads, and one nobody
+reads is worth nothing on the day it matters — so a loop between frames is
+given 45 seconds against 10 inside a frame. Not being asked to paint is
+ordinary; a frame that never returns is not.
+

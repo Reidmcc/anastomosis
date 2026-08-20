@@ -37,6 +37,7 @@ anastomosis/
     blur.wgsl  couple.wgsl  reduce.wgsl  sanitize.wgsl
     interpolate.wgsl  composite.wgsl  grade.wgsl  safety.wgsl
   checkpoint.py         periodic save/restore of simulation state
+  diagnostics.py        stall watchdog, crash handler (§8.2)
   ui/                   control surface (TBD)
 tests/
   test_flash_safety.py  test_soak.py  test_parity.py  test_config.py

@@ -43,6 +43,7 @@ import wgpu
 from . import checkpoint as checkpoint_module
 from . import config as config_module
 from . import device as device_module
+from . import diagnostics as diagnostics_module
 from . import engine as engine_module
 from . import events as events_module
 from . import volume as volume_module
@@ -106,6 +107,12 @@ class AppOptions:
     volume_detail: str | None = None
     ui: bool = True
     telemetry_seconds: float = 60.0
+    # Stall diagnostics. On by default, because the freeze it exists to catch
+    # is by definition the one the user cannot reproduce on request -- it has
+    # to already be armed the first time it happens. Zero disables the
+    # watchdog; the crash handler is free either way and is always installed.
+    stall_seconds: float = diagnostics_module.DEFAULT_STALL_SECONDS
+    diagnostics_dir: Path | None = None
     # Checkpointing. Resuming is the default: the whole point of a mature field
     # is that it took hours to grow, so throwing it away on every launch would
     # be the surprising behaviour, not the safe one.
@@ -137,6 +144,15 @@ class Application:
             options.checkpoint_path
             or checkpoint_module.default_checkpoint_path(self.backend)
         )
+        # Built before anything can stall, and independently of whether it is
+        # enabled, so that the frame loop's `mark` calls never need guarding.
+        self.watchdog = diagnostics_module.StallWatchdog(
+            report_dir=options.diagnostics_dir,
+            stall_seconds=options.stall_seconds,
+            snapshot=self.diagnostic_snapshot,
+        )
+        self._started_at = time.time()
+        self._device_lost: str | None = None
         self._saver = checkpoint_module.BackgroundSaver()
         self._last_checkpoint = time.perf_counter()
         self._checkpoint_saved_at: float | None = None
@@ -228,9 +244,14 @@ class Application:
         return RenderCanvas(**kwargs), loop, False
 
     def setup(self) -> None:
+        # First, and before the GPU is touched: a driver that crashes on
+        # device creation should leave stacks behind too.
+        diagnostics_module.install_crash_handler(self.options.diagnostics_dir)
+
         self.canvas, self.loop, self.have_qt = self._make_canvas()
 
         self.device, self.device_info = device_module.request_device()
+        device_module.install_error_handler(self.device, self._on_device_lost)
         self.present_context = self.canvas.get_context("wgpu")
         self.target_format = self.present_context.get_preferred_format(
             self.device.adapter
@@ -246,6 +267,10 @@ class Application:
         self._start_hot_reload()
         self._watch_for_close()
         self._install_fullscreen()
+        # Last, so that building the engine and restoring a large checkpoint --
+        # both legitimately slow, and neither of them the frame loop -- cannot
+        # be reported as a stall.
+        self.watchdog.start()
 
     # -- fullscreen ---------------------------------------------------------
 
@@ -915,11 +940,17 @@ class Application:
         self._stopped = True
         log.info("shutting down")
 
+        # Still watched, because teardown wedging is a real way for this to end
+        # -- it is what the exit guard in `__main__` exists for -- but under
+        # the patient limit, since the blocking write below is allowed to take
+        # a while on a slow disk.
+        self.watchdog.mark(diagnostics_module.SHUTDOWN)
         self.save_checkpoint(blocking=True)
         self._saver.join()
         self._stop_hot_reload()
         self._close_panel()
         self._stop_loop()
+        self.watchdog.stop()
 
     def _close_panel(self) -> None:
         panel, self.panel = self.panel, None
@@ -1018,6 +1049,7 @@ class Application:
         if self._stop_requested:
             self.shutdown()
             return
+        self.watchdog.frame()
         now = time.perf_counter()
         frame_dt = min(now - self._last_time, 0.25)  # clamp after a stall
         self._last_time = now
@@ -1034,6 +1066,10 @@ class Application:
         max_ticks = 3
         ticks = 0
         while self._accumulator >= tick_interval and ticks < max_ticks:
+            # Marked per tick rather than once for the loop: three ticks that
+            # are each merely slow should not add up to something that reads
+            # as one tick that never returned.
+            self.watchdog.mark("tick")
             active = self.scheduler.update(tick_interval, self.params.events)
             rows, _ = self.scheduler.pack(8)
             self.engine.tick(self.params, rows)
@@ -1044,7 +1080,12 @@ class Application:
 
         frac = min(self._accumulator / tick_interval, 1.0)
 
+        # Its own phase because it is the one call here that blocks by design:
+        # it waits on the presentation queue, so a compositor that stops
+        # retiring frames wedges the loop precisely here.
+        self.watchdog.mark("acquire")
         texture = self.present_context.get_current_texture()
+        self.watchdog.mark("render")
         self.engine.render(
             self.params,
             frac=frac,
@@ -1057,6 +1098,7 @@ class Application:
 
         if now - self._last_telemetry >= self.options.telemetry_seconds:
             self._last_telemetry = now
+            self.watchdog.mark("telemetry")
             self._log_telemetry()
 
         # After the governor, so the readback stall is never charged to the
@@ -1066,7 +1108,12 @@ class Application:
             and self.options.checkpoint_seconds > 0.0
             and now - self._last_checkpoint >= self.options.checkpoint_seconds
         ):
+            self.watchdog.mark("checkpoint")
             self.save_checkpoint()
+
+        # Between frames now, where waiting is ordinary and the watchdog is
+        # correspondingly patient about it.
+        self.watchdog.mark(diagnostics_module.IDLE)
 
     def _log_telemetry(self) -> None:
         stats = self.engine.read_stats()
@@ -1091,6 +1138,86 @@ class Application:
             1000.0 * (sum(window) / len(window)),
             self.scheduler.describe(),
         )
+
+    # -- diagnostics --------------------------------------------------------
+
+    def diagnostic_snapshot(self) -> dict[str, object]:
+        """What the simulation was doing, for a stall report.
+
+        Read from the watchdog thread while the frame loop is wedged, which
+        constrains it absolutely: attribute reads and arithmetic only. Nothing
+        here may touch the GPU -- the readback it would queue is very possibly
+        the thing that is stuck -- take a lock, or call into wgpu or Qt.
+
+        The two calls that do run code, rather than read an attribute, are each
+        contained: losing one line of context is a much smaller loss than
+        losing the report, which is what an exception here would cost.
+        """
+        def safe(label, fn):
+            try:
+                return fn()
+            except Exception as exc:
+                return f"<{label} unavailable: {exc!r}>"
+
+        engine = self.engine
+        window = self._frame_times[-30:]
+        return {
+            "uptime": f"{time.time() - self._started_at:.0f}s",
+            "backend": self.backend,
+            "device": safe("device", lambda: self.device_info.describe()),
+            "device lost": self._device_lost or "no",
+            "tick": getattr(engine, "tick_count", "<no engine>"),
+            "geometry": safe(
+                "geometry",
+                lambda: getattr(engine.geometry, "describe", repr)(),
+            ),
+            "window size": self._size,
+            "pending resize": self._pending_size,
+            "sim_hz": (
+                f"{self.params.sim_hz * self._sim_hz_scale:.1f} "
+                f"(x{self._sim_hz_scale:.2f})"
+            ),
+            "accumulator": f"{self._accumulator:.4f}s",
+            "frame times": (
+                f"{1000.0 * (sum(window) / len(window)):.1f}ms mean of "
+                f"{len(window)}, {1000.0 * max(window):.1f}ms worst"
+                if window else "none recorded"
+            ),
+            "checkpoint": safe("checkpoint", self.checkpoint_status),
+            "checkpoint writer": "busy" if self._saver.busy else "idle",
+            "since last checkpoint": (
+                f"{time.perf_counter() - self._last_checkpoint:.0f}s"
+            ),
+            "events": safe("events", self.scheduler.describe),
+            "preset": self.config.preset_name,
+            "config": str(self.config_path),
+            "stopping": self._stop_requested,
+            "stopped": self._stopped,
+            "panel open": self.panel is not None,
+            "hot reload": self._watcher is not None,
+        }
+
+    def _on_device_lost(self, event) -> None:
+        """The GPU went away underneath a running session.
+
+        Worth a report of its own rather than only a log line. A lost device
+        does not stop the frame loop -- every subsequent call simply fails or
+        does nothing -- so what the user sees is a window that has stopped
+        moving, which is indistinguishable from the freeze the watchdog is
+        looking for and is not one. The report says which it was.
+        """
+        reason = str(getattr(event, "reason", None) or event)
+        self._device_lost = reason
+        if self._stopped or self._stop_requested:
+            # Dropping the device is how a session *ends*. Reporting that as a
+            # fault would mean a diagnostic file after every clean exit, which
+            # is the surest way to make the ones that matter unreadable.
+            log.debug("device lost during shutdown: %s", reason)
+            return
+        log.error("GPU device lost: %s", reason)
+        path = self.watchdog.dump(f"device lost: {reason}")
+        if path is not None:
+            log.error("wrote %s", path)
 
     # -- run ----------------------------------------------------------------
 
