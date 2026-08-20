@@ -2,13 +2,24 @@
 
 ## 13. Implementation status
 
-Built and verified headless against a software adapter (Mesa lavapipe), so every
-shader compiles and the full tick/render sequence runs in CI without a GPU. The
-suite is 422 tests, split the way their costs are: `.github/workflows/ci.yml`
-runs everything not marked `slow` on every push, across three Python versions
-plus a leg with no PySide6 that holds the README's promise that the panel is
-optional, and runs the `slow` marks -- drift, morphology, regime occupancy,
-the long soaks -- nightly and on demand, where minutes are affordable. The
+The application runs on real hardware, and has since early in the build: it is
+watched on the RTX 3080 of §8.1, and those viewings are where §4.7's monotony,
+§4.8's wrap seam, §4.9's line condensation, and the frozen frame loop behind
+§8.2 all came from. What this section records is the other half of that loop.
+It is written from a development environment with no GPU in it, and where it
+says something cannot be assessed *here*, that is a statement about this
+environment rather than about the application's history: the judgements left
+open below are open because nobody has yet watched *these* defaults, not
+because nothing has ever been watched.
+
+Here, then: built and verified headless against a software adapter (Mesa
+lavapipe), so every shader compiles and the full tick/render sequence runs in CI
+without a GPU. The suite is 422 tests, split the way their costs are:
+`.github/workflows/ci.yml` runs everything not marked `slow` on every push,
+across three Python versions plus a leg with no PySide6 that holds the README's
+promise that the panel is optional, and runs the `slow` marks -- drift,
+morphology, regime occupancy, the long soaks -- nightly and on demand, where
+minutes are affordable. The
 checkpoint-determinism check that this section previously recorded as failing
 on that adapter passes on the llvmpipe build measured here; it was never
 explained, so treat that as an observation about one adapter build rather than
@@ -64,11 +75,15 @@ makes about the defaults.
 - **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is
   untested, since a software adapter offers no way to provoke a device loss.
 
-**Not yet possible to assess here:** how it actually looks, and whether the
-defaults sit in the right place perceptually. The software adapter renders
-correct pixels far too slowly to watch. The numbers say the simulation is alive,
-structured, and stable; whether it is *pleasant* is a judgement that needs the
-real GPU and a pair of eyes.
+**Not assessable from here:** how it actually looks, and whether the defaults
+sit in the right place perceptually. The software adapter renders correct pixels
+far too slowly to watch, so every perceptual question has to leave this
+environment to be answered. That round trip is the project's normal way of
+working and has been made many times — the four findings named at the top of
+this section are all its results — and what it leaves open at any moment is
+whatever has changed since the last viewing. The numbers say the simulation is
+alive, structured, and stable; whether it is *pleasant* is a judgement that
+needs the real GPU and a pair of eyes.
 
 That caveat now has two specific things attached to it, both starting from
 §4.7 step 5.
@@ -79,8 +94,8 @@ is — and those two pull in opposite directions: gating the reaction harder win
 the first by throwing away the second, which is the polydispersity the rest of
 §4.7 exists to produce. The shipped point was chosen where the first has most
 of its improvement and the second is nearly intact, on a 160-cell field on the
-software adapter. It is the single default most likely to want moving once
-someone has watched it, and `pigment.v_needs_trail` is the knob.
+software adapter. It is the single default most likely to want moving at the
+next viewing, and `pigment.v_needs_trail` is the knob.
 
 And it costs the slab more than the stack, which puts it on the list of
 slab-specific numbers this section already keeps. A filament network fills far
@@ -104,12 +119,12 @@ lightness is unchanged throughout and nothing is saturating; what is thinning
 is the room above the knob, and it has thinned twice now without either change
 noticing. The lever is the march's `extinction` calibration (§5.1), which was
 set against a density scale two changes ago; it is shared with the compositor,
-so moving it is not free, and it should wait for the same viewing everything
-else here is waiting for. Until it moves, the test holds the line where it
-belongs: its ceiling is derived from the governor's clamp and the top of the
-brightness macro rather than chosen, so the next change to the slab's density
-is measured against the setting it would cost rather than against a number
-someone raised.
+so moving it is not free, and it should wait for the next viewing, along with
+everything else here that is waiting for one. Until it moves, the test holds
+the line where it belongs: its ceiling is derived from the governor's clamp and
+the top of the brightness macro rather than chosen, so the next change to the
+slab's density is measured against the setting it would cost rather than
+against a number someone raised.
 
 That caveat is heavier for the volumetric backend than for the layered one, and
 worth being explicit about. Its invariants are checked and hold -- the flow is
@@ -126,7 +141,7 @@ something it can work with, rather than a field too sparse or too dense for the
 knobs the two backends share to mean the same thing. But §5.1's own warning that
 a volume "makes every parameter harder to reason about" is unaddressed by any of
 that. The numbers a slab needs are not the numbers a sheet
-needs, and the ones most likely to want moving once someone has watched it are
+needs, and the ones most likely to want moving at the next viewing are
 the agent density (a filament network occupies a much smaller fraction of a
 volume than of a plane), the depth anisotropy, the light's ambient floor, and
 now the thickness -- which has a defensible range and a cost curve but no

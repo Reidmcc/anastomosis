@@ -547,8 +547,8 @@ agent layer could previously only add edges and could only grow onto what it
 already had — and nothing measured says they do harm, across nine seeds per
 arm, with the field neither collapsing nor freezing and the homeostat never
 reaching for a correction. Whether they earn their place perceptually is one
-more question for the first viewing on real hardware (§13), alongside the ones
-already waiting there.
+more question for the next viewing (§13), alongside the ones already waiting
+there.
 
 ### What step 5 actually did
 
@@ -993,6 +993,6 @@ regimes asserted against each other.
 
 One honest caveat, in §13's tradition: every number here is from the
 software adapter at test scale, and the claim that matters — that the
-*picture* is now a living network rather than a field of dots — is a
-first-viewing question. The mechanism, the invariants, and the from-scratch
+*picture* is now a living network rather than a field of dots — is a question
+for the next viewing. The mechanism, the invariants, and the from-scratch
 morphology are what the tests can hold.
