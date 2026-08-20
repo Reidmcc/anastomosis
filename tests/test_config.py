@@ -402,6 +402,26 @@ def test_only_activation_shortens_the_event_envelope():
     assert act_slow.events.max_concurrent == act_fast.events.max_concurrent == 6
 
 
+def test_only_activation_lets_the_structure_ride_the_flow():
+    """§4.7 step 6 ships behind the activation tempo curve and nowhere else.
+
+    Regulation's gain is pinned at zero at every tempo -- and zero is
+    load-bearing, not merely small: the engines skip the advection pass
+    entirely at zero, which is what keeps regulation bit-identical to a
+    build that predates the mechanism.
+    """
+    for tempo in (0.0, 0.5, 1.0):
+        reg = config.Config(
+            macros=config.Macros(tempo=tempo), mode="regulation").resolve()
+        assert reg.agents.trail_advect == 0.0
+    act_slow = config.Config(
+        macros=config.Macros(tempo=0.0), mode="activation").resolve()
+    act_fast = config.Config(
+        macros=config.Macros(tempo=1.0), mode="activation").resolve()
+    assert act_slow.agents.trail_advect == 0.0
+    assert act_fast.agents.trail_advect == pytest.approx(0.30)
+
+
 def test_presets_keep_the_arrival_rate_they_had():
     """The rate used to come from `intensity`; presets must not have shifted.
 

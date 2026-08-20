@@ -54,6 +54,7 @@ SIM_FIELDS: list[Field] = [
     ("fusion_max", "f32"),
     ("trail_decay", "f32"),
     ("trail_diffuse", "f32"),
+    ("trail_advect", "f32"),
     ("income_rate", "f32"),
     ("prune_gain", "f32"),
     ("starve_threshold", "f32"),

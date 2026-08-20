@@ -560,7 +560,11 @@ climate-varying `du` stays covered by `test_parity.py`.
    **Built**, together with the founding respawn step 3's postmortem asked
    for; see below.
 5. ℓ in the reduce pass, with a drifting setpoint.
-6. Trail advection, behind a knob, once the rest is tuned.
+6. ~~Trail advection, behind a knob, once the rest is tuned.~~ **Built**, as
+   §14.8 step 6, in the home §14.4 assigned it: gain zero in regulation
+   (the pass is not even dispatched), up to 0.3 on the activation tempo
+   curve. The WCAG-area worry this section flagged is measured there:
+   unmoved at the shipped gain.
 
 ~~Steps 1–3 should carry most of the value: polydisperse, migrating feature
 sizes plus genuine edge severance.~~ Step 2 carries the value. Step 3 works
@@ -1820,8 +1824,10 @@ axis, priced in graphics memory beside the slider.
   buy could not be resolved above run-to-run variance at test resolution — see
   §4.7. Flux pruning (step 3) is still switched off; the founding respawn it
   was waiting for exists now, but nothing measured says it has earned being
-  switched on. Outstanding: the ℓ setpoint (step 5, though the reduce pass
-  already carries the wider partials it needs) and trail advection (step 6).
+  switched on. Trail advection (step 6) is now built, behind the activation
+  mode's tempo curve (§14.8 step 6) and inert everywhere else. Outstanding:
+  the ℓ setpoint (step 5, though the reduce pass already carries the wider
+  partials it needs).
 - **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is
   untested, since a software adapter offers no way to provoke a device loss.
 
@@ -2123,8 +2129,8 @@ invisible:
    the first activation presets.~~ **Built**; see below.
 5. ~~**Shorter event envelopes and higher concurrency**, with soak and heal
    tests at the fast end.~~ **Built**; see below.
-6. **Trail advection** behind an activation-only gain. Last, as §4.7
-   always said.
+6. ~~**Trail advection** behind an activation-only gain. Last, as §4.7
+   always said.~~ **Built**; see below.
 
 Steps 1–4 are the mode; 5–6 are its depth.
 
@@ -2385,6 +2391,38 @@ One small honesty fix rode along: the panel's "it comes up over the next
 minute or two" note now reads the live attack time, since under a fast
 activation tempo that sentence would describe a fault rather than the
 event.
+
+### What step 6 actually did
+
+**Trail advection is its own pass, and the placement is the design.** The
+trail-decay pass runs before the tick's velocity exists, so folding
+advection into it would read the *previous* tick's velocity — state the
+checkpoint deliberately does not carry (§4.6), which would have broken
+resume determinism in the one mode that uses the mechanism. As its own
+pass between the velocity write and the pigment advect, the velocity
+stays a derived quantity read in the tick that wrote it, and the snapshot
+is untouched. The dispatch is skipped outright at gain zero, so
+regulation pays nothing and is bit-identical to a build without the
+pass — asserted, not assumed: engines on one seed are deterministic, so
+the test runs two gain-zero engines (which must match bit for bit) and
+one at gain 0.5 (which must differ and stay finite), in both backends.
+All four trail channels ride together; a strand's income EMA and prune
+term belong to the strand, not the texel it used to occupy.
+
+**The gain rides the activation tempo curve to 0.3** — the structure
+moves at up to three tenths of the pigment's speed, so filaments are
+stretched and bent by the currents rather than sitting still while
+colour streams through them. §4.7 named two risks. The WCAG area metric
+is measured unmoved: at the activation top, both sizes, warmed and
+sustained, the area fraction is 0.0% at the 10% *and* 5% thresholds with
+the gain on or off, and the worst per-pixel per-frame ΔL changes from
+0.024–0.026 to 0.023–0.028 — structure at 0.3× pigment speed is slower
+than motion already certified to 6×. Stripe instabilities and the
+agent↔trail feedback are watched where they would surface: the
+activation soak (1200 ticks at the busy corner, now with the gain live
+at 0.3) holds mass, activity and homeostat convergence exactly as the
+regulation soak does. Whether 0.3 is the *right* amount of shear — or
+twice too timid — is, as ever, §14.9's question for eyes.
 
 The same caveat as §13, sharpened: every endpoint above is an argument, not
 a judgement. Specifically open: whether activation keeps the dark ground

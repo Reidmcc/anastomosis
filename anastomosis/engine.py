@@ -475,6 +475,7 @@ class Engine(Backend):
         self.p_climate = self._compute("climate.wgsl")
         self.p_agents = self._compute("agents.wgsl")
         self.p_trail = self._compute("trail.wgsl")
+        self.p_trail_advect = self._compute("trail_advect.wgsl")
         self.p_reaction = self._compute("reaction.wgsl")
         self.p_flow = self._compute("flow.wgsl")
         self.p_advect = self._compute("advect.wgsl")
@@ -658,6 +659,20 @@ class Engine(Backend):
                 layer.velocity_view, sampler,
             ]))
             cpass.dispatch_workgroups(gx, gy)
+
+            # 6.5. Advect the trail itself -- §4.7 step 6, activation only.
+            # After the velocity is written and before the pigment reads it:
+            # a same-tick read keeps velocity a derived quantity, so the
+            # checkpoint stays honest (§4.6). Skipped at gain zero, so the
+            # regulation mode pays nothing and stays bit-identical.
+            if params.agents.trail_advect > 0.0:
+                cpass.set_pipeline(self.p_trail_advect)
+                cpass.set_bind_group(0, self._bind(self.p_trail_advect, [
+                    pbind, layer.trail.cur, layer.trail.nxt,
+                    layer.velocity_view, sampler,
+                ]))
+                cpass.dispatch_workgroups(gx, gy)
+                layer.trail.flip()
 
             # 7. Advect pigment.
             cpass.set_pipeline(self.p_advect)

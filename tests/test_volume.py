@@ -82,6 +82,34 @@ def _run(engine, params, ticks: int, scheduler=None) -> None:
         engine.tick(params, rows)
 
 
+def test_trail_advection_moves_the_slab_structure_and_only_when_asked(gpu_device):
+    """The slab's twin of the layered engine's trail-advection test.
+
+    Same logic: engines on one seed are deterministic, so two gain-zero runs
+    must match bit for bit (proving the comparison can see anything at all),
+    and a nonzero gain must then change the trail -- the pass dispatched --
+    while keeping it finite.
+    """
+    def trail_after(gain: float, ticks: int = 30) -> np.ndarray:
+        params = _params()
+        params.agents.trail_advect = gain
+        engine = _engine(gpu_device, params, seed=31)
+        _run(engine, params, ticks)
+        slab = engine.slab
+        return _read_volume(
+            engine.device, slab.trail.textures[slab.trail.index])
+
+    still = trail_after(0.0)
+    also_still = trail_after(0.0)
+    moved = trail_after(0.5)
+
+    assert np.array_equal(still, also_still)
+    assert np.isfinite(moved).all()
+    assert not np.array_equal(still[..., 0], moved[..., 0]), (
+        "a nonzero trail_advect left the slab's trail untouched"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Geometry
 # ---------------------------------------------------------------------------

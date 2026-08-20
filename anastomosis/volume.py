@@ -552,6 +552,7 @@ class VolumeEngine(Backend):
         self.p_climate = self._compute("vol_climate.wgsl")
         self.p_agents = self._compute("vol_agents.wgsl")
         self.p_trail = self._compute("vol_trail.wgsl")
+        self.p_trail_advect = self._compute("vol_trail_advect.wgsl")
         self.p_vol_blur = self._compute("vol_blur.wgsl")
         self.p_reaction = self._compute("vol_reaction.wgsl")
         self.p_potential = self._compute("vol_potential.wgsl")
@@ -751,6 +752,18 @@ class VolumeEngine(Backend):
             pbind, slab.potential_view, slab.velocity_view,
         ]))
         cpass.dispatch_workgroups(*groups)
+
+        # 6.5. Advect the trail itself -- §4.7 step 6, activation only. Same
+        # placement and reasoning as the layered engine's: after the velocity
+        # exists, skipped at gain zero.
+        if params.agents.trail_advect > 0.0:
+            cpass.set_pipeline(self.p_trail_advect)
+            cpass.set_bind_group(0, self._bind(self.p_trail_advect, [
+                pbind, slab.trail.cur, slab.trail.nxt,
+                slab.velocity_view, sampler,
+            ]))
+            cpass.dispatch_workgroups(*groups)
+            slab.trail.flip()
 
         # 7. Advect pigment.
         cpass.set_pipeline(self.p_advect)

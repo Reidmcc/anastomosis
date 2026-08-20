@@ -169,6 +169,11 @@ The preset list follows the mode: `prism` (colour first), `cascade`
 are activation's, and choosing one — including with `--preset` — brings
 the activation tuning with it.
 
+One more thing moves in activation that never moves in regulation: at
+higher **Tempo** the filament network itself rides the flow — stretched
+and bent by the currents instead of sitting still while colour streams
+through it. In regulation the structure holds its ground, always.
+
 ## Two ways of drawing depth
 
 There are two backends, and the **Depth** selector at the top of the control

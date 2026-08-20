@@ -539,6 +539,7 @@ class Backend:
             "fusion_max": a.fusion_max,
             "trail_decay": a.trail_decay,
             "trail_diffuse": a.trail_diffuse * feature,
+            "trail_advect": a.trail_advect,
             "income_rate": a.income_rate,
             "prune_gain": a.prune_gain,
             "starve_threshold": a.starve_threshold,

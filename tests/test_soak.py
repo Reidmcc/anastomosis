@@ -961,6 +961,51 @@ def test_long_run_stays_finite_and_in_band(gpu_device, offscreen_target):
     )
 
 
+def test_trail_advection_moves_the_structure_and_only_when_asked(gpu_device):
+    """§4.7 step 6: the pass runs exactly when the gain is nonzero.
+
+    Two engines on one seed are deterministic, so if the advection pass were
+    silently skipped the two trails would be bit-identical -- which makes
+    "they differ" a genuine assertion that the mechanism reached the field,
+    not a chaos truism. And at gain zero the pass must not run at all: that
+    is what keeps regulation bit-identical to a build without it, so a third
+    engine at zero is compared against the first to prove zero means zero.
+    """
+    device, _ = gpu_device
+    size = 96
+
+    def trail_after(gain: float, ticks: int = 40) -> np.ndarray:
+        params = config.Config().resolve()
+        params.render.layers = 1
+        params.agents.trail_advect = gain
+        engine = engine_module.Engine(device, size, size, params, seed=21)
+        for _ in range(ticks):
+            engine.tick(params, [])
+        layer = engine.layers[0]
+        texture = layer.trail.textures[layer.trail.index]
+        raw = device.queue.read_texture(
+            {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
+            {"offset": 0, "bytes_per_row": size * 8, "rows_per_image": size},
+            (size, size, 1),
+        )
+        return np.frombuffer(raw, dtype=np.float16).reshape(
+            size, size, 4).astype(np.float32)
+
+    still = trail_after(0.0)
+    also_still = trail_after(0.0)
+    moved = trail_after(0.5)
+
+    assert np.array_equal(still, also_still), (
+        "two gain-zero runs of one seed diverged; the comparison below "
+        "would prove nothing"
+    )
+    assert np.isfinite(moved).all()
+    assert not np.array_equal(still[..., 0], moved[..., 0]), (
+        "a nonzero trail_advect left the trail untouched; the pass is not "
+        "being dispatched"
+    )
+
+
 @pytest.mark.slow
 def test_activation_top_stays_finite_and_in_band(gpu_device, offscreen_target):
     """The activation mode's endpoints, run the way the regulation ones are.

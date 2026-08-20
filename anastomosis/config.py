@@ -125,6 +125,13 @@ class AgentParams:
     found_radius: float = 2.55
     trail_decay: float = 0.055
     trail_diffuse: float = 1.15  # gaussian sigma in cells
+    # §4.7 step 6: how much of the flow the *structure* rides, as a fraction
+    # of the pigment's advection. Zero -- the shipped regulation value, pinned
+    # by its curve table -- skips the pass entirely and is bit-identical to
+    # the build that predates it; the activation tempo curve raises it. The
+    # largest payoff for dynamism and the largest risk in §4.7's list, which
+    # is why it is last and why it starts at zero.
+    trail_advect: float = 0.0
     # Flux pruning -- the autolysis half of anastomosis (DESIGN.md 4.7).
     # Without it the trail field can only gain edges: agents fuse and reinforce,
     # decay is uniform and traffic-blind, so nothing can ever remove a strand.
@@ -698,6 +705,8 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         # Same paired-constant pattern as intensity's c_max above.
         ("events.attack_seconds", 45.0, 45.0, 1.0),
         ("events.release_seconds", 90.0, 90.0, 1.0),
+        # And the structure never rides the flow in regulation (§4.7 step 6).
+        ("agents.trail_advect", 0.0, 0.0, 1.0),
     ],
     "palette": [
         # Palette selects a hue anchor; the spatial spread widens slightly at
@@ -860,6 +869,14 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         # end's worst case (15 x 0.75 jitter).
         ("events.attack_seconds", 45.0, 15.0, 1.0),
         ("events.release_seconds", 90.0, 40.0, 1.0),
+        # §4.7 step 6, in the home §14.4 assigned it: the structure rides the
+        # flow at up to 0.3x the pigment's speed, so filaments are stretched
+        # and bent by the currents rather than sitting still while colour
+        # streams through them. Zero at the low end like everything else
+        # here; the risks §4.7 names (stripe instabilities, the WCAG area
+        # metric) are watched by the activation soak and the area
+        # measurement recorded in §14.8.
+        ("agents.trail_advect", 0.0, 0.30, 1.0),
     ],
     "palette": [
         # Most of the hue circle in play at once. This is spread around the
