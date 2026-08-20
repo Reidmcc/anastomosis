@@ -78,12 +78,24 @@ jobs:
       # the gpu_device fixture skips rather than fails when no adapter can be
       # acquired, so a broken runner would produce a green run that tested
       # almost nothing. Fail loudly here instead.
+      #
+      # The fixture skips for a second reason too -- an adapter that takes a
+      # 3D store and throws the z away, which is what the OpenGL fallback does
+      # (tests/gpucaps.py) -- and the same argument applies, so this asserts
+      # the same condition the fixture tests. Locally that condition buys a
+      # legible skip; here it has to be a failure.
       - name: Require a working adapter
         run: |
           python -c "
+          import sys
+          sys.path.insert(0, 'tests')
+          import gpucaps
           from anastomosis.device import request_device
-          _, info = request_device()
+          device, info = request_device()
           print('adapter:', info.describe())
+          reason = gpucaps.unsupported_reason(device, info)
+          if reason:
+              raise SystemExit('unusable adapter: ' + reason)
           "
 
       # -rs reports skips: the ui legs should skip nothing, and the no-ui leg
@@ -140,9 +152,15 @@ jobs:
       - name: Require a working adapter
         run: |
           python -c "
+          import sys
+          sys.path.insert(0, 'tests')
+          import gpucaps
           from anastomosis.device import request_device
-          _, info = request_device()
+          device, info = request_device()
           print('adapter:', info.describe())
+          reason = gpucaps.unsupported_reason(device, info)
+          if reason:
+              raise SystemExit('unusable adapter: ' + reason)
           "
 
       - name: Run the slow suite

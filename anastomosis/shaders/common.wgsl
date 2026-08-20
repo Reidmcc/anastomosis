@@ -56,8 +56,17 @@ fn wrap_uv(uv: vec2<f32>) -> vec2<f32> {
     return fract(fract(uv) + 1.0);
 }
 
+// Reduced in u32 rather than by the obvious `((p % dims) + dims) % dims`,
+// because `%` on a negative operand is undefined in GLSL and naga's GL backend
+// lowers WGSL's i32 remainder straight onto it. On Mesa's GL driver `-1 % 48`
+// comes back as 15, so the one step across the seam lands in the interior and
+// the domain quietly stops being a torus. Lifting into the non-negative range
+// first makes the reduction well defined on every backend; Vulkan, Metal and
+// DX12 were always right and pay only the shift.
 fn wrap_texel(p: vec2<i32>, dims: vec2<i32>) -> vec2<i32> {
-    return ((p % dims) + dims) % dims;
+    let d = max(dims, vec2<i32>(1, 1));
+    let lifted = p + d * (abs(p) / d + vec2<i32>(1, 1));
+    return vec2<i32>(vec2<u32>(lifted) % vec2<u32>(d));
 }
 
 // ---------------------------------------------------------------------------

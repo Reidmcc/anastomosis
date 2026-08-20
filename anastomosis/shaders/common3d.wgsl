@@ -19,8 +19,11 @@ fn wrap_uvw(p: vec3<f32>) -> vec3<f32> {
     return fract(fract(p) + 1.0);
 }
 
+// Lifted before the reduction for the same reason as wrap_texel; see there.
 fn wrap_texel3(p: vec3<i32>, dims: vec3<i32>) -> vec3<i32> {
-    return ((p % dims) + dims) % dims;
+    let d = max(dims, vec3<i32>(1, 1, 1));
+    let lifted = p + d * (abs(p) / d + vec3<i32>(1, 1, 1));
+    return vec3<i32>(vec3<u32>(lifted) % vec3<u32>(d));
 }
 
 // ---------------------------------------------------------------------------

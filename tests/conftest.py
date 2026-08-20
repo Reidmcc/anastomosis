@@ -22,6 +22,17 @@ def gpu_device():
         device, info = device_module.request_device()
     except Exception as exc:  # pragma: no cover - no GPU at all
         pytest.skip(f"no WebGPU device available: {exc}")
+
+    # An adapter that cannot hold a 3D field is worse than no adapter: the
+    # suite still runs, most of it still passes, and the handful of tests that
+    # do notice look like stale ones. Say what is actually wrong instead.
+    # See gpucaps.py; CI asserts the same thing so a skipped run cannot pass
+    # there.
+    import gpucaps
+
+    reason = gpucaps.unsupported_reason(device, info)
+    if reason is not None:  # pragma: no cover - depends on the driver
+        pytest.skip(reason)
     return device, info
 
 

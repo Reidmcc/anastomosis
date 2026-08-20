@@ -38,3 +38,36 @@ Conventional unit tests cover little of the risk here. The real QA is:
   colour clips every one of them.
 - **No-allocation check.** Assert steady-state buffer/texture count and process RSS
   are flat over a long run.
+
+### 10.1 What the suite needs from an adapter
+
+All of the above assumes the adapter under the tests behaves. One does not, and
+it is the one you get by default on a machine with no GPU and no Vulkan driver:
+wgpu falls back to OpenGL, and Mesa's GL backend binds a 3D storage texture as a
+single non-layered slice, so every `textureStore` lands at `z = 0`. The slab
+collapses onto its near face, the depth axis stops wrapping, `div(curl(psi))`
+stops cancelling, and the threads that should have written different voxels race
+for one — which also costs repeatability, so a checkpoint no longer restores to
+the field it captured.
+
+Most of the suite passes anyway, on a simulation that is no longer three
+dimensional. Three tests notice — the divergence-free residual, the three-axis
+wrap, and the checkpoint-resume comparison — and what they report is a number,
+several layers from the cause. Read on its own, three unrelated-looking numeric
+failures in an otherwise green run look like tests that have gone stale, and
+they are not: they are the only ones telling the truth.
+
+So the condition is asserted directly rather than inferred. `tests/gpucaps.py`
+writes `z` into a small 3D texture and reads it back, sharing no code with the
+shaders it protects; `gpu_device` skips the session with a sentence naming the
+fix when that fails, and CI asserts the same thing as a hard failure so a run
+that skipped everything cannot come back green. The fix is
+`apt-get install mesa-vulkan-drivers`, which is what CI itself runs on.
+
+One real bug came out of the same investigation, and it is not
+adapter-specific: `wrap_texel` reduced with `((p % dims) + dims) % dims`, and
+`%` on a negative operand is undefined in GLSL. Naga's GL backend lowers WGSL's
+`i32` remainder straight onto it, so on that backend `-1 % 48` came back as 15
+and the single step across the seam landed in the interior. Both wrap helpers
+now lift into the non-negative range and reduce in `u32`, which is well defined
+everywhere; Vulkan, Metal and DX12 were always right and pay only the shift.
