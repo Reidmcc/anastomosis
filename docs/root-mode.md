@@ -474,15 +474,16 @@ retirement:
    strata and weather drifting past forever — and every §15.4 mechanism is
    proven before a single root grows.~~ **Built**; see the step 1 record
    below.
-2. **The measurement, before the look is trusted:** the crispness/tip-speed
+2. ~~**The measurement, before the look is trusted:** the crispness/tip-speed
    sweep of §15.7(2), which sets the shading transfer's licensed steepness
    and the elongation ceiling. The §14 lesson applied in advance: derive the
-   endpoints, then tune inside them.
-3. **One plant.** Tips, tropisms, branching, deposits, pallor-by-age;
+   endpoints, then tune inside them.~~ **Built and run** (with step 3, whose
+   machinery it measures); see the record below.
+3. ~~**One plant.** Tips, tropisms, branching, deposits, pallor-by-age;
    gravitropism and thigmotropism first (they are the shape). An
    `test_agents.py`-style harness: dispatch tips against a manufactured
    soil with a known right answer — a stone to deflect around, a wet patch
-   to find, existing structure to avoid.
+   to find, existing structure to avoid.~~ **Built**; see the record below.
 4. **The long-duration core.** Senescence and recycling, the carbon
    homeostat, seeds and succession; the soak suite's liveness and
    non-repetition assertions against multi-hour runs, and the comb measure
@@ -576,6 +577,89 @@ unchanged in meaning, event rate as ever), and the rhizotron's own curve
 entries — Scale choosing a flora, Intensity the community's investment —
 land when there is a flora to choose. The descent rate, the weather and the
 soil's look are primitives under `rhizotron.*` until then.
+
+### What steps 2 and 3 actually did
+
+Built together, because the sweep measures machinery that has to exist
+first: the plant, then the certificate the plant's look rests on.
+
+**The plant is as §15.3 drew it, with one mechanism worth recording in
+full.** Tips are a few thousand individuals steering by the tropism sum —
+gravitropic setpoint angles per order, thigmotropism as *resistance* (a tip
+slows into a stone while its probes steer it around, so deflection is
+emergent rather than a bounce), hydrotropism up the moisture, and
+self-avoidance, the fungal fusion bias with its sign flipped. Branching,
+though, could not be the obvious atomic-allocator design, because slot
+assignment under `atomicAdd` depends on GPU scheduling and the bit-identical
+resume test (§4.6) forbids any mechanism that does. What shipped instead:
+**the pool is a tree of slots, and birth is self-construction.** Axis *a* is
+slot *a*; lateral *(a, l)* is *A + aL + l*; fines follow. A parent never
+writes its child's slot — it increments its own child counter, and on the
+next tick the child's own thread notices the counter has passed its index
+and constructs itself from the parent's previous state. With the tips
+double-buffered, no thread ever writes any slot but its own: no atomics, no
+races, bit-for-bit reproducible under any scheduling, and the test that
+resumes a checkpoint and demands identical tips is what holds it there. The
+cost is honest and small: a pool block that is spent stops branching —
+determinate growth, which is what real root systems do when their carbon
+runs out — and the front controller that will let the axes outgrow the
+window belongs to step 4, so for now a plant that reaches the bottom margin
+waits there for the descent.
+
+**Two lessons were measured by eye, and both are numbers now.** The first
+build grew spaghetti: steering noise of the magnitude the fungal agents
+carry produces, at root elongation rates, half a radian of wander per cell
+travelled, and *angular noise per cell* turned out to be the single quantity
+that decides whether the picture reads as architecture or as tangle. The
+shipped steering runs an order of magnitude calmer (~0.1 rad/cell), with
+gravitropism dominant, and the paths read as roots. And the deposit stamp
+had to be **peak-normalised, not sum-normalised**: splitting a fixed mass
+over the stamp made wider stamps fainter, so the axes — the boldest strokes
+in the referent — rendered dimmer than the hairline fines. Peak-normalised,
+every order lays the same line density and the sigma carries only breadth,
+which is the width hierarchy the right way up.
+
+**Pallor-by-age works through the shared macro.** The structure field
+carries density, age in seconds (reset *smoothly* under deposit — a blend by
+magnitude, so time never steps), and a fineness EMA. The compositor maps age
+through `1 - exp(-age/scale)` from living ivory — whose lightness is
+`render.filament_luma`, the "how luminous is the living material" macro
+meaning intact — down toward the local wet soil, so old wood darkens with
+the weather while the growing front stays pale.
+
+**The §15.7(2) sweep certifies freedom, exactly as §14 step 2's did, and
+for the same structural reason.** `tests/crisp_sweep.py`, at the eager
+corner — the full axis pool, tight spacing, brisk branching, the descent at
+its config ceiling, sim at 30 Hz — measured through the growth burst (the
+binding period on purpose: step 3's structure does not decay, so a mature
+plant is a still image and its steady state is vacuously safe). Sweeping
+elongation to 4× the shipped rates against transfer softness down to 0.02,
+at 128×96 and 224×126: **the fraction of pixels changing by ≥10% lightness
+per frame was 0.0% at every point — and 0.0% at half that threshold too.**
+The worst single-pixel per-frame ΔL grows only 0.028 → 0.041 across the
+whole table. A tip's bright front is a handful of pixels wide and advances
+sub-pixel per frame through deposit accumulation and the slew limiter; the
+area criterion cannot see it. So the shipped `root_edge` floor (0.02) and
+elongation ceilings (24 cells/s) in `validate` sit at the swept range's
+*edge* — the certificate's boundary, not a near-miss — and
+`test_shipped_endpoints_sit_inside_the_swept_certificate` makes forgetting
+to re-sweep impossible. Two caveats keep it honest: a small field
+overstates the area fraction and the overstated figure is zero, so the
+error runs in the conclusion's favour; and step 4's senescence will make
+sustained churn the steady state, which is why the sweep script is
+committed rather than run once — it is owed a re-run when the turnover
+lands.
+
+Housekeeping recorded plainly: the checkpoint geometry now carries the tip
+pool's three dimensions, so a column saved by the step 1 build is refused
+and grows fresh — nothing shipped, nothing lost, and the alternative was a
+compatibility shim for a file only this branch ever wrote. The tests grew
+the `test_agents.py`-style harness the plan asked for: gravitropism
+isolated (a tip launched sideways plunges), the branch tree audited slot by
+slot against the parents' counters, the downward centroid and upward age
+gradient, stones costing the same seed's plant measurable travel, tips
+dying when the descent carries them out, and the resume comparing tips and
+structure bit-for-bit alongside the moisture.
 
 ### 15.12 Open questions
 

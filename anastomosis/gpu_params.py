@@ -255,6 +255,55 @@ RHIZ_FIELDS: list[Field] = [
     ("soil_l_range", "f32"),
     ("wet_darken", "f32"),
     ("wet_chroma", "f32"),
+    # --- The plant (§15.11 step 3) ----------------------------------------
+    # Tip pool shape. Slots are allocated by position in the tree, not by an
+    # atomic bump: axis a is slot a, lateral (a, l) is A + a*L + l, fine
+    # (a, l, f) is A + A*L + (a*L + l)*F + f. Each parent owns its children's
+    # slots outright and hands them out from its own counter, so branching is
+    # deterministic under any GPU scheduling -- the property the bit-identical
+    # resume test needs -- and needs no atomics at all.
+    ("max_axes", "u32"),
+    ("laterals_per_axis", "u32"),
+    ("fines_per_lateral", "u32"),
+    ("tips_total", "u32"),
+    # Tropism steering, per order where an order needs its own value. The
+    # gravitropic setpoint angle is measured off straight down; the axis's is
+    # zero by definition.
+    ("elong_axis", "f32"),      # cells per tick, this order's elongation
+    ("elong_lateral", "f32"),
+    ("elong_fine", "f32"),
+    ("gsa_lateral", "f32"),     # radians off vertical
+    ("gsa_fine", "f32"),
+    ("gsa_gain_axis", "f32"),   # angular relaxation toward the setpoint, /tick
+    ("gsa_gain_lateral", "f32"),
+    ("gsa_gain_fine", "f32"),
+    ("thigmo_gain", "f32"),
+    ("hydro_gain", "f32"),
+    ("avoid_gain", "f32"),
+    ("tip_turn", "f32"),        # radians per tick, the flank-steering step
+    ("tip_jitter", "f32"),
+    ("sense_dist", "f32"),      # cells ahead of the tip
+    ("sense_angle", "f32"),     # radians off-axis for the flank probes
+    # Branching.
+    ("spacing_axis", "f32"),    # cells between laterals along an axis
+    ("spacing_lateral", "f32"), # cells between fines along a lateral
+    ("branch_prob", "f32"),     # per tick, once the spacing is met
+    ("branch_angle", "f32"),    # radians the child leaves its parent at
+    ("branch_jitter", "f32"),
+    # Deposits into the structure field.
+    ("tip_deposit", "f32"),     # per cell travelled
+    ("splat_axis", "f32"),      # gaussian sigma, cells
+    ("splat_lateral", "f32"),
+    ("splat_fine", "f32"),
+    # Lifetimes, in ticks (converted from seconds where they are packed).
+    ("fine_life", "f32"),
+    ("lateral_life", "f32"),
+    ("dt_seconds", "f32"),      # one tick, for ageing the structure in seconds
+    # Root shading.
+    ("root_knee", "f32"),       # density at half coverage
+    ("root_edge", "f32"),       # transfer softness; the §15.7(2) sweep's knob
+    ("root_age_scale", "f32"),  # seconds to brown
+    ("root_brown", "f32"),      # how far a browned root sinks toward the soil
 ]
 
 # --------------------------------------------------------------------------

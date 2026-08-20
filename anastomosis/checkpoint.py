@@ -721,13 +721,15 @@ class _VolumeLayout(_Layout):
 
 
 class _RhizotronLayout(_Layout):
-    """The soil column: one moisture pair, and the descent's own counters.
+    """The soil column: moisture, the root map, the tips, and the descent.
 
-    The smallest layout by far, and that smallness is a design fact worth
+    Still the smallest layout, and that smallness is a design fact worth
     keeping visible: the rhizotron's soil is a pure function of (seed, world
-    row) rather than a stored field (DESIGN.md §15.3), so the only array that
-    accumulates is the moisture -- everything else a resume needs is a few
-    numbers of descent state.
+    row) rather than a stored field (DESIGN.md §15.3), so what accumulates is
+    the water, what the roots have built, and the plant's own few thousand
+    tips -- plus a handful of numbers of descent state. The deposit
+    accumulator is drained by `atomicExchange` every tick and so is empty
+    between ticks, exactly like the fungal one.
     """
 
     name = "rhizotron"
@@ -737,6 +739,9 @@ class _RhizotronLayout(_Layout):
             "width": int(geometry.width),
             "height": int(geometry.height),
             "view_rows": int(geometry.view_rows),
+            "max_axes": int(geometry.max_axes),
+            "laterals_per_axis": int(geometry.laterals_per_axis),
+            "fines_per_lateral": int(geometry.fines_per_lateral),
         }
 
     def read_geometry(self, meta: dict[str, Any]):
@@ -748,6 +753,9 @@ class _RhizotronLayout(_Layout):
                 width=int(block["width"]),
                 height=int(block["height"]),
                 view_rows=int(block["view_rows"]),
+                max_axes=int(block["max_axes"]),
+                laterals_per_axis=int(block["laterals_per_axis"]),
+                fines_per_lateral=int(block["fines_per_lateral"]),
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
@@ -755,22 +763,37 @@ class _RhizotronLayout(_Layout):
     def expected_arrays(
         self, geometry, version: int = FORMAT_VERSION
     ) -> dict[str, tuple[int, ...]]:
-        return {"column.moisture": (geometry.height, geometry.width, 4)}
-
-    def capture(self, engine) -> dict[str, np.ndarray]:
-        pair = engine.moisture
         return {
-            "column.moisture": _read_texture(
-                engine.device, pair.textures[pair.index]),
+            "column.moisture": (geometry.height, geometry.width, 4),
+            "column.structure": (geometry.height, geometry.width, 4),
+            "column.tips": (
+                max(geometry.tips_total, 1) * rhizotron_module.TIP_STRIDE,
+            ),
         }
 
+    def capture(self, engine) -> dict[str, np.ndarray]:
+        arrays: dict[str, np.ndarray] = {}
+        for name in ("moisture", "structure"):
+            pair = getattr(engine, name)
+            arrays[f"column.{name}"] = _read_texture(
+                engine.device, pair.textures[pair.index])
+        arrays["column.tips"] = _read_buffer(engine.device, engine.tips.cur)
+        return arrays
+
     def restore_arrays(self, engine, arrays: dict[str, np.ndarray]) -> None:
-        data = arrays.get("column.moisture")
-        if data is None:
-            return
-        for texture in engine.moisture.textures:
-            _write_texture(engine.device, texture, data)
-        engine.moisture.index = 0
+        for name in ("moisture", "structure"):
+            data = arrays.get(f"column.{name}")
+            if data is None:
+                continue
+            pair = getattr(engine, name)
+            for texture in pair.textures:
+                _write_texture(engine.device, texture, data)
+            pair.index = 0
+        tips = arrays.get("column.tips")
+        if tips is not None:
+            for buffer in engine.tips.buffers:
+                engine.device.queue.write_buffer(buffer, 0, tips.tobytes())
+            engine.tips.index = 0
 
     def engine_meta(self, engine) -> dict[str, Any]:
         return {"descent": engine.descent_state()}

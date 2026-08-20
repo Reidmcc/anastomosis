@@ -776,6 +776,85 @@ class RhizotronParams:
     rain_base: float = 0.002
     rain_event_gain: float = 0.12
 
+    # --- The plant (§15.11 step 3) -----------------------------------------
+    # Tip pool shape: axes per column, laterals per axis, fines per lateral.
+    # Structural -- the pool's slots are addressed by position in the tree, so
+    # these three decide the tip buffer's size and a saved column carries them
+    # in its geometry. The defaults give 6 + 288 + 1728 = 2022 slots, of which
+    # a mature plant uses most: growth is determinate, and a parent whose
+    # block is spent simply stops branching, which is what real root systems
+    # do when their carbon does.
+    max_axes: int = 6
+    laterals_per_axis: int = 48
+    fines_per_lateral: int = 6
+    # How many axes a fresh column germinates with, and their spread.
+    axes_per_plant: int = 3
+    axis_spread: float = 0.22  # radians of heading scatter at germination
+
+    # Elongation, cells per second by branching order. A few pixels a second
+    # at native resolution: visibly growing when watched, not crawling. The
+    # ceiling on the axis rate is measured, not chosen -- see the §15.7(2)
+    # sweep record -- and `validate` holds all three under it.
+    elong_axis: float = 6.0
+    elong_lateral: float = 3.6
+    elong_fine: float = 2.0
+    # Gravitropic setpoint angles, radians off straight down, and the angular
+    # relaxation toward them per second. The axis's setpoint is zero by
+    # definition; these are the single most shape-giving numbers in the mode
+    # (§15.3) -- laterals hold an oblique angle, fines barely answer to
+    # gravity at all.
+    gsa_lateral: float = 1.05
+    gsa_fine: float = 1.15
+    gsa_gain_axis: float = 2.5   # per second
+    gsa_gain_lateral: float = 1.2
+    gsa_gain_fine: float = 0.4
+    # The other tropisms: deflection off stones, attraction toward moisture,
+    # and the §15.1 sign flip -- steering *away* from sensed structure, which
+    # is what makes a tree instead of a mesh.
+    #
+    # The turn and jitter look timid beside the fungal agents' and must: what
+    # a root is, visually, is *nearly straight*. The first build ran the
+    # steering an order of magnitude hotter and grew spaghetti -- angular
+    # noise per cell travelled is the quantity that decides whether the
+    # picture reads as architecture or as wandering, and at these values it
+    # sits near a tenth of a radian per cell against the half-radian the
+    # spaghetti had.
+    thigmo_gain: float = 1.0
+    hydro_gain: float = 0.55
+    avoid_gain: float = 0.5
+    tip_turn: float = 0.9        # radians per second of flank steering
+    tip_jitter: float = 0.25     # radians per root-second of wander
+    sense_dist: float = 4.0      # cells ahead
+    sense_angle: float = 0.55    # radians off-axis
+    # Branching: distance between children along a parent, the per-tick
+    # chance once that spacing is met, and the angle a child leaves at.
+    spacing_axis: float = 13.0
+    spacing_lateral: float = 9.0
+    branch_prob: float = 1.4     # per second, once eligible
+    branch_angle: float = 1.0
+    branch_jitter: float = 0.25
+    # Deposits: the line density a path settles at, per cell travelled (the
+    # stamp is peak-normalised -- see rhiz_tips.wgsl), and the stamp widths by
+    # order: what makes an axis read broad and a fine root read hairline.
+    tip_deposit: float = 0.22
+    splat_axis: float = 1.3
+    splat_lateral: float = 0.7
+    splat_fine: float = 0.4
+    # Lifetimes, seconds. Fines are ephemeral by construction even before
+    # step 4's senescence; laterals stop elongating (determinate growth) but
+    # their structure persists.
+    fine_life: float = 18.0
+    lateral_life: float = 240.0
+
+    # Root shading (§15.2): the transfer from structure density to coverage,
+    # and pallor-by-age. `root_edge` is the transfer's softness -- 0.5 is the
+    # softest the smoothstep allows, smaller is crisper -- and its floor is
+    # the licensed value from the §15.7(2) sweep, enforced in `validate`.
+    root_knee: float = 0.08
+    root_edge: float = 0.18
+    root_age_scale: float = 600.0  # seconds to brown
+    root_brown: float = 0.82       # how far a browned root sinks toward soil
+
     # --- The look (§15.2) --------------------------------------------------
     # Lightness span of the soil above the background anchor, in Oklab L. The
     # ground stays dark-earth rather than dark-void, but it is a *material*
@@ -1597,6 +1676,42 @@ def validate(params: Params) -> Params:
     rhiz.conductivity_floor = min(max(float(rhiz.conductivity_floor), 0.0), 1.0)
     rhiz.rain_base = min(max(float(rhiz.rain_base), 0.0), 1.0)
     rhiz.rain_event_gain = min(max(float(rhiz.rain_event_gain), 0.0), 2.0)
+    # The tip pool. Structural integers, bounded the way the layer count is:
+    # the product decides one buffer's size, and the ceiling only needs to
+    # catch nonsense (the default tree is ~2k slots against a 64k ceiling).
+    rhiz.max_axes = max(1, min(16, int(rhiz.max_axes)))
+    rhiz.laterals_per_axis = max(1, min(128, int(rhiz.laterals_per_axis)))
+    rhiz.fines_per_lateral = max(0, min(16, int(rhiz.fines_per_lateral)))
+    rhiz.axes_per_plant = max(1, min(rhiz.max_axes, int(rhiz.axes_per_plant)))
+
+    # Elongation and the root transfer's crispness, held to the §15.7(2)
+    # sweep's certificate: the area criterion was measured with the axis rate
+    # up to 24 cells/s and the transfer at its crispest (root_edge 0.02), and
+    # no swept point approached the WCAG area threshold -- see the step 2
+    # record in DESIGN.md §15. The ceilings sit at the swept range's edge; a
+    # retune past either re-runs tests/crisp_sweep.py first.
+    rhiz.elong_axis = min(max(float(rhiz.elong_axis), 0.0), 24.0)
+    rhiz.elong_lateral = min(max(float(rhiz.elong_lateral), 0.0), 24.0)
+    rhiz.elong_fine = min(max(float(rhiz.elong_fine), 0.0), 24.0)
+    rhiz.root_edge = min(max(float(rhiz.root_edge), 0.02), 0.5)
+    rhiz.root_knee = min(max(float(rhiz.root_knee), 0.02), 4.0)
+    rhiz.root_age_scale = min(max(float(rhiz.root_age_scale), 1.0), 7200.0)
+    rhiz.root_brown = min(max(float(rhiz.root_brown), 0.0), 1.0)
+
+    # Steering stays steering: a per-tick turn above ~pi/2 is teleportation,
+    # and the spacing floor keeps the branch spawner from machine-gunning
+    # children into its block on consecutive ticks.
+    rhiz.tip_turn = min(max(float(rhiz.tip_turn), 0.0), 30.0)
+    rhiz.tip_jitter = min(max(float(rhiz.tip_jitter), 0.0), 30.0)
+    rhiz.sense_dist = min(max(float(rhiz.sense_dist), 0.5), 16.0)
+    rhiz.sense_angle = min(max(float(rhiz.sense_angle), 0.05), 1.4)
+    rhiz.spacing_axis = min(max(float(rhiz.spacing_axis), 2.0), 200.0)
+    rhiz.spacing_lateral = min(max(float(rhiz.spacing_lateral), 2.0), 200.0)
+    rhiz.branch_prob = min(max(float(rhiz.branch_prob), 0.0), 20.0)
+    rhiz.tip_deposit = min(max(float(rhiz.tip_deposit), 0.0), 2.0)
+    rhiz.fine_life = min(max(float(rhiz.fine_life), 1.0), 3600.0)
+    rhiz.lateral_life = min(max(float(rhiz.lateral_life), 1.0), 36000.0)
+
     # Luminance-relevant: the wetting front and the soil span both spend the
     # slew budget, and both are bounded here the way every luminance actor is.
     rhiz.soil_l_range = min(max(float(rhiz.soil_l_range), 0.0), 0.40)

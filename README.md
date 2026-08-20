@@ -287,11 +287,16 @@ There is a third entry in the **Depth** selector, and unlike the other two it
 is not another way of drawing the fungal field: **Rhizotron** is a different
 metaphor — a pane of glass pressed against living soil. Stratified earth in
 real soil-chart colours, stones the water pools above, rain events that soak
-down through the column over minutes, and the whole window sinking at
-hour-hand speed through soil that is generated below, retired above, and can
-never repeat. Roots — tips steered by gravity, water and stone, the point of
-the thing — are the next build step; what is there today is the world they
-will grow into. `DESIGN.md` §15 is the design and the build record.
+down through the column over minutes, the whole window sinking at hour-hand
+speed through soil that is generated below, retired above, and can never
+repeat — and a plant growing through all of it: pale root tips steered by
+gravity, water and stone, plunging axes throwing oblique laterals and fine
+fuzz, ivory at the living front and browning with age. Where the fungal
+field converges — filaments seeking and fusing into a network — the roots
+diverge, one crown ramifying and never rejoining, which is why the two
+worlds cannot be mistaken for each other at a glance. Succession — plants
+ageing out and seeds arriving in the soil below — is the next build step.
+`DESIGN.md` §15 is the design and the build record.
 
 It is a backend like the others: structural, so it applies to a new field,
 and it keeps its own saved column — switching away and back finds it where
@@ -495,15 +500,19 @@ unrecoverable:
 - `test_shutdown.py` — that closing the window saves the field and really ends
   the process, the last part in a subprocess with a live Qt loop, because a
   session left running behind a closed window leaves no other trace.
-- `test_rhizotron.py` — the plant-root backend's foundations (§15 step 1):
-  that the descent really is an exact integer translation, bit for bit, with
-  fresh soil generated below; that the soil is deterministic in its seed and
+- `test_rhizotron.py` — the plant-root backend (§15, steps 1–3): that the
+  descent really is an exact integer translation, bit for bit, with fresh
+  soil generated below; that the soil is deterministic in its seed and
   different ten thousand rows down; that the scroll reaches the safety
   stage's reprojection with the right sign and magnitude; that the flash
   bound holds exactly with the descent stopped while the wetting machinery is
   slammed, and by the WCAG area criterion with it running in the rain; that
-  rain soaks *downward*, isolated against a control run; and that a resumed
-  column, descent counters included, evolves bit-identically.
+  rain soaks *downward*, isolated against a control run; that gravitropism
+  turns a sideways tip down, the branch tree is consistent slot by slot,
+  structure builds downward and ages upward, stones cost the plant travel,
+  and the shipped crispness sits inside `crisp_sweep.py`'s measured
+  certificate; and that a resumed column — descent counters, structure and
+  every tip included — evolves bit-identically.
 - `test_volume.py` — the volumetric backend: that its flow really is
   divergence-free (checked numerically, because the failure it prevents is
   pigment slowly pooling over hours), that the slab wraps on all three axes and

@@ -29,6 +29,9 @@ import reference as R
 from anastomosis import checkpoint, config, events
 from anastomosis.rhizotron import (
     MARGIN_ROWS,
+    TIP_ALIVE,
+    TIP_DTYPE,
+    TIP_SPENT,
     RhizotronEngine,
     RhizotronGeometry,
 )
@@ -83,6 +86,29 @@ def _write_moisture(engine, data: np.ndarray) -> None:
 
 def _hdr(engine) -> np.ndarray:
     return checkpoint._read_texture(engine.device, engine.hdr)
+
+
+def _structure(engine) -> np.ndarray:
+    pair = engine.structure
+    return checkpoint._read_texture(engine.device, pair.textures[pair.index])
+
+
+def _tips(engine) -> np.ndarray:
+    raw = engine.device.queue.read_buffer(engine.tips.cur)
+    return np.frombuffer(raw, dtype=TIP_DTYPE).copy()
+
+
+def _write_tips(engine, tips: np.ndarray) -> None:
+    for buffer in engine.tips.buffers:
+        engine.device.queue.write_buffer(buffer, 0, tips.tobytes())
+
+
+def _alive(tips: np.ndarray) -> np.ndarray:
+    return (tips["flags"] & TIP_ALIVE) != 0
+
+
+def _orders(tips: np.ndarray) -> np.ndarray:
+    return tips["flags"] & 3
 
 
 def _capture(engine, params, target, fmt, frames, mutate=None, scheduler=None):
@@ -415,7 +441,219 @@ def test_two_columns_from_one_seed_are_the_same_column(gpu_device):
         a.tick(params, [])
         b.tick(params, [])
     assert np.array_equal(_moisture(a), _moisture(b))
+    assert np.array_equal(_structure(a), _structure(b))
+    assert np.array_equal(_tips(a), _tips(b))
     assert a.descent_state() == b.descent_state()
+
+
+# ---------------------------------------------------------------------------
+# The plant (§15.11 step 3)
+# ---------------------------------------------------------------------------
+
+# Overrides that isolate one tropism: everything else that can turn a tip is
+# off, the water is still, and the world stands still.
+BARE_STEERING = {
+    **STILL_WATER,
+    "rhizotron.descent_rate": 0.0,
+    "rhizotron.descent_wander": 0.0,
+    "rhizotron.stone_amount": 0.0,
+    "rhizotron.hydro_gain": 0.0,
+    "rhizotron.avoid_gain": 0.0,
+    "rhizotron.thigmo_gain": 0.0,
+    "rhizotron.tip_jitter": 0.0,
+    "rhizotron.branch_prob": 0.0,
+}
+
+
+def _single_tip(engine, x, y, heading, order=0, side=0):
+    tips = np.zeros(max(engine.geometry.tips_total, 1), dtype=TIP_DTYPE)
+    tips["x"][0] = x
+    tips["y"][0] = y
+    tips["heading"][0] = heading
+    tips["rng"][0] = 12345
+    tips["flags"][0] = order | (4 if side else 0) | TIP_ALIVE | TIP_SPENT
+    tips["vigor"][0] = 1.0
+    _write_tips(engine, tips)
+
+
+def test_gravitropism_turns_an_axis_downward(gpu_device):
+    """The shape-giving tropism, isolated: a tip launched sideways plunges.
+
+    Every other steering input is zeroed, so the only thing acting is the
+    angular relaxation toward the axis's setpoint -- straight down.
+    """
+    params = _resolve(overrides=BARE_STEERING)
+    engine = _engine(gpu_device, params)
+    g = engine.geometry
+    _single_tip(engine, g.width * 0.5, g.height * 0.3, heading=0.0)
+
+    start_y = g.height * 0.3
+    for _ in range(60):
+        engine.tick(params, [])
+
+    tips = _tips(engine)
+    assert _alive(tips)[0]
+    assert abs(tips["heading"][0] - math.pi / 2.0) < 0.05, (
+        f"an axis launched sideways is heading {tips['heading'][0]:.2f}, "
+        f"not down"
+    )
+    assert tips["y"][0] > start_y + 5.0, "the axis did not descend"
+
+
+def test_branching_builds_a_tree_in_its_own_slots(gpu_device):
+    """Laterals and fines appear, at their orders, in their parents' blocks.
+
+    The slot arithmetic is the load-bearing part: a child may only exist if
+    its parent has handed out its index, which is what makes birth
+    deterministic under any GPU scheduling.
+    """
+    params = _resolve(overrides={
+        **STILL_WATER,
+        "rhizotron.descent_rate": 0.0,
+        "rhizotron.descent_wander": 0.0,
+    })
+    engine = _engine(gpu_device, params)
+    for _ in range(500):
+        engine.tick(params, [])
+
+    tips = _tips(engine)
+    g = engine.geometry
+    born = (tips["flags"] & TIP_SPENT) != 0
+    orders = _orders(tips)
+    a, l = g.max_axes, g.laterals_per_axis
+    assert born[: params.rhizotron.axes_per_plant].all()
+    assert (born & (orders == 1)).sum() >= 4, "no laterals branched"
+    assert (born & (orders == 2)).sum() >= 2, "no fines branched"
+
+    children = (tips["flags"] >> 8) & 255
+    for slot in np.nonzero(born)[0]:
+        if slot < a:
+            continue
+        if slot < a + a * l:
+            parent, index = (slot - a) // l, (slot - a) % l
+        else:
+            fi = slot - a - a * l
+            f = g.fines_per_lateral
+            parent, index = a + fi // f, fi % f
+        assert children[parent] > index, (
+            f"slot {slot} exists but its parent {parent} only handed out "
+            f"{children[parent]} children"
+        )
+        assert orders[slot] == orders[parent] + 1
+
+    # And laterals leave at their own angle: on average, further off vertical
+    # than the axes that bore them.
+    alive = _alive(tips)
+    axis_off = np.abs(
+        np.angle(np.exp(1j * (tips["heading"][alive & (orders == 0)]
+                              - math.pi / 2))))
+    lateral_off = np.abs(
+        np.angle(np.exp(1j * (tips["heading"][alive & (orders == 1)]
+                              - math.pi / 2))))
+    if len(axis_off) and len(lateral_off):
+        assert lateral_off.mean() > axis_off.mean()
+
+
+def test_the_structure_is_built_downward_and_ages_upward(gpu_device):
+    """The plant grows down from its crown, and its history reads upward:
+    material near the crown is older than material near the front -- the
+    pallor-by-age gradient the shading is built on."""
+    params = _resolve(overrides={
+        **STILL_WATER,
+        "rhizotron.descent_rate": 0.0,
+        "rhizotron.descent_wander": 0.0,
+    })
+    engine = _engine(gpu_device, params)
+    for _ in range(600):
+        engine.tick(params, [])
+
+    field = _structure(engine).astype(np.float32)
+    density = field[..., 0]
+    age = field[..., 1]
+    assert float(density.sum()) > 1.0, "the plant built nothing"
+
+    rows = np.arange(engine.geometry.height)
+    centroid = float((density.sum(axis=1) * rows).sum() / density.sum())
+    seed_row = MARGIN_ROWS + engine.geometry.view_rows * 0.12
+    assert centroid > seed_row + 3.0, "the structure did not extend downward"
+
+    rooted = density > 0.05
+    assert rooted.any()
+    row_of = np.broadcast_to(rows[:, None], rooted.shape)
+    shallow = rooted & (row_of < centroid)
+    deep = rooted & (row_of >= centroid)
+    if shallow.any() and deep.any():
+        assert age[shallow].mean() > age[deep].mean(), (
+            "material near the crown should be older than the growing front"
+        )
+
+
+def test_stones_slow_the_plant(gpu_device):
+    """Thigmotropism's other half: stone is resistance, so the same plant in
+    stonier ground travels less and lays down less. Same seed, one knob."""
+    grown = {}
+    for label, amount in (("clear", 0.0), ("stony", 1.0)):
+        params = _resolve(overrides={
+            **STILL_WATER,
+            "rhizotron.descent_rate": 0.0,
+            "rhizotron.descent_wander": 0.0,
+            "rhizotron.stone_amount": amount,
+        })
+        engine = _engine(gpu_device, params, seed=21)
+        for _ in range(400):
+            engine.tick(params, [])
+        grown[label] = float(_structure(engine).astype(np.float32)[..., 0].sum())
+    assert grown["stony"] < grown["clear"] * 0.985, (
+        f"stony ground ({grown['stony']:.1f}) should cost the plant travel "
+        f"against clear ground ({grown['clear']:.1f})"
+    )
+
+
+def test_tips_carried_off_the_top_are_done(gpu_device):
+    """A tip that cannot outgrow the descent leaves the window and dies."""
+    params = _resolve(overrides={
+        **STILL_WATER,
+        **FULL_SPEED,
+        "rhizotron.elong_axis": 0.0,
+        "rhizotron.elong_lateral": 0.0,
+        "rhizotron.elong_fine": 0.0,
+        "rhizotron.branch_prob": 0.0,
+    })
+    engine = _engine(gpu_device, params)
+    for _ in range(150):
+        engine.tick(params, [])
+    tips = _tips(engine)
+    assert not _alive(tips).any(), (
+        "tips scrolled off the top of the window are still alive"
+    )
+    # Spent stays spent: the slots must not be reborn.
+    assert ((tips["flags"] & TIP_SPENT) != 0)[
+        : params.rhizotron.axes_per_plant].all()
+
+
+def test_shipped_endpoints_sit_inside_the_swept_certificate():
+    """§15.7(2): crispness and speed are licensed by measurement.
+
+    tests/crisp_sweep.py ran the growth burst at up to 4x the shipped
+    elongation rates and the crispest transfer the floor admits, under the
+    fastest config-reachable descent, and no swept point put a single pixel
+    past even *half* the WCAG flash threshold. The `validate` ceilings sit at
+    that swept range's edge; a retune past either re-runs the sweep first,
+    which is what this test makes impossible to forget.
+    """
+    defaults = config.RhizotronParams()
+    swept_elong_ceiling = 24.0  # 4x the shipped axis rate, as swept
+    swept_edge_floor = 0.02     # the crispest transfer the sweep measured
+    assert defaults.elong_axis * 4.0 <= swept_elong_ceiling + 1e-9
+
+    fast = config.Config(overrides={
+        "rhizotron.elong_axis": 999.0,
+        "rhizotron.elong_lateral": 999.0,
+        "rhizotron.root_edge": 0.0,
+    }).resolve()
+    assert fast.rhizotron.elong_axis == swept_elong_ceiling
+    assert fast.rhizotron.elong_lateral == swept_elong_ceiling
+    assert fast.rhizotron.root_edge == swept_edge_floor
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +698,13 @@ def test_a_resumed_column_evolves_bit_identically(gpu_device):
         resumed.tick(params, [])
     assert np.array_equal(_moisture(original), _moisture(resumed)), (
         "a resumed column diverged from the one it was captured from"
+    )
+    assert np.array_equal(_structure(original), _structure(resumed)), (
+        "a resumed plant's structure diverged"
+    )
+    assert np.array_equal(_tips(original), _tips(resumed)), (
+        "a resumed plant's tips diverged -- a branch decision depended on "
+        "something the checkpoint does not carry"
     )
     assert resumed.descent_state() == original.descent_state()
 

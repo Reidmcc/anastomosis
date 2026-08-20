@@ -72,6 +72,51 @@ MAX_SCROLL_PER_TICK = 2.0
 # pass having to reason about underflow. The descent only ever increases it.
 START_ORIGIN = 1 << 30
 
+# One tip record: pos.xy, heading, rng, flags, age, since_branch, vigor.
+TIP_STRIDE = 32
+TIP_DTYPE = np.dtype([
+    ("x", np.float32), ("y", np.float32), ("heading", np.float32),
+    ("rng", np.uint32), ("flags", np.uint32), ("age", np.float32),
+    ("since_branch", np.float32), ("vigor", np.float32),
+])
+
+# Tip flag bits, mirroring rhiz_tips.wgsl.
+TIP_ALIVE = 8
+TIP_SPENT = 16
+
+
+class BufferPair:
+    """A pair of storage buffers with an alternating current/next index.
+
+    The tips are double-buffered for the same reason every field is
+    ping-ponged: each invocation reads any slot's previous state and writes
+    only its own next state, so the pass has no scheduling-dependent reads --
+    the property the bit-identical resume test holds every mechanism to.
+    """
+
+    def __init__(self, device: wgpu.GPUDevice, size: int, label: str):
+        self.buffers = [
+            device.create_buffer(
+                size=size,
+                usage=(wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST
+                       | wgpu.BufferUsage.COPY_SRC),
+                label=f"{label}[{i}]",
+            )
+            for i in range(2)
+        ]
+        self.index = 0
+
+    @property
+    def cur(self) -> wgpu.GPUBuffer:
+        return self.buffers[self.index]
+
+    @property
+    def nxt(self) -> wgpu.GPUBuffer:
+        return self.buffers[1 - self.index]
+
+    def flip(self) -> None:
+        self.index = 1 - self.index
+
 
 @dataclass(frozen=True)
 class RhizotronGeometry:
@@ -79,19 +124,36 @@ class RhizotronGeometry:
 
     The same contract as the other two geometry classes: settable from a
     checkpoint rather than always re-derived, so a saved column resumes at
-    the shape it was grown at whatever window it is shown in.
+    the shape it was grown at whatever window it is shown in. The tip pool's
+    three dimensions are here because the tips buffer is sized from them and
+    slots are *addressed* by them (rhiz_tips.wgsl) -- a saved plant only
+    means anything in the tree shape it grew in.
     """
 
     width: int
     height: int  # texture rows: the view plus both margins
     view_rows: int
+    max_axes: int = 6
+    laterals_per_axis: int = 48
+    fines_per_lateral: int = 6
+
+    @property
+    def tips_total(self) -> int:
+        a, l, f = self.max_axes, self.laterals_per_axis, self.fines_per_lateral
+        return a + a * l + a * l * f
 
     @classmethod
     def derive(cls, width: int, height: int, params: Params) -> "RhizotronGeometry":
         scale = params.render.base_scale
+        rhiz = params.rhizotron
         sim_w = round_up(max(int(width * scale), 64), 32)
         view = max(int(height * scale), 32)
-        return cls(width=sim_w, height=view + 2 * MARGIN_ROWS, view_rows=view)
+        return cls(
+            width=sim_w, height=view + 2 * MARGIN_ROWS, view_rows=view,
+            max_axes=int(rhiz.max_axes),
+            laterals_per_axis=int(rhiz.laterals_per_axis),
+            fines_per_lateral=int(rhiz.fines_per_lateral),
+        )
 
     def problems(self) -> list[str]:
         problems: list[str] = []
@@ -104,6 +166,17 @@ class RhizotronGeometry:
                 f"{self.height} rows for a {self.view_rows}-row view "
                 f"(expected {self.view_rows + 2 * MARGIN_ROWS})"
             )
+        # The pool bounds mirror `validate`'s; a file claiming a pool outside
+        # them is nonsense, and the product decides a buffer allocation.
+        if not (
+            1 <= self.max_axes <= 16
+            and 1 <= self.laterals_per_axis <= 128
+            and 0 <= self.fines_per_lateral <= 16
+        ):
+            problems.append(
+                f"tip pool {self.max_axes}x{self.laterals_per_axis}"
+                f"x{self.fines_per_lateral}"
+            )
         return problems
 
     def differences(self, other: "RhizotronGeometry") -> list[str]:
@@ -111,13 +184,22 @@ class RhizotronGeometry:
         for label, mine, theirs in (
             ("size", (self.width, self.height), (other.width, other.height)),
             ("view rows", self.view_rows, other.view_rows),
+            (
+                "tip pool",
+                (self.max_axes, self.laterals_per_axis, self.fines_per_lateral),
+                (other.max_axes, other.laterals_per_axis,
+                 other.fines_per_lateral),
+            ),
         ):
             if mine != theirs:
                 differences.append(f"{label} {mine} != {theirs}")
         return differences
 
     def describe(self) -> str:
-        return f"{self.width}x{self.view_rows} soil column (+{2 * MARGIN_ROWS} margin rows)"
+        return (
+            f"{self.width}x{self.view_rows} soil column "
+            f"(+{2 * MARGIN_ROWS} margin rows, {self.tips_total} tip slots)"
+        )
 
 
 class RhizotronEngine(Backend):
@@ -143,6 +225,18 @@ class RhizotronEngine(Backend):
 
         g = self.geometry
         self.moisture = PingPong(device, g.width, g.height, "moisture")
+        # The root map: density, age (seconds), fineness. Cumulative rather
+        # than decaying -- the descent is what retires it (§15.4).
+        self.structure = PingPong(device, g.width, g.height, "structure")
+        # The tips, double-buffered for the deterministic birth mechanism
+        # (rhiz_tips.wgsl), and their fixed-point deposit accumulator: two
+        # words per texel, density and order-weight, drained every tick.
+        self.tips = BufferPair(
+            device, max(g.tips_total, 1) * TIP_STRIDE, "tips")
+        self.deposit_buf = device.create_buffer(
+            size=g.width * g.height * 8,
+            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+            label="root_deposit")
 
         # The uniform scroll velocity the safety stage reprojects through:
         # one row of texels, rewritten each frame from the descent's actual
@@ -184,29 +278,61 @@ class RhizotronEngine(Backend):
 
     def _build_pipelines(self) -> None:
         self.p_moisture = self._compute("rhiz_moisture.wgsl")
+        self.p_tips = self._compute("rhiz_tips.wgsl")
+        self.p_structure = self._compute("rhiz_structure.wgsl")
         self.p_rhiz_composite = self._compute("rhiz_composite.wgsl")
 
     def _seed_state(self, params: Params) -> None:
-        """A fresh column starts at the resting moisture everywhere.
+        """A fresh column: resting moisture, bare structure, and one plant.
 
-        Deliberately structureless: the local baselines, the pooling above
-        stones and the wetness bands all arrive through the same relaxation
-        and transport a running field uses, so the first minutes are a grow-in
-        rather than a painted-on state the dynamics then contradict.
+        The moisture is deliberately structureless -- the local baselines, the
+        pooling above stones and the wetness bands all arrive through the same
+        relaxation and transport a running field uses, so the first minutes
+        are a grow-in rather than a painted-on state the dynamics then
+        contradict. The plant is a few axis tips just below the window's top,
+        headed down with a little scatter; everything else about it -- every
+        lateral, every fine -- is grown, not seeded.
         """
         g = self.geometry
         w = float(params.rhizotron.moisture_baseline)
         state = np.zeros((g.height, g.width, 4), dtype=np.float16)
         state[..., 0] = w
         state[..., 1] = w
-        for texture in self.moisture.textures:
+
+        def upload(texture, data):
             self.device.queue.write_texture(
                 {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
-                np.ascontiguousarray(state),
+                np.ascontiguousarray(data),
                 {"offset": 0, "bytes_per_row": g.width * 8,
                  "rows_per_image": g.height},
                 (g.width, g.height, 1),
             )
+
+        for texture in self.moisture.textures:
+            upload(texture, state)
+        bare = np.zeros((g.height, g.width, 4), dtype=np.float16)
+        for texture in self.structure.textures:
+            upload(texture, bare)
+        self.device.queue.write_buffer(
+            self.deposit_buf, 0,
+            np.zeros(g.width * g.height * 2, dtype=np.uint32).tobytes())
+
+        rng = np.random.default_rng(self.seed ^ 0x9007)
+        tips = np.zeros(max(g.tips_total, 1), dtype=TIP_DTYPE)
+        count = min(int(params.rhizotron.axes_per_plant), g.max_axes)
+        spread = float(params.rhizotron.axis_spread)
+        for a in range(count):
+            # Axes fan out from one crown, spaced a little so the plant is a
+            # plant and not a cord.
+            tips["x"][a] = g.width * (
+                0.5 + 0.06 * (a - (count - 1) / 2.0) + 0.01 * rng.normal())
+            tips["y"][a] = MARGIN_ROWS + g.view_rows * 0.12
+            tips["heading"][a] = math.pi / 2.0 + spread * float(rng.normal())
+            tips["rng"][a] = int(rng.integers(1, 2**32))
+            tips["flags"][a] = TIP_ALIVE | TIP_SPENT
+            tips["vigor"][a] = 1.0
+        for buffer in self.tips.buffers:
+            self.device.queue.write_buffer(buffer, 0, tips.tobytes())
 
     # -- the descent ----------------------------------------------------------
 
@@ -302,6 +428,46 @@ class RhizotronEngine(Backend):
             "soil_l_range": rhiz.soil_l_range,
             "wet_darken": rhiz.wet_darken,
             "wet_chroma": rhiz.wet_chroma,
+            # The plant. Per-second quantities become per-tick here, in the
+            # form each one wants: distances scale with dt, relaxations go
+            # through 1 - exp(-rate*dt) so a slow tick cannot overshoot, and
+            # the steering noise scales with sqrt(dt) so the wander's
+            # variance per second is what the config says whatever the tempo.
+            "max_axes": g.max_axes,
+            "laterals_per_axis": g.laterals_per_axis,
+            "fines_per_lateral": g.fines_per_lateral,
+            "tips_total": g.tips_total,
+            "elong_axis": rhiz.elong_axis * dt,
+            "elong_lateral": rhiz.elong_lateral * dt,
+            "elong_fine": rhiz.elong_fine * dt,
+            "gsa_lateral": rhiz.gsa_lateral,
+            "gsa_fine": rhiz.gsa_fine,
+            "gsa_gain_axis": rate(rhiz.gsa_gain_axis),
+            "gsa_gain_lateral": rate(rhiz.gsa_gain_lateral),
+            "gsa_gain_fine": rate(rhiz.gsa_gain_fine),
+            "thigmo_gain": rhiz.thigmo_gain,
+            "hydro_gain": rhiz.hydro_gain,
+            "avoid_gain": rhiz.avoid_gain,
+            "tip_turn": min(rhiz.tip_turn * dt, 1.2),
+            "tip_jitter": rhiz.tip_jitter * math.sqrt(dt),
+            "sense_dist": rhiz.sense_dist,
+            "sense_angle": rhiz.sense_angle,
+            "spacing_axis": rhiz.spacing_axis,
+            "spacing_lateral": rhiz.spacing_lateral,
+            "branch_prob": rate(rhiz.branch_prob),
+            "branch_angle": rhiz.branch_angle,
+            "branch_jitter": rhiz.branch_jitter,
+            "tip_deposit": rhiz.tip_deposit,
+            "splat_axis": rhiz.splat_axis,
+            "splat_lateral": rhiz.splat_lateral,
+            "splat_fine": rhiz.splat_fine,
+            "fine_life": rhiz.fine_life / dt,
+            "lateral_life": rhiz.lateral_life / dt,
+            "dt_seconds": dt,
+            "root_knee": rhiz.root_knee,
+            "root_edge": rhiz.root_edge,
+            "root_age_scale": rhiz.root_age_scale,
+            "root_brown": rhiz.root_brown,
         }
 
     def _write_rhiz_params(
@@ -343,6 +509,23 @@ class RhizotronEngine(Backend):
         g = self.geometry
         encoder = self.device.create_command_encoder(label="rhiz_tick")
         cpass = encoder.begin_compute_pass()
+
+        # 1. Tips first, in the pre-shift frame the current textures are in:
+        #    sense, steer, move, deposit, branch. They write their positions
+        #    already shifted for the frame everything after them produces.
+        cpass.set_pipeline(self.p_tips)
+        cpass.set_bind_group(0, self._bind(self.p_tips, [
+            self._buffer_binding(self.rhiz_buf),
+            self._buffer_binding(self.tips.cur),
+            self._buffer_binding(self.tips.nxt),
+            self.moisture.cur,
+            self.structure.cur,
+            self._buffer_binding(self.deposit_buf),
+            self.sampler,
+        ]))
+        cpass.dispatch_workgroups(math.ceil(g.tips_total / 64), 1, 1)
+
+        # 2. Moisture: percolation, rain, the shift.
         cpass.set_pipeline(self.p_moisture)
         cpass.set_bind_group(0, self._bind(self.p_moisture, [
             self._buffer_binding(self.rhiz_buf),
@@ -351,8 +534,21 @@ class RhizotronEngine(Backend):
             self._buffer_binding(self.events_buf),
         ]))
         cpass.dispatch_workgroups(*self._groups(g.width, g.height))
+
+        # 3. Structure: the shift, and the deposit accumulator drained into it.
+        cpass.set_pipeline(self.p_structure)
+        cpass.set_bind_group(0, self._bind(self.p_structure, [
+            self._buffer_binding(self.rhiz_buf),
+            self.structure.cur,
+            self.structure.nxt,
+            self._buffer_binding(self.deposit_buf),
+        ]))
+        cpass.dispatch_workgroups(*self._groups(g.width, g.height))
+
         cpass.end()
+        self.tips.flip()
         self.moisture.flip()
+        self.structure.flip()
 
         self.device.queue.submit([encoder.finish()])
         self.tick_count += 1
@@ -403,6 +599,7 @@ class RhizotronEngine(Backend):
             self._buffer_binding(self.rhiz_buf),
             self._buffer_binding(self.render_buf),
             self.moisture.cur,
+            self.structure.cur,
             self.hdr_view,
             self.sampler,
         ]))
