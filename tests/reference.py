@@ -342,3 +342,22 @@ def seam_curvature(field: np.ndarray, margin: int = 4) -> tuple[float, float]:
     inside_u = bend_x[:, margin:width - margin].mean()
     inside_v = bend_y[margin:height - margin, :].mean()
     return float(across_u / inside_u), float(across_v / inside_v)
+
+
+def polychrome_offset(
+    c: np.ndarray, gain: float, threshold: float
+) -> np.ndarray:
+    """The polychrome palette's multi-well warp. Mirrors common.wgsl exactly.
+
+    A C-infinity staircase over the climate hue channel with plateaus at
+    -2pi/3, 0 and +2pi/3, scaled by ``gain``. The steepness is tied to the
+    threshold (2.5 / t) so one value moves the wells and their ramps together.
+    If the shader changes, this must change with it -- the property tests in
+    test_config.py exercise this port, and a port that drifted from the
+    shader would make them tests of nothing.
+    """
+    t = max(float(threshold), 0.02)
+    k = 2.5 / t
+    well = 2.0943951023931953  # 2*pi/3
+    c = np.asarray(c, dtype=np.float64)
+    return gain * well * 0.5 * (np.tanh(k * (c - t)) + np.tanh(k * (c + t)))

@@ -5,8 +5,10 @@ Two tiers, per DESIGN.md §9:
 * **Macros** — eight knobs in 0..1, the normal interface.
 * **Primitives** — the ~50 values the shaders actually read.
 
-Macros drive primitives through the curve table in :data:`MACRO_CURVES`. The
-config file may also pin individual primitives, which override the macro result.
+Macros drive primitives through a curve table -- one per *mode*, in
+:data:`MODE_CURVES` (DESIGN.md §14): the same eight knobs mean the same things
+in both modes, and only the endpoints they reach differ. The config file may
+also pin individual primitives, which override the macro result.
 
 Every value that could affect flash safety is clamped to a hard ceiling here
 (:data:`SAFETY_CEILINGS`) before it can reach the GPU. That clamp is the last
@@ -768,6 +770,18 @@ class RenderParams:
     hue_turns_per_hour: float = 1.33  # ~45 min per full rotation
     hue_anchor: float = 0.0  # radians; set by the palette macro
     hue_spread: float = 0.85  # spatial hue variation, radians
+    # The polychrome palette (DESIGN.md §14.4): the climate hue channel picks
+    # among three hue families +-120 degrees apart, through a smooth
+    # three-plateau warp. `polychrome` scales the family separation -- 0 is
+    # the regulation mapping exactly, 1 the full triad -- and is driven by the
+    # activation table's intensity curve; regulation pins it at 0.
+    # `polychrome_threshold` is where the transitions sit, in the channel's
+    # *realised* units (the field settles at s.d. ~0.11 -- §4.1): 0.06 puts
+    # roughly two fifths of the field in the middle family and three tenths
+    # in each of the others. The transition width is tied to it (2.5 / t in
+    # the shader), so this one value moves the wells and their ramps together.
+    polychrome: float = 0.0
+    polychrome_threshold: float = 0.06
 
 
 @dataclass
@@ -826,6 +840,13 @@ class Macros:
 
 # path, low value, high value, gamma. The macro is raised to ``gamma`` before
 # lerping, so gamma > 1 gives finer control at the low end.
+#
+# This is the *regulation* table -- the tuning the application shipped with,
+# and the one every value in it was measured against. The activation mode
+# (DESIGN.md §14) has its own, :data:`ACTIVATION_CURVES` below, reached
+# through :data:`MODE_CURVES`; this name stays because everything historical
+# about these values ("the shipped curve", the legacy event-rate inversion)
+# means this table specifically.
 MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
     "intensity": [
         ("agents.density", 0.10, 0.44, 1.0),
@@ -834,6 +855,14 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("reaction.trail_feed_gain", 0.012, 0.034, 1.0),
         ("render.chroma_activity_gain", 3.5, 8.0, 1.0),
         ("pigment.inject_rate", 0.032, 0.085, 1.0),
+        # Held flat here and driven for real by the activation table: the two
+        # tables must drive the same paths under each macro (a slider that
+        # goes dead, or gains a hidden effect, crossing modes is what the
+        # structure test forbids), and regulation's look was tuned with these
+        # at their defaults, so here the curve pins them there.
+        ("render.c_max", 0.145, 0.145, 1.0),
+        ("render.chroma_floor", 0.012, 0.012, 1.0),
+        ("render.polychrome", 0.0, 0.0, 1.0),
     ],
     "scale": [
         # Larger scale == coarser features: slower agents, longer sensors,
@@ -859,6 +888,17 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("flow.psi_theta", 0.0012, 0.0038, 1.0),
         ("climate.advect_gain", 0.12, 0.38, 1.0),
         ("render.hue_turns_per_hour", 0.55, 2.60, 1.2),
+        # Held flat here, driven by the activation table (§14.6): regulation
+        # events take the §4.3 minute-or-two to come up whatever the tempo.
+        # Same paired-constant pattern as intensity's c_max above.
+        ("events.attack_seconds", 45.0, 45.0, 1.0),
+        ("events.release_seconds", 90.0, 90.0, 1.0),
+        # The structure rides the flow at the shipped rate whatever the tempo
+        # (§4.7 step 6, measured on main): this is a *constant at the default*,
+        # not a disable. Pinning it to zero here would switch off the trail
+        # advection that dissolves the hubs, which is a fix for a real visual
+        # defect rather than an activation flourish.
+        ("agents.trail_advect", 0.5, 0.5, 1.0),
     ],
     "palette": [
         # Palette selects a hue anchor; the spatial spread widens slightly at
@@ -919,6 +959,10 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
     # travel covers everything faster than that.
     "event_rate": [
         ("events.rate_per_hour", 0.5, 20.0, 1.5),
+        # A constant is not a coupling: the knob still moves nothing but the
+        # rate (§4.3's promise, kept), and the *mode* sets the cap -- 4 here,
+        # 6 under activation, where overlap is the point of the fast end.
+        ("events.max_concurrent", 4.0, 4.0, 1.0),
     ],
 }
 
@@ -926,6 +970,168 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
 def _palette_hue_anchor(v: float) -> float:
     """Palette macro 0..1 maps to a full hue circle."""
     return v * TAU
+
+
+# --------------------------------------------------------------------------
+# Modes -- DESIGN.md §14
+# --------------------------------------------------------------------------
+
+# Two tunings of one instrument. Regulation is everything the application has
+# always been; activation is the same eight macros over endpoints retuned for
+# sensory seeking -- more motion, more colour, more happening. The mode decides
+# which curve table `resolve` reads and nothing else: the safety ceilings are
+# one table serving both, every value a mode moves is one the ramp smooths, and
+# no geometry follows it -- which is why, unlike `backend`, switching mode is a
+# live transition on the running field rather than a reset.
+MODES = ("regulation", "activation")
+DEFAULT_MODE = "regulation"
+
+# The activation table. Same eight macros, same meanings, same paths in the
+# same order (the structure test holds the two tables to that); what differs
+# is where the top of each travel reaches. Low ends stay at regulation's, so
+# the modes overlap rather than abut and the bottom of activation is
+# recognisably the same instrument.
+#
+# The endpoints rest on the step 2 measurements (DESIGN.md §14.8): the WCAG
+# area criterion does not bind the tempo axis anywhere up to 6x the
+# regulation tops -- worst per-frame per-pixel |dL| grows only 0.018 -> 0.043
+# across that whole sweep -- so the tempo tops here (1.6-1.9x) are perceptual
+# choices carrying an order of magnitude of measured headroom, to be judged
+# on real hardware. And the homeostat holds every measure in band at these
+# endpoints with *smaller* corrections than the regulation busy corner needs,
+# so there are no per-mode homeostat targets; the bands of §4.2 serve both.
+ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
+    "intensity": [
+        ("agents.density", 0.10, 0.44, 1.0),
+        ("agents.deposit", 0.009, 0.028, 1.0),
+        ("agents.fusion_bias", 0.35, 0.72, 1.0),
+        ("reaction.trail_feed_gain", 0.012, 0.034, 1.0),
+        # Chroma carries this mode (§14.1): change is far less provocative in
+        # chroma than in luminance, and the budget was mostly unspent.
+        ("render.chroma_activity_gain", 3.5, 11.0, 1.0),
+        ("pigment.inject_rate", 0.032, 0.085, 1.0),
+        # Toward the 0.22 ceiling, not to it -- gamut-mapping pressure rises
+        # with chroma and the margin is deliberate.
+        ("render.c_max", 0.145, 0.205, 1.0),
+        # Quiet regions stay coloured instead of falling to grey.
+        ("render.chroma_floor", 0.012, 0.035, 1.0),
+        # The polychrome warp (§14.4): at the top, three full hue families
+        # +-120 degrees apart, chosen per region by the climate. On intensity
+        # rather than palette because it is a "how much colour" question --
+        # palette says *where* the families sit, this says how far apart they
+        # are -- and the low end at zero keeps the bottom of the travel the
+        # same instrument as regulation, like every other curve here.
+        ("render.polychrome", 0.0, 1.0, 1.0),
+    ],
+    "scale": [
+        # The whole knob biased ~15% finer at the top: busier texture. The
+        # low ends hold at regulation's, since going *below* them has
+        # measured risk -- du under ~0.17 walks activity toward the homeostat
+        # floor (§4.7), and the shipped 0.16 is already at the edge. Sensing
+        # and diffusion move together as ever, ratio ~2.6 across the whole
+        # travel (§4.9); found_radius keeps its ~0.72x of the reach.
+        ("agents.sensor_distance", 2.2, 4.2, 1.0),
+        ("agents.trail_diffuse", 0.85, 1.63, 1.0),
+        ("agents.found_radius", 1.6, 3.0, 1.0),
+        ("reaction.du", 0.16, 0.22, 1.0),
+        ("reaction.dv", 0.080, 0.110, 1.0),  # dv/du held at 0.50, as §4.7 requires
+        ("flow.psi_noise_scale", 2.0, 4.3, 1.0),
+    ],
+    "tempo": [
+        # 30 Hz at the top: one sim tick per displayed frame at the 30 FPS
+        # cap. Budget: ~21 GB/s at 30 Hz, ~3% of the target card (§8.1).
+        ("sim_hz", 12.0, 30.0, 1.0),
+        ("agents.speed", 0.55, 2.2, 1.0),
+        ("flow.psi_gain", 0.70, 4.0, 1.0),
+        ("flow.field_gain", 0.45, 2.4, 1.0),
+        # Faster reversion: the weather changes its mind sooner.
+        ("flow.psi_theta", 0.0012, 0.0055, 1.0),
+        ("climate.advect_gain", 0.12, 0.55, 1.0),
+        # A full turn in 7-8 minutes at the top -- visible drift, not a spin;
+        # the 8 s ramp tau on this path smooths any adjustment to it.
+        ("render.hue_turns_per_hour", 0.55, 8.0, 1.2),
+        # Shorter envelopes at the fast end (§14.6): an event still arrives
+        # as a raised cosine, still through the climate's diffusion and the
+        # colour pipeline's lowpasses, still under the 25% area cap -- it
+        # just takes ~15 s to come up instead of a minute. On tempo rather
+        # than event_rate, because §4.3 promises that knob moves timing and
+        # nothing else, and how briskly a perturbation builds is exactly a
+        # tempo question. The heal claim is re-verified at this pace: the
+        # rift recovery test has always run a 10 s attack, faster than this
+        # end's worst case (15 x 0.75 jitter).
+        ("events.attack_seconds", 45.0, 15.0, 1.0),
+        ("events.release_seconds", 90.0, 40.0, 1.0),
+        # §4.7 step 6 shipped on main at 0.5 while this branch was in flight,
+        # so activation's contribution is no longer the mechanism but *more of
+        # it*: the structure is carried at up to 0.8 of the pigment's speed at
+        # the top of tempo, against the 0.5 both modes share at the bottom.
+        # Below 1.0 deliberately -- at parity the network would ride the flow
+        # exactly as the pigment does, and the shear that stretches and pinches
+        # filaments is precisely the *difference* between the two rates.
+        ("agents.trail_advect", 0.5, 0.80, 1.0),
+    ],
+    "palette": [
+        # Most of the hue circle in play at once. This is spread around the
+        # anchor; simultaneous *contrasting* families are step 4's warp.
+        ("render.hue_spread", 0.55, 2.8, 1.0),
+    ],
+    # Nothing about activation wants a different luminance architecture, so
+    # brightness, glow, depth and the viewpoint keep regulation's curves.
+    "brightness": [
+        ("render.background_luma", 0.012, 0.075, 1.0),
+        ("render.l_max", 0.44, 0.78, 1.0),
+        ("safety.exposure_target", 0.10, 0.26, 1.0),
+    ],
+    "filament_glow": [
+        ("render.filament_luma", 0.16, 0.62, 1.0),
+        ("render.glow_gamma", 0.92, 0.62, 1.0),
+        ("render.extinction", 1.9, 3.6, 1.0),
+    ],
+    "depth": [
+        ("render.dof_radius", 1.2, 5.4, 1.0),
+        ("render.fog_amount", 0.18, 0.62, 1.0),
+        ("render.depth_dim", 0.78, 0.38, 1.0),
+        ("render.depth_desat", 0.72, 0.30, 1.0),
+    ],
+    "parallax": [
+        ("render.parallax", 0.0, 0.25, 1.0),
+        ("render.parallax_tau", 150.0, 60.0, 1.0),
+    ],
+    "event_rate": [
+        # One every ~90 s at the top. Still arrival-time only: what an event
+        # *does* is untouched by this knob; the envelope rides tempo above.
+        ("events.rate_per_hour", 0.5, 40.0, 1.5),
+        # Six at once instead of four: at one event every ~90 s with ~2-minute
+        # envelopes, overlap is the normal condition rather than the corner,
+        # and a cap that refused it would turn the fast end into a queue of
+        # refusals. Constant, so the knob itself still moves only the rate.
+        ("events.max_concurrent", 6.0, 6.0, 1.0),
+    ],
+}
+
+MODE_CURVES: dict[str, dict[str, list[tuple[str, float, float, float]]]] = {
+    "regulation": MACRO_CURVES,
+    "activation": ACTIVATION_CURVES,
+}
+
+
+def normalise_mode(name: object) -> str:
+    """The mode a name asks for, or the default with a warning.
+
+    Untrusted like every other value off disk, and handled the way
+    :func:`normalise_backend` handles its argument: an unrecognised mode is a
+    typo, and regulation -- the application's whole character until §14 -- is
+    the safe thing to open with.
+    """
+    text = str(name or "").strip().lower()
+    if text in MODES:
+        return text
+    if text:
+        log.warning(
+            "unknown mode %r; using %r (known: %s)",
+            name, DEFAULT_MODE, ", ".join(MODES),
+        )
+    return DEFAULT_MODE
 
 
 # --------------------------------------------------------------------------
@@ -937,7 +1143,11 @@ SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
     # 0.012 gives 1.8 flashes/s at 30 FPS in the worst case (a sustained
     # maximum-rate oscillation), against the WCAG limit of 3. The 0.03 this
     # was originally set to allows 4.5/s and is NOT safe -- see
-    # test_ceiling_implies_wcag_margin.
+    # test_ceiling_implies_wcag_margin. This entry alone is not the whole
+    # bound: the flash arithmetic is per-frame times frame rate, so `validate`
+    # additionally holds the *product* to MAX_LUMA_PER_SECOND -- at the 60 FPS
+    # this table permits, 0.012 per frame would be 3.6 flashes/s, over the
+    # WCAG limit rather than under it.
     "safety.max_luma_delta": (0.0005, 0.012),
     "safety.max_chroma_delta": (0.0005, 0.100),
     "safety.iir_alpha": (0.02, 1.000),
@@ -952,6 +1162,15 @@ SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
     "sim_hz": (4.0, 60.0),
     "max_fps": (5, 60),
 }
+
+# The lightness slew budget per *second* -- the quantity the WCAG arithmetic
+# actually runs on. The per-frame ceiling above is this at the design's 30 FPS
+# (0.012 x 30), and the worst case it permits is budget / 0.2 = 1.8 flashes/s,
+# whatever the frame rate: a sustained maximum-rate oscillation spends
+# 2 x 10% of lightness per flash pair however the frames are sliced. Found
+# while writing DESIGN.md §14.5(2): the per-frame ceiling alone, at the 60 FPS
+# the table permits, allows 3.6/s -- above the WCAG limit of 3, not below it.
+MAX_LUMA_PER_SECOND = 0.36
 
 
 # --------------------------------------------------------------------------
@@ -1024,7 +1243,7 @@ def _lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
 
-def curve_value(macro: str, path: str, value: float) -> float:
+def curve_value(macro: str, path: str, value: float, mode: str = DEFAULT_MODE) -> float:
     """The value ``path`` takes when the macro driving it sits at ``value``.
 
     One curve, evaluated on its own rather than by building a whole
@@ -1033,12 +1252,17 @@ def curve_value(macro: str, path: str, value: float) -> float:
     live parameters cannot answer that, because they are ramping and would show
     the value catching up rather than the one just asked for.
 
+    ``mode`` picks the curve table, because the same slider position means
+    different values under different modes (DESIGN.md §14) and a readout that
+    quoted the regulation curve while the activation one was driving would be
+    lying in exactly the way this function exists to prevent.
+
     The macro curve only. An explicit override of the same path beats the macro
     in :meth:`Config.resolve` and is not visible here, which is the honest
     answer for a slider readout: the slider is not what is deciding then.
     """
     value = min(1.0, max(0.0, float(value)))
-    for entry_path, lo, hi, gamma in MACRO_CURVES.get(macro, ()):
+    for entry_path, lo, hi, gamma in MODE_CURVES[normalise_mode(mode)].get(macro, ()):
         if entry_path == path:
             return _lerp(lo, hi, value**gamma if gamma != 1.0 else value)
     raise KeyError(f"macro {macro!r} does not drive {path!r}")
@@ -1110,6 +1334,15 @@ class Config:
     backend is running. Unlike a backend switch there is only one volumetric
     field, so changing the size does not set the old one aside for later: the
     saved field keeps the size it was grown at until it is reset.
+
+    ``mode`` chooses which curve table the macros resolve through
+    (:data:`MODE_CURVES`, DESIGN.md §14). It sits beside ``backend`` because it
+    is the other "which application is this" choice, but it has the opposite
+    character: it is *not* structural. It moves no geometry, allocates nothing,
+    and every value it changes is one :class:`ParamRamp` smooths -- so
+    switching mode is a live, ramped transition on the running field, exactly
+    like a preset switch, and a field checkpointed in one mode resumes cleanly
+    into the other.
     """
 
     macros: Macros = field(default_factory=Macros)
@@ -1117,11 +1350,12 @@ class Config:
     preset_name: str = "default"
     backend: str = DEFAULT_BACKEND
     volume_detail: str = DEFAULT_VOLUME_DETAIL
+    mode: str = DEFAULT_MODE
 
     def resolve(self) -> Params:
         params = Params()
 
-        for macro_name, curves in MACRO_CURVES.items():
+        for macro_name, curves in MODE_CURVES[normalise_mode(self.mode)].items():
             value = getattr(self.macros, macro_name)
             value = min(1.0, max(0.0, float(value)))
             for path, lo, hi, gamma in curves:
@@ -1173,6 +1407,25 @@ def validate(params: Params) -> Params:
                 clamped,
             )
             set_path(params, path, clamped)
+
+    # The luma slew ceiling is per frame, and the flash arithmetic multiplies
+    # it by the frame rate, so the two ceilings above are only jointly safe:
+    # the product is held to MAX_LUMA_PER_SECOND here, after both have been
+    # clamped. At the design's 30 FPS this binds at exactly the table's 0.012
+    # and changes nothing; at a raised frame-rate cap the per-frame allowance
+    # shrinks so the worst case stays 1.8 flashes/s. Conservative on purpose:
+    # `max_fps` is the fastest the canvas may present, and a frame rate below
+    # it only slows the worst case further.
+    fps = max(float(params.max_fps), 1.0)
+    per_frame = MAX_LUMA_PER_SECOND / fps
+    if params.safety.max_luma_delta > per_frame:
+        log.warning(
+            "safety.max_luma_delta = %g at max_fps = %g exceeds the "
+            "%g/second flash budget; clamped to %g",
+            params.safety.max_luma_delta, params.max_fps,
+            MAX_LUMA_PER_SECOND, per_frame,
+        )
+        params.safety.max_luma_delta = per_frame
 
     # The diffusion band is a stability bound, not a stylistic one: this is an
     # explicit scheme, and the averaging-form Laplacian in reaction.wgsl goes
@@ -1379,6 +1632,11 @@ _HEADER = """\
 # costs the same at all three. Structural like `backend`, so a saved field
 # keeps the size it grew at until the simulation is reset.
 #
+# `mode` is which tuning the eight knobs move through: "regulation" (calm,
+# the original) or "activation" (more motion and colour, for sensory seeking
+# rather than settling). Not structural: switching it is a smooth transition
+# on the field you already have. The flash-safety bound is identical in both.
+#
 # [macros] are the normal interface -- eight knobs, all 0..1.
 # [overrides] pins individual primitive parameters by dotted path, e.g.
 #   "render.filament_luma" = 0.42
@@ -1462,6 +1720,10 @@ def load(path: str | Path) -> Config:
         backend=normalise_backend(data.get("backend", DEFAULT_BACKEND)),
         volume_detail=normalise_volume_detail(
             data.get("volume_detail", DEFAULT_VOLUME_DETAIL)),
+        # A file predating the mode says nothing about it, and needs no
+        # migration note the way the split-out macros did: every such file was
+        # written for the regulation mode, which is what the default is.
+        mode=normalise_mode(data.get("mode", DEFAULT_MODE)),
     )
 
 
@@ -1479,6 +1741,7 @@ def save(config: Config, path: str | Path) -> None:
     doc.add("preset_name", config.preset_name)
     doc.add("backend", normalise_backend(config.backend))
     doc.add("volume_detail", normalise_volume_detail(config.volume_detail))
+    doc.add("mode", normalise_mode(config.mode))
 
     macros = tomlkit.table()
     for f in fields(config.macros):

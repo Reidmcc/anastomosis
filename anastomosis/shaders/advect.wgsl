@@ -99,6 +99,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cb = textureSampleLevel(clim_b, samp, uv, 0.0);
     let target_hue = params.hue_anchor
         + params.range_hue * cb.w * params.hue_spread
+        + polychrome_offset(cb.w, params.polychrome, params.polychrome_threshold)
         + params.hue_from_orientation * orientation;
 
     // Material keeps the hue it was born with and carries it along the flow;

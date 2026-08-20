@@ -426,6 +426,23 @@ class Application:
         self.config.macros = macros
         self._retarget()
 
+    def set_mode(self, name: str) -> bool:
+        """Switch which curve table the macros resolve through. DESIGN.md §14.
+
+        Called by the control panel. Not structural, and deliberately shaped
+        like a preset switch rather than like ``switch_backend``: nothing is
+        rebuilt, nothing is lost, and the change reaches the image as a ramp --
+        the field on screen keeps everything it has grown and changes character
+        over seconds. Saved when the user saves, like every perceptual setting.
+        """
+        wanted = config_module.normalise_mode(name)
+        if wanted == config_module.normalise_mode(self.config.mode):
+            return False
+        self.config.mode = wanted
+        self._retarget()
+        log.info("mode -> %s", wanted)
+        return True
+
     def _retarget(self) -> config_module.Params:
         """Re-resolve the config and ramp towards it. Returns what it resolved to.
 

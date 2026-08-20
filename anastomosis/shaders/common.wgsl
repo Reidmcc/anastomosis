@@ -180,8 +180,21 @@ fn oklab_to_oklch(lab: vec3<f32>) -> vec3<f32> {
 // clamped on a *later* frame -- enlarging that frame's step after the limiter
 // has already bounded it. Near black, a 5e-4 absolute change in one channel
 // moves Oklab L by ~1.6e-3, which is a sixth of the entire per-frame budget.
+//
+// The low side takes no tolerance at all, and the asymmetry is load-bearing.
+// A point accepted here is fed to the final clamp in gamut_map_oklab, and
+// raising a negative channel to zero *raises* L -- by an amount the cube root
+// makes unbounded as the channel approaches zero from below. Measured: from a
+// black history, a maximal limiter step (L +0.01, chroma at the ceiling)
+// resolves through a -1e-6 acceptance to a stored L of 0.0125 -- a quarter
+// past the entire per-frame budget. With the low side exact, the accepted
+// point is genuinely non-negative, the clamp's low half is a true no-op, and
+// the same step stores 0.0100. The high side keeps its tolerance: clamping a
+// channel down at 1.0 moves L by ~3e-7 (the cube root's slope is 1/3 there),
+// which is noise, and refusing the tolerance would send every bright pixel
+// through the bisection for nothing.
 fn in_gamut(c: vec3<f32>) -> bool {
-    return c.r >= -1e-6 && c.g >= -1e-6 && c.b >= -1e-6
+    return c.r >= 0.0 && c.g >= 0.0 && c.b >= 0.0
         && c.r <= 1.0 + 1e-6 && c.g <= 1.0 + 1e-6 && c.b <= 1.0 + 1e-6;
 }
 
@@ -244,6 +257,34 @@ fn finite_or4(v: vec4<f32>, fallback: f32) -> vec4<f32> {
         finite_or(v.z, fallback),
         finite_or(v.w, fallback),
     );
+}
+
+// The polychrome palette's multi-well warp -- DESIGN.md §14.4.
+//
+// Maps the climate hue channel onto three hue-family offsets: a C-infinity
+// staircase with plateaus at -2pi/3, 0 and +2pi/3, so different regions of
+// the field sit in *contrasting* colour families rather than in excursions
+// around one, and the families migrate exactly as regimes already do --
+// the input is the same advected, diffused, mean-reverting channel as ever.
+//
+// Not a threshold, and that is the point of the shape: the transitions are
+// tanh ramps about `threshold` wide in channel units, and the channel itself
+// is bilinear-sampled 64x36 climate (§4.1, "it can never introduce a hard
+// edge"), so the warp is smooth in space by inheritance and smooth in time
+// because the channel drifts over minutes. The steepness is tied to the
+// threshold (2.5 / t) so one parameter moves the well positions and the
+// transition width together and the staircase keeps its proportions.
+//
+// `threshold` is in the channel's *realised* units: the field is clamped to
+// [-1, 1] but settles at s.d. ~0.11 (§4.1), so the default 0.06 puts roughly
+// two fifths of the field in the middle family and three tenths in each of
+// the others. At gain 0 the offset is identically zero -- the regulation
+// mapping, bit for bit.
+fn polychrome_offset(c: f32, gain: f32, threshold: f32) -> f32 {
+    let t = max(threshold, 0.02);
+    let k = 2.5 / t;
+    let well = 2.0943951023931953; // 2*pi/3
+    return gain * well * 0.5 * (tanh(k * (c - t)) + tanh(k * (c + t)));
 }
 
 // Circular quantities (hue) are carried as a unit vector so that advection and

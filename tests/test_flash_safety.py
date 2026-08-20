@@ -27,6 +27,8 @@ only holds for sensible settings is not a safety property.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -123,6 +125,65 @@ def test_limiter_holds_under_adversarial_parameters(gpu_device, offscreen_target
     )
 
 
+def test_a_mode_switch_cannot_defeat_the_bound(gpu_device, offscreen_target):
+    """Slamming between the two modes' tables must not defeat the bound.
+
+    The application ramps a mode switch like every other change (DESIGN.md
+    §14.5), but the shader-level guarantee must not depend on that. Stepped
+    here, un-ramped, every frame: each frame takes *everything* either mode's
+    curve table drives, resolved at opposite macro extremes under opposite
+    modes -- strictly more movement than any real switch, which keeps the
+    macros where they are.
+
+    Written when the two tables were identical and the macro extremes did all
+    the work (§14.8 step 1); step 3's retuned activation endpoints now
+    contribute their own divergence, and rode into these assertions with no
+    change to the test, which is the property the phrasing was chosen for.
+    """
+    from dataclasses import fields
+
+    params = config.Config().resolve()
+    params.render.layers = 1
+    params.flow.psi_gain = 0.0
+    params.flow.field_gain = 0.0
+
+    ends = [
+        config.Config(
+            macros=config.Macros(**{f.name: value for f in fields(config.Macros)}),
+            mode=mode,
+        ).resolve()
+        for mode, value in (("regulation", 0.0), ("activation", 1.0))
+    ]
+    paths = {
+        path
+        for table in config.MODE_CURVES.values()
+        for entries in table.values()
+        for path, *_ in entries
+    }
+    paths.add("render.hue_anchor")  # the palette macro's non-lerp effect
+
+    def mutate(index, p):
+        source = ends[index % 2]
+        for path in paths:
+            config.set_path(p, path, config.get_path(source, path))
+        # Zero flow keeps reprojection the identity, so the per-pixel bound
+        # stays exact -- the same isolation as the adversarial test above.
+        p.flow.psi_gain = 0.0
+        p.flow.field_gain = 0.0
+
+    engine = _make_engine(gpu_device, params)
+    target, fmt = offscreen_target(WIDTH, HEIGHT)
+    frames = _capture(engine, params, target, fmt, 40, mutate=mutate)
+
+    deltas = np.abs(np.diff(frames, axis=0))
+    limit = params.safety.max_luma_delta + F16_TOLERANCE
+    worst = float(deltas.max())
+    assert worst <= limit, (
+        f"stepping between the modes' resolutions produced a lightness step "
+        f"of {worst:.5f}, above the limit {limit:.5f}"
+    )
+
+
 def test_wcag_flash_criterion(gpu_device, offscreen_target):
     """Under normal operation, no frame may flash a large area at once."""
     params = config.Config().resolve()
@@ -139,6 +200,37 @@ def test_wcag_flash_criterion(gpu_device, offscreen_target):
         f"{worst:.1%} of the screen changed by >={FLASH_LUMINANCE_FRACTION:.0%} "
         f"lightness in a single frame; the WCAG area threshold is "
         f"{FLASH_AREA_FRACTION:.0%}"
+    )
+
+
+def test_wcag_flash_criterion_at_the_activation_top(gpu_device, offscreen_target):
+    """The shipped activation endpoints, at the busy corner, under the area
+    criterion.
+
+    Step 2's sweep (tests/tempo_sweep.py) certified this axis to 6x the
+    regulation tops on a warmed-up field; this pins the *shipped* endpoints
+    the way the regulation test above pins the defaults, over the fresh-start
+    frames where the most change happens. The macros sit at the corner that
+    maximises the metric -- most material, finest features, fastest motion,
+    brightest -- not at the defaults.
+    """
+    params = config.Config(macros=config.Macros(
+        intensity=1.0, scale=0.0, tempo=1.0,
+        filament_glow=1.0, brightness=1.0,
+    ), mode="activation").resolve()
+    params.render.layers = 2
+
+    engine = _make_engine(gpu_device, params)
+    target, fmt = offscreen_target(WIDTH, HEIGHT)
+    frames = _capture(engine, params, target, fmt, 45)
+
+    deltas = np.abs(np.diff(frames, axis=0))
+    flashing = (deltas >= FLASH_LUMINANCE_FRACTION).mean(axis=(1, 2))
+    worst = float(flashing.max())
+    assert worst < FLASH_AREA_FRACTION, (
+        f"{worst:.1%} of the screen changed by >={FLASH_LUMINANCE_FRACTION:.0%} "
+        f"lightness in a single frame at the activation top; the WCAG area "
+        f"threshold is {FLASH_AREA_FRACTION:.0%}"
     )
 
 
@@ -186,6 +278,58 @@ def test_startup_fades_in_rather_than_appearing(gpu_device, offscreen_target):
     assert np.all(np.diff(means) >= -F16_TOLERANCE), "startup fade is not monotonic"
 
 
+def test_the_bound_holds_from_black_under_chromatic_demand(gpu_device, offscreen_target):
+    """A maximal step off a black history must not leak through gamut mapping.
+
+    The regression the mode-switch test surfaced (found while building
+    DESIGN.md §14.8 step 1): from a black history the limiter permits a step of
+    (+max_luma_delta, +-max_chroma_delta, +-max_chroma_delta), which at that
+    lightness is far out of gamut. The bisection in `gamut_map_oklab` accepted
+    trial points with channels down to -1e-6, and the final clamp then raised
+    them to zero -- which near black *raises* L by ~1e-3 per channel, because
+    the cube root's slope is unbounded at zero. Measured before the `in_gamut`
+    fix: stored L up to 0.0125 against a 0.010 budget.
+
+    Startup is the honest way to manufacture a black history; the demand is
+    manufactured rather than hoped for, because whether the *simulation*
+    happens to put strong chroma on a dark pixel is a matter of which
+    trajectory a chaotic field wandered into. Every knob here is reachable by
+    a user: the chroma floor raised to the chroma ceiling makes every pixel,
+    black ones included, ask for full chroma from the first frame; the chroma
+    slew limit sits at its user-settable ceiling because the leak grows with
+    the chroma step; and the hue anchor flipping by pi each frame keeps the
+    demand a *change* in chroma rather than a satisfied one. Under the
+    pre-fix tolerance this fails on ~1000 pixel-frames at 0.0107, not on one
+    lucky pixel.
+    """
+    params = config.Config().resolve()
+    params.render.layers = 1
+    # Zero flow makes reprojection the identity, so the per-pixel bound is
+    # exact -- the same isolation as test_limiter_bound_holds_exactly.
+    params.flow.psi_gain = 0.0
+    params.flow.field_gain = 0.0
+    params.render.chroma_floor = 0.22
+    params.render.c_max = 0.22
+    params.safety.max_chroma_delta = config.SAFETY_CEILINGS[
+        "safety.max_chroma_delta"][1]
+
+    def mutate(index, p):
+        p.render.hue_anchor = 0.0 if index % 2 == 0 else math.pi
+
+    engine = _make_engine(gpu_device, params)
+    target, fmt = offscreen_target(WIDTH, HEIGHT)
+    frames = _capture(engine, params, target, fmt, 12, mutate=mutate)
+
+    deltas = np.abs(np.diff(frames, axis=0))
+    first = float(frames[0].max())
+    worst = float(max(first, deltas.max()))
+    limit = params.safety.max_luma_delta + F16_TOLERANCE
+    assert worst <= limit, (
+        f"a chromatic climb out of black produced a lightness step of "
+        f"{worst:.5f}, above the limit {limit:.5f}"
+    )
+
+
 @pytest.mark.parametrize("bad_value", [0.5, 10.0, -1.0])
 def test_config_cannot_defeat_the_bound(bad_value):
     """No config value may raise the limit past its hard ceiling."""
@@ -224,3 +368,33 @@ def test_default_has_comfortable_margin():
     default = config.SafetyParams().max_luma_delta
     rate = _worst_case_flashes_per_second(default)
     assert rate <= 1.6, f"default {default} gives {rate:.2f} flashes/second"
+
+
+def test_the_two_ceilings_are_jointly_safe_at_any_frame_rate():
+    """The luma-delta and frame-rate ceilings must be safe as a *pair*.
+
+    The flash arithmetic is per-frame times frame rate, and for as long as the
+    two ceilings were independent the pair (0.012, 60 FPS) was reachable --
+    3.6 flashes/second, above the WCAG limit of 3, found while writing
+    DESIGN.md §14.5(2). `validate` now holds the product to
+    `MAX_LUMA_PER_SECOND`, so the worst case is 1.8/s at every frame rate the
+    table admits, asked for here exactly the way a config file would ask:
+    both values at once, as large as they will go.
+    """
+    fps_lo, fps_hi = config.SAFETY_CEILINGS["max_fps"]
+    for fps in sorted({fps_lo, 24, 30, 48, fps_hi}):
+        resolved = config.Config(overrides={
+            "max_fps": fps,
+            "safety.max_luma_delta": 1.0,
+        }).resolve()
+        rate = _worst_case_flashes_per_second(
+            resolved.safety.max_luma_delta, fps=float(resolved.max_fps))
+        assert rate <= 1.8 + 1e-9, (
+            f"at max_fps = {fps} the ceilings jointly permit "
+            f"{rate:.2f} flashes/second"
+        )
+        # And at the design's 30 FPS the coupling binds at exactly the
+        # documented per-frame ceiling -- it must not tighten what §7 promises.
+        if fps == 30:
+            assert resolved.safety.max_luma_delta == pytest.approx(
+                config.SAFETY_CEILINGS["safety.max_luma_delta"][1])

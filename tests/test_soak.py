@@ -551,12 +551,25 @@ def test_an_event_kind_can_sever_the_network():
         )
 
 
-def test_event_envelope_never_steps():
-    params = config.EventParams()
-    scheduler = events.EventScheduler(seed=1)
-    event = scheduler._spawn(params)
+@pytest.mark.parametrize("mode", config.MODES)
+def test_event_envelope_never_steps(mode):
+    """At each mode's fastest envelope, under that mode's fastest tick.
 
-    dt = 1.0 / 20.0
+    The activation table shortens the attack to ~15 s at the top of tempo
+    (DESIGN.md §14.6) and the spawn jitter can take a quarter off that, so
+    the worst case asserted here is the jitter floor at 30 Hz -- about
+    11 s of raised cosine, which still cannot move fast per tick.
+    """
+    resolved = config.Config(
+        macros=config.Macros(tempo=1.0), mode=mode).resolve()
+    scheduler = events.EventScheduler(seed=1)
+    event = scheduler._spawn(resolved.events)
+    # Pin the jitter at its floor rather than trusting one draw of it.
+    event.attack = resolved.events.attack_seconds * 0.75
+    event.hold = resolved.events.hold_seconds * 0.75
+    event.release = resolved.events.release_seconds * 0.75
+
+    dt = 1.0 / resolved.sim_hz
     previous = event.envelope()
     largest = 0.0
     while not event.finished:
@@ -1001,6 +1014,59 @@ def test_long_run_stays_finite_and_in_band(gpu_device, offscreen_target):
     )
 
     # The homeostat should have moved the field toward its target, not away.
+    target_mass = params.homeostat.target_mass
+    start_error = abs(history[50] - target_mass)
+    end_error = abs(history[-1] - target_mass)
+    assert end_error < start_error, (
+        f"homeostat did not converge: error went {start_error:.4f} -> {end_error:.4f}"
+    )
+
+
+@pytest.mark.slow
+def test_activation_top_stays_finite_and_in_band(gpu_device, offscreen_target):
+    """The activation mode's endpoints, run the way the regulation ones are.
+
+    Step 2's lean measurement (DESIGN.md §14.8) found the homeostat holds
+    these endpoints in band with *smaller* corrections than the regulation
+    busy corner needs, over 2400 ticks; this keeps that true as the table
+    evolves, at the corner of the mode rather than its defaults. Same
+    liveness thresholds as the regulation soak above -- the bands of §4.2
+    serve both modes, which is the measured reason there are no per-mode
+    homeostat targets.
+    """
+    device, _ = gpu_device
+    params = config.Config(macros=config.Macros(
+        intensity=1.0, scale=0.0, tempo=1.0,
+        filament_glow=1.0, brightness=1.0,
+    ), mode="activation").resolve()
+    params.render.layers = 1
+
+    width, height = 128, 96
+    engine = engine_module.Engine(device, width, height, params, seed=7)
+    target, fmt = offscreen_target(width, height)
+    scheduler = events.EventScheduler(seed=8)
+
+    history = []
+    for _ in range(1200):
+        rows, _ = scheduler.pack(8)
+        engine.tick(params, rows)
+        engine.render(params, frac=0.5, target_view=target, target_format=fmt)
+        scheduler.update(1.0 / params.sim_hz, params.events)
+        history.append(engine.read_stats()["mean_v"])
+
+    image = engine.read_final_rgba()
+    assert np.isfinite(image).all(), "output contains non-finite values"
+
+    stats = engine.read_stats()
+    for key in ("mean_v", "var_v", "mean_activity", "exposure"):
+        assert np.isfinite(stats[key]), f"{key} is not finite"
+
+    assert stats["mean_v"] > 0.02, f"field died: mean_v {stats['mean_v']:.5f}"
+    assert stats["mean_v"] < 0.6, f"field saturated: mean_v {stats['mean_v']:.5f}"
+    assert stats["mean_activity"] > 1e-4, (
+        f"field settled: activity {stats['mean_activity']:.6f}"
+    )
+
     target_mass = params.homeostat.target_mass
     start_error = abs(history[50] - target_mass)
     end_error = abs(history[-1] - target_mass)

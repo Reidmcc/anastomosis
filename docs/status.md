@@ -4,7 +4,7 @@
 
 Built and verified headless against a software adapter (Mesa lavapipe), so every
 shader compiles and the full tick/render sequence runs in CI without a GPU. The
-suite is 354 tests, split the way their costs are: `.github/workflows/ci.yml`
+suite is 405 tests, split the way their costs are: `.github/workflows/ci.yml`
 runs everything not marked `slow` on every push, across three Python versions
 plus a leg with no PySide6 that holds the README's promise that the panel is
 optional, and runs the `slow` marks -- drift, morphology, regime occupancy,
@@ -30,6 +30,16 @@ and **both depth backends** -- the layered 2.5D stack and the volumetric slab of
 one saved field each so switching between them is not destructive. The slab's
 thickness is a control panel knob as well, from 8 voxels to the shorter lateral
 axis, priced in graphics memory beside the slider.
+
+Also complete: **both modes** (§14) -- regulation and activation, as two macro
+curve tables over one engine, with the mode a non-structural setting, so
+switching it is a ramped transition on the running field rather than a reset.
+Activation carries its own presets, a polychrome palette that puts contrasting
+hue families in different regions, brisker event envelopes, and a harder shear
+on the trail; the flash-safety ceilings are one table serving both. Every
+activation endpoint is measured or certified (§14.8), and none of that says
+whether the mode is *pleasant*, which is the same caveat the paragraph below
+makes about the defaults.
 
 **Not implemented:**
 

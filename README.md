@@ -86,7 +86,9 @@ a rift. Pressing one asks for that event *now* instead of waiting for it to come
 up by chance. It is the same event either way: it arrives in one region, builds
 over a minute or two, holds, and fades, and it counts against the same limit on
 how many can run at once — so the buttons go quiet while that limit is reached,
-and come back as events fade. Nothing here cuts.
+and come back as events fade. Nothing here cuts. (In the activation mode, a
+high **Tempo** also makes events build in tens of seconds rather than minutes,
+and two more may run at once — same shape, same size limits, quicker.)
 
 Above the buttons, **How often** sets how frequently those events arrive on
 their own, from about one every two hours at the left to about one every three
@@ -150,6 +152,42 @@ changes while it happens.
 
 A new field, whether from a reset or a first run, comes up through the same
 slew limiter as everything else, so it grows in rather than cutting.
+
+## Two tunings
+
+At the top of the control panel, **Mode** chooses which tuning the eight
+knobs move through: **Regulation** — calm and slow, the original, built for
+settling — or **Activation**, the same instrument tuned for sensory seeking:
+more motion, more colour, more happening. Switching is nothing like the
+Depth choice below it: no reset, no dialog — the field on screen keeps
+everything it has grown and changes character over a few seconds, and
+switching back is just as smooth. The flash-safety bound is identical in
+both modes; neither can flash — see [Safety](#safety).
+
+What activation changes is where the knobs *reach*, never what they mean:
+the same slider goes further — faster flow and agents, quicker weather, a
+hue rotation up to a turn every seven minutes, more of the colour circle in
+play at once, more saturated throughout, events up to one every ninety
+seconds — while the bottom of every travel stays where regulation has it,
+so the two tunings overlap rather than abut. Set it in the config with
+`mode = "activation"`.
+
+Activation also has a colour mechanism of its own: turn **Intensity** up
+and different regions of the field settle into *contrasting* colour
+families, three of them spaced around the hue circle, chosen region by
+region by the same slow climate that decides everything else — so the
+families drift and hand over the way regimes already do, rather than the
+whole image shifting at once. **Palette** still says where on the circle
+the whole arrangement sits.
+
+The preset list follows the mode: `prism` (colour first), `cascade`
+(motion first, events every few minutes) and `spark` (fine, dense, brisk)
+are activation's, and choosing one — including with `--preset` — brings
+the activation tuning with it.
+
+The filament network rides the flow in both modes; at higher **Tempo**
+under activation it rides it *harder* than the colour it carries, and that
+difference is what stretches and pinches the filaments as they go.
 
 ## Two ways of drawing depth
 
@@ -339,6 +377,11 @@ shader has a bug — the limiter is downstream of all of it. The test suite asse
 it two ways: with flow disabled, so reprojection is the identity and the
 per-pixel bound is exact; and under normal operation against the WCAG area
 criterion. Both are checked while parameters are slammed between extremes.
+
+The two ceilings hold as a pair, not just individually: the per-frame limit
+and the frame-rate cap multiply out to a per-second budget, and raising the
+frame rate in the config automatically shrinks the per-frame allowance so the
+worst case stays 1.8 flashes/second at any frame rate the settings allow.
 
 If you are photosensitive, note that this is a well-tested engineering bound, not
 a medical assurance.

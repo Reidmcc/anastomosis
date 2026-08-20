@@ -116,6 +116,15 @@ and the tests — resolves via the table below, and means the file listed agains
   (device-loss rebuild path), and the judgements that still need a real GPU
   and a pair of eyes — including the defaults most likely to want moving.
 
+- **§14 — [docs/activation-mode.md](docs/activation-mode.md)**
+  The second mode: the same instrument retuned for sensory *seeking* rather
+  than settling, inside an unchanged safety envelope. Where activation's
+  energy is allowed to come from (motion, chroma, incident density — never
+  luminance dynamics), per-mode curve tables, the measurements that set the
+  endpoints, the polychrome palette, and a step-by-step record of what each
+  build step actually did — including the gamut leak the mode-slam test
+  found in §7's stage.
+
 ## Where to look first
 
 - Changing **agent behaviour** (`agents.wgsl`, `vol_agents.wgsl`): §2, §4.7,
@@ -123,6 +132,8 @@ and the tests — resolves via the table below, and means the file listed agains
 - Changing the **reaction, climate or homeostat**: §4, §4.7.
 - Changing anything in the **output chain** (grading, compositing, raymarch,
   safety): §6, §7 — §7's guarantee must survive any change.
+- Changing a **macro curve or a preset**: §9, and §14 — there are two curve
+  tables, one per mode, and they must keep driving the same paths.
 - Changing the **volumetric slab**: §5, §13 (its open questions).
 - Adding **state that persists between ticks**: the checkpointing rules in
   §4.6.

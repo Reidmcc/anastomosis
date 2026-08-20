@@ -103,6 +103,94 @@ def test_the_readout_agrees_with_the_simulation_across_the_whole_travel():
         )
 
 
+# ---------------------------------------------------------------------------
+# The mode selector -- DESIGN.md §14
+# ---------------------------------------------------------------------------
+
+
+def _mode_panel(monkeypatch):
+    """The panel offscreen, with any confirmation dialog turned into a failure.
+
+    A mode switch is ramped and loses nothing, so it must never ask -- a
+    dialog appearing here is a regression, and the test should say so rather
+    than hang on it.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+
+    import panelstub
+
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def refuse(*_a, **_k):
+        raise AssertionError("a mode switch asked a question; it must not")
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", staticmethod(refuse))
+    app = panelstub.PanelApp()
+    return app, control_panel.ControlPanel(app)
+
+
+def test_the_mode_selector_lists_both_modes():
+    """One entry per mode, keyed by the names the config understands."""
+    listed = [name for name, _label, _tip in control_panel.MODE_LABELS]
+    assert listed == list(config.MODES)
+
+
+def test_switching_the_mode_reaches_the_app_and_refilters_the_presets(monkeypatch):
+    app, panel = _mode_panel(monkeypatch)
+    from anastomosis import presets
+
+    assert panel.mode_combo.currentData() == "regulation"
+    assert panel.preset_combo.count() == len(presets.names("regulation"))
+
+    panel.mode_combo.setCurrentIndex(panel.mode_combo.findData("activation"))
+    panel._on_mode()
+    assert app.config.mode == "activation"
+    # The preset list is the new mode's -- asserted against whatever that
+    # mode actually has rather than against a count, so it holds both before
+    # and after a mode gains presets. A mode with none says so rather than
+    # offering regulation presets through the wrong table.
+    names = presets.names("activation")
+    assert panel.preset_combo.count() == len(names)
+    assert panel.preset_combo.isEnabled() == bool(names)
+
+    panel.mode_combo.setCurrentIndex(panel.mode_combo.findData("regulation"))
+    panel._on_mode()
+    assert app.config.mode == "regulation"
+    assert panel.preset_combo.count() == len(presets.names("regulation"))
+    assert panel.preset_combo.isEnabled()
+    panel.close()
+
+
+def test_the_readouts_quote_the_active_modes_curve(monkeypatch):
+    """A slider readout must describe the table that is actually driving.
+
+    The divergence is injected rather than taken from the shipped tables, so
+    that the assertion is about the readout following the mode at all rather
+    than about today's endpoints: with the activation event-rate curve pinned
+    to a known value, the same slider position must read differently the
+    moment the mode changes.
+    """
+    tweaked = {
+        macro: list(entries)
+        for macro, entries in config.MODE_CURVES["activation"].items()
+    }
+    tweaked["event_rate"] = [("events.rate_per_hour", 60.0, 60.0, 1.0)]
+    monkeypatch.setitem(config.MODE_CURVES, "activation", tweaked)
+
+    app, panel = _mode_panel(monkeypatch)
+    slider = panel.sliders[control_panel.EVENT_RATE_MACRO]
+    slider.setValue(control_panel.SLIDER_STEPS // 2)
+    before = panel.values[control_panel.EVENT_RATE_MACRO].text()
+
+    panel.mode_combo.setCurrentIndex(panel.mode_combo.findData("activation"))
+    panel._on_mode()
+    after = panel.values[control_panel.EVENT_RATE_MACRO].text()
+    assert before != after
+    assert after == control_panel.describe_interval(60.0)
+    panel.close()
+
+
 def test_every_slab_size_has_a_control():
     """A size the config offers and the panel does not is a size nobody finds.
 
