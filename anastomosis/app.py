@@ -46,14 +46,16 @@ from . import device as device_module
 from . import diagnostics as diagnostics_module
 from . import engine as engine_module
 from . import events as events_module
+from . import rhizotron as rhizotron_module
 from . import volume as volume_module
 from . import window as window_module
 
 log = logging.getLogger(__name__)
 
-# The two depth backends (DESIGN.md §5), and everything that differs between
-# them from this side: which engine class to build, and which geometry class
-# derives a fresh field's shape. Both present the same interface -- tick,
+# The backends -- the two fungal depth backends (DESIGN.md §5) and the
+# rhizotron's soil column (§15) -- and everything that differs between them
+# from this side: which engine class to build, and which geometry class
+# derives a fresh field's shape. All present the same interface -- tick,
 # render, resize, read_stats -- so nothing below this table has to know which
 # one is running.
 #
@@ -66,6 +68,7 @@ log = logging.getLogger(__name__)
 BACKEND_CLASSES = {
     "layered": (engine_module, "Engine", "Geometry"),
     "volumetric": (volume_module, "VolumeEngine", "VolumeGeometry"),
+    "rhizotron": (rhizotron_module, "RhizotronEngine", "RhizotronGeometry"),
 }
 
 

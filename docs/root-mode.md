@@ -466,13 +466,14 @@ numbers*:
 Each step lands something usable alone, and the first two are the risk
 retirement:
 
-1. **Soil and descent, no roots.** The ring buffer, the generator, strata,
+1. ~~**Soil and descent, no roots.** The ring buffer, the generator, strata,
    stones, the depth counter, the front-controller stub (driven by a fixed
    virtual front until roots exist), moisture with rain events, the Munsell
    ramps, and the scroll wired into the reprojection. Safety suite extended
    per §15.7(1) and (3). What ships is already a piece: a slow core sample,
    strata and weather drifting past forever — and every §15.4 mechanism is
-   proven before a single root grows.
+   proven before a single root grows.~~ **Built**; see the step 1 record
+   below.
 2. **The measurement, before the look is trusted:** the crispness/tip-speed
    sweep of §15.7(2), which sets the shading transfer's licensed steepness
    and the elongation ceiling. The §14 lesson applied in advance: derive the
@@ -493,6 +494,88 @@ retirement:
    `taproot` (sparse, deep, austere), `loam` (the balanced default).
 6. **Later, separately:** an activation retune of the rhizotron against
    §14's checklist, and only if the mode earns it.
+
+### What step 1 actually did
+
+The backend is registered everywhere the other two are — `rhizotron.py`
+beside `engine.py` and `volume.py`, a `_RhizotronLayout` in the checkpoint
+module (its own `checkpoint-rhizotron.npz`, refusing the other backends'
+files and refused by them), an entry in the panel's Depth selector and the
+`--backend` flag — and everything below the compositor is `backend.py`'s,
+untouched, exactly as promised. Four things about the build deviated from or
+sharpened the proposal, and each is worth its record.
+
+**The soil is a function, not a field.** §15.3 sketched a generated,
+quasi-static soil matrix S; what shipped generates nothing into storage at
+all. Strata, stones and grain are pure functions of (seed, world position),
+evaluated wherever a pass wants them, with the vertical lattice arithmetic
+done on the u64 depth counter by shift and mask — exact at any depth,
+forever, per §3. Two consequences. The checkpoint layout is the smallest in
+the application — one moisture array plus a few numbers of descent state —
+and, honestly recorded: §15.5's events that edit *future* soil (hardpan, the
+burrow) will need a stored modulation layer this build does not have. They
+were step 5's anyway.
+
+**The descent works exactly as designed, and the reprojection knows about
+it.** Integer scroll folded into each pass's source read (a row that did not
+exist last tick is initialised from the generator at its own world
+coordinates), fractional presentation through a per-frame `base_row`
+interpolated between ticks, margins above and below the view sized for the
+2-rows-per-tick ceiling. The scroll lands in the velocity texture the safety
+stage reprojects through, and the test asserts both the sign convention and
+the magnitude against the displacement the frame actually made — §15.7(1)
+discharged. The front controller is the promised stub: a drifting constant
+(window-heights per hour under a slow OU modulation), drawing from the same
+saved noise stream as the feature-size walk so a resume continues it.
+
+**The palette is genuinely inherited from the referent.**
+`tests/soil_palette.py` converts Munsell soil-chart notations through
+colour-science (renotation under illuminant C, Bradford-adapted to D65, into
+Oklab) and the committed literals in `rhiz_composite.wgsl` are its output:
+six families, each a dark-to-pale chip ramp — 10YR humus and loam, ochre
+into 2.5Y, 2.5YR laterite, 10R terra rossa, 5Y podzol — plus the 5Y stone
+pair. The chart chips are far brighter than this application's ground, so
+the shading keeps each chip's chromatic identity and re-anchors its
+lightness into the dark-earth envelope (`background_luma` up through
+`soil_l_range`), chroma eased down with it. The **Palette** macro (with the
+same autonomous drift the fungal hue has) walks the family ring.
+
+**Stones taught the first §4.7 lesson of the new world.** Thresholded value
+noise — the obvious generator — produces angular, axis-ridged blobs at one
+scale: the lattice shows through the slice, and the result was drifting
+toward exactly the uniform-feature field §4.7 exists to prevent, in grey.
+What shipped is a bombing pattern: at most one hashed disc per lattice cell,
+soft-rimmed, in *two populations* — a common lattice of small pebbles and a
+rarer one four times the scale — so stone sizes span an order of magnitude
+and cluster by stratum stoniness instead of tiling. The §15.7(5) morphology
+watch (the comb, and now the pebble field) stays open and gets its measure
+when the roots arrive.
+
+Moisture behaved as drawn: gravity-biased nonlinear transport with the flux
+bounded to a quarter of the donor texel per tick (unconditionally tame at
+any parameter the config admits), conductivity from strata and stones with a
+floor so nothing dams forever — and water pooling above stones emerged in
+the first run, as §15.3 said it would. Events arrive through the shared
+channels read in this backend's terms: positive feed is rain at the surface,
+negative is a drying spell, flow moves conductivity; tint and rift are inert
+here for now, which the panel's buttons tolerate by design. The tests hold
+the two §15.7 safety claims that are testable before roots exist — the exact
+per-pixel bound with the descent stopped while the wetting machinery, the
+soil span, a cloudburst and the family ring are slammed un-ramped; the WCAG
+area criterion at the fastest config-reachable descent in the rain — plus
+the §4.6 discipline: a resumed column, descent counters included, evolves
+bit-identically. At that fastest descent the scroll is ~0.03 display pixels
+per frame at 1440p, three orders below anything the limiter responds to, so
+§15.7(2)'s crispness sweep is genuinely step 2's debt, owed before the roots
+draw faster, sharper edges than soil.
+
+One §15.6 promise is deliberately deferred with the roots: the macros reach
+this backend only through the shared `render`/`safety` paths so far
+(Palette the family ring, Brightness and the luminance architecture
+unchanged in meaning, event rate as ever), and the rhizotron's own curve
+entries — Scale choosing a flora, Intensity the community's investment —
+land when there is a flora to choose. The descent rate, the weather and the
+soil's look are primitives under `rhizotron.*` until then.
 
 ### 15.12 Open questions
 

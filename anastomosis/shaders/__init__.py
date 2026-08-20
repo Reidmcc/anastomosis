@@ -19,6 +19,7 @@ SHADER_DIR = Path(__file__).parent
 
 _STRUCTS = {
     "SimParams": gpu_params.SIM_FIELDS,
+    "RhizParams": gpu_params.RHIZ_FIELDS,
     "RenderParams": gpu_params.RENDER_FIELDS,
     "LayerData": gpu_params.LAYER_FIELDS,
     "Event": gpu_params.EVENT_FIELDS,
@@ -71,5 +72,7 @@ def all_shader_names() -> list[str]:
     return sorted(
         p.name
         for p in SHADER_DIR.glob("*.wgsl")
-        if p.name not in {"common.wgsl", "common3d.wgsl", "bindings.wgsl"}
+        if p.name not in {
+            "common.wgsl", "common3d.wgsl", "rhiz_common.wgsl", "bindings.wgsl"
+        }
     )

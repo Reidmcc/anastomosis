@@ -110,6 +110,14 @@ BACKEND_LABELS: list[tuple[str, str, str]] = [
         "behind other material, and casts shade into it. Coarser, and asks "
         "more of the graphics card.",
     ),
+    (
+        "rhizotron",
+        "Rhizotron",
+        "A different world: a pane of living soil rather than the fungal "
+        "field. Stratified earth, rain soaking down through it, and the "
+        "whole window sinking at hour-hand speed through soil that never "
+        "repeats. Roots arrive in a later build.",
+    ),
 ]
 
 # How wide the volumetric slab is (config.VOLUME_DETAIL), described by what it

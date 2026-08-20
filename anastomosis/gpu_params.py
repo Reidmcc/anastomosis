@@ -185,6 +185,79 @@ SIM_FIELDS: list[Field] = [
 ]
 
 # --------------------------------------------------------------------------
+# Rhizotron parameters -- bound to the root backend's passes (DESIGN.md §15).
+#
+# Its own block rather than more fields on SimParams, because the rhizotron
+# shares no simulation machinery with the fungal backends: nothing here means
+# anything to agents.wgsl, and none of the Gray-Scott plumbing means anything
+# to soil. What the backends *do* share -- the output chain -- speaks
+# RenderParams, which the rhizotron packs exactly as the other two do.
+# --------------------------------------------------------------------------
+
+RHIZ_FIELDS: list[Field] = [
+    # Texture shape, and where the window sits inside it. The texture is the
+    # view plus a margin above and below (see rhizotron.py): the margin above
+    # is where the display offset may reach between ticks, the margin below is
+    # where rows are generated before the view arrives at them.
+    ("dims_x", "u32"),
+    ("dims_y", "u32"),
+    ("view_rows", "u32"),
+    ("margin_top", "u32"),
+    # The world row of texture row 0, as a u64 split across two words. This is
+    # the depth counter of DESIGN.md §15.4: an integer, never a float, used
+    # only as hash input -- §3's pattern exactly -- so the soil below can never
+    # repeat and never loses precision however long the descent runs.
+    ("origin_lo", "u32"),
+    ("origin_hi", "u32"),
+    # How many whole rows the world moves up through the texture this tick.
+    # Zero on most ticks; the pass reads its source at (x, y + scroll) so the
+    # shift costs nothing and resamples nothing.
+    ("scroll_rows", "u32"),
+    ("tick", "u32"),
+    ("seed", "u32"),
+    ("event_count", "u32"),
+    # Vertical noise lattice sizes, as log2 of rows. Powers of two because the
+    # lattice cell of an unbounded u64 row is found by shift and mask, which is
+    # exact forever; a division would need 64-bit arithmetic WGSL does not have.
+    ("strata_shift", "u32"),
+    ("stone_shift", "u32"),
+    ("grain_shift", "u32"),
+    # Horizontal lattice sizes, in cells around the wrapping x axis -- integers
+    # so the noise tiles the cylinder exactly (see common.wgsl on why tiling
+    # is a requirement, not a nicety).
+    ("stone_cells_x", "u32"),
+    ("grain_cells_x", "u32"),
+    # Where the top of the *view* sits in the texture this frame, in fractional
+    # rows -- margin_top plus the sub-row remainder of the descent, interpolated
+    # between the last two ticks so the scroll presents as a continuous glide
+    # rather than a per-tick step.
+    ("base_row", "f32"),
+    # Lateral aspect correction: how much of the (wrapping) x axis the window
+    # samples. The vertical axis never wraps, so it takes no correction; see
+    # rhiz_composite.wgsl.
+    ("x_span", "f32"),
+    # Moisture physics, all in per-tick units -- converted from the per-second
+    # values in RhizotronParams against sim_hz where they are packed, so the
+    # tempo macro cannot retune the physics by changing the tick rate.
+    ("perc_rate", "f32"),
+    ("perc_pow", "f32"),
+    ("lat_spread", "f32"),
+    ("drain_rate", "f32"),
+    ("rain_base", "f32"),
+    ("rain_event_gain", "f32"),
+    ("cond_floor", "f32"),
+    ("moisture_baseline", "f32"),
+    ("wet_ema_rate", "f32"),
+    # Soil generation and its look.
+    ("strata_tilt", "f32"),
+    ("stone_amount", "f32"),
+    ("grain_amount", "f32"),
+    ("soil_l_range", "f32"),
+    ("wet_darken", "f32"),
+    ("wet_chroma", "f32"),
+]
+
+# --------------------------------------------------------------------------
 # Render parameters -- bound to composite / safety / blit.
 # --------------------------------------------------------------------------
 
@@ -344,6 +417,7 @@ def _dtype(fields: list[Field]) -> np.dtype:
 
 
 SIM_DTYPE = _dtype(SIM_FIELDS)
+RHIZ_DTYPE = _dtype(RHIZ_FIELDS)
 RENDER_DTYPE = _dtype(RENDER_FIELDS)
 LAYER_DTYPE = _dtype(LAYER_FIELDS)
 EVENT_DTYPE = _dtype(EVENT_FIELDS)

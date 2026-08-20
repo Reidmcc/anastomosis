@@ -709,6 +709,89 @@ class VolumeParams:
 
 
 @dataclass
+class RhizotronParams:
+    """The plant-root backend's own primitives -- DESIGN.md §15.
+
+    Only read when ``Config.backend`` is ``"rhizotron"``. Nothing here
+    duplicates a parameter the fungal backends have, because nothing about
+    soil means anything to Gray-Scott or to Physarum; what the backends share
+    -- the output chain, the safety stage, the luminance architecture -- the
+    rhizotron reaches through the same ``render`` and ``safety`` blocks the
+    other two use.
+
+    Rates are per *second* wherever the quantity is physical, and converted to
+    per-tick values against ``sim_hz`` where they are packed, so the tempo
+    macro cannot quietly retune the physics by changing the tick rate -- the
+    same discipline ``homeo_rate`` established in `_physics_values`.
+    """
+
+    # --- The descent (§15.4) ----------------------------------------------
+    # How fast the window sinks, in window-heights per hour. About one window
+    # per hour at the default: the hour hand, not the second hand -- you do not
+    # see it move, you notice ten minutes later that it has. Step 1 drives
+    # this directly (there are no roots yet for a growth front to track); the
+    # front-controller of §15.4 replaces the constant, not the plumbing.
+    descent_rate: float = 1.0
+    # The rate's slow OU modulation: the log-scale spread at one standard
+    # deviation of a unit walk, and the walk's time constant. Aperiodic and
+    # stateful like every other slow variation (§3); zero pins the rate.
+    descent_wander: float = 0.30
+    descent_wander_tau: float = 600.0  # seconds
+
+    # --- Soil generation (§15.3) ------------------------------------------
+    # Typical stratum thickness, in view-heights. Quantised to a power of two
+    # of rows where it is packed: the vertical lattice of an unbounded u64 row
+    # counter is found by shift and mask, which is exact forever.
+    strata_thickness: float = 0.45
+    # How much the strata undulate, as a fraction of their own thickness.
+    # Zero rules dead-straight bands across the pane, which reads as a chart
+    # rather than a cross-section.
+    strata_tilt: float = 0.45
+    # Stones: how much of the matrix is stone at the stoniest strata, and the
+    # typical stone size in sim cells (also power-of-two quantised).
+    stone_amount: float = 0.60
+    stone_cells: float = 12.0
+    # Mineral grain: the fine static speckle of the matrix. An amplitude on
+    # lightness, kept small -- the grain is texture, not noise.
+    grain_amount: float = 0.55
+
+    # --- Moisture (§15.3) --------------------------------------------------
+    moisture_baseline: float = 0.22
+    # Downward percolation: flux gain per second, and the nonlinearity in the
+    # moisture level (unsaturated conductivity rises steeply with wetness, so
+    # a wetting front keeps a front rather than diffusing into a gradient).
+    percolation_rate: float = 0.9
+    percolation_power: float = 2.0
+    lateral_spread: float = 0.15  # per second; small sideways seep
+    # Relaxation toward the local baseline, per second: drainage where wet,
+    # capillary re-supply where parched. This is what makes rain an *event*
+    # rather than a monotone accumulation.
+    drainage_rate: float = 0.012
+    # Percolation through the driest, most compacted soil, as a floor on the
+    # conductivity -- water always gets through eventually, and a true zero
+    # would let a stony stratum dam the field forever.
+    conductivity_floor: float = 0.06
+    # Rainfall: the ambient drizzle, and the extra influx at the crest of a
+    # rain event, both in moisture per second at the surface row.
+    rain_base: float = 0.002
+    rain_event_gain: float = 0.12
+
+    # --- The look (§15.2) --------------------------------------------------
+    # Lightness span of the soil above the background anchor, in Oklab L. The
+    # ground stays dark-earth rather than dark-void, but it is a *material*
+    # ground: every pixel is something.
+    soil_l_range: float = 0.155
+    # Wet soil is darker and slightly more saturated -- the most familiar
+    # material appearance there is. Fraction of lightness removed at full
+    # wetness, and fraction of chroma added.
+    wet_darken: float = 0.42
+    wet_chroma: float = 0.55
+    # Seconds; the shading lowpass on wetness, over and above the moisture
+    # field's own dynamics. Spends luminance budget slowly on purpose.
+    wet_ema_tau: float = 2.5
+
+
+@dataclass
 class RenderParams:
     """Compositing, depth, and the Oklab colour mapping. DESIGN.md §5-6.
 
@@ -796,6 +879,7 @@ class Params:
     pigment: PigmentParams = field(default_factory=PigmentParams)
     climate: ClimateParams = field(default_factory=ClimateParams)
     volume: VolumeParams = field(default_factory=VolumeParams)
+    rhizotron: RhizotronParams = field(default_factory=RhizotronParams)
     homeostat: HomeostatParams = field(default_factory=HomeostatParams)
     events: EventParams = field(default_factory=EventParams)
     render: RenderParams = field(default_factory=RenderParams)
@@ -1273,7 +1357,7 @@ def curve_value(macro: str, path: str, value: float, mode: str = DEFAULT_MODE) -
 # --------------------------------------------------------------------------
 
 
-BACKENDS = ("layered", "volumetric")
+BACKENDS = ("layered", "volumetric", "rhizotron")
 DEFAULT_BACKEND = "layered"
 
 # The slab's lateral resolution, as three named sizes rather than a free
@@ -1490,6 +1574,35 @@ def validate(params: Params) -> Params:
     volume.depth_window_voxels = min(
         max(float(volume.depth_window_voxels), 1.0), 4096.0)
     volume.shadow_voxels = min(max(float(volume.shadow_voxels), 0.0), 4096.0)
+
+    # The rhizotron's structural and stability bounds. The descent ceiling is
+    # the load-bearing one: the engine additionally clamps the realised rate to
+    # two rows per tick -- the shift its margins are sized for -- so this bound
+    # is about keeping an override from asking for a scroll the reprojection
+    # would then honestly report as fast motion. Sixty window-heights an hour
+    # is a window a minute, far past anything that reads as soil.
+    rhiz = params.rhizotron
+    rhiz.descent_rate = min(max(float(rhiz.descent_rate), 0.0), 60.0)
+    rhiz.descent_wander = min(max(float(rhiz.descent_wander), 0.0), 2.0)
+    rhiz.descent_wander_tau = min(max(float(rhiz.descent_wander_tau), 8.0), 7200.0)
+    rhiz.strata_thickness = min(max(float(rhiz.strata_thickness), 0.02), 4.0)
+    rhiz.stone_cells = min(max(float(rhiz.stone_cells), 2.0), 256.0)
+    # Percolation is explicit: the per-tick flux is additionally clamped to a
+    # quarter of the donor texel in the shader, so this bound is about keeping
+    # the per-second number meaningful rather than about stability.
+    rhiz.percolation_rate = min(max(float(rhiz.percolation_rate), 0.0), 20.0)
+    rhiz.percolation_power = min(max(float(rhiz.percolation_power), 1.0), 4.0)
+    rhiz.lateral_spread = min(max(float(rhiz.lateral_spread), 0.0), 4.0)
+    rhiz.drainage_rate = min(max(float(rhiz.drainage_rate), 0.0), 1.0)
+    rhiz.conductivity_floor = min(max(float(rhiz.conductivity_floor), 0.0), 1.0)
+    rhiz.rain_base = min(max(float(rhiz.rain_base), 0.0), 1.0)
+    rhiz.rain_event_gain = min(max(float(rhiz.rain_event_gain), 0.0), 2.0)
+    # Luminance-relevant: the wetting front and the soil span both spend the
+    # slew budget, and both are bounded here the way every luminance actor is.
+    rhiz.soil_l_range = min(max(float(rhiz.soil_l_range), 0.0), 0.40)
+    rhiz.wet_darken = min(max(float(rhiz.wet_darken), 0.0), 0.80)
+    rhiz.wet_chroma = min(max(float(rhiz.wet_chroma), 0.0), 2.0)
+    rhiz.wet_ema_tau = min(max(float(rhiz.wet_ema_tau), 0.1), 60.0)
     return params
 
 
@@ -1620,10 +1733,11 @@ _HEADER = """\
 # Edit and save: changes are hot-reloaded, and every parameter is ramped
 # smoothly rather than stepped, so it is safe to adjust while running.
 #
-# `backend` chooses how depth is drawn: "layered" (three 2.5D sheets) or
-# "volumetric" (a raymarched slab). It is structural, so it takes effect on a
-# new field -- reset the simulation, or relaunch. Each backend keeps its own
-# saved field.
+# `backend` chooses what is drawn: "layered" (three 2.5D sheets of the fungal
+# field), "volumetric" (the same field as a raymarched slab), or "rhizotron"
+# (the plant-root world: a pane of living soil, descending). It is structural,
+# so it takes effect on a new field -- reset the simulation, or relaunch. Each
+# backend keeps its own saved field.
 #
 # `volume_detail` is how wide that slab is, and only matters under the
 # volumetric backend: "standard" (512 voxels across), "fine" (768) or

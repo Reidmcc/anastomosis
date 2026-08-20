@@ -55,12 +55,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="fix the random seed; omit for a different world each launch",
     )
     parser.add_argument(
-        "--backend", choices=("layered", "volumetric"), default=None,
+        "--backend", choices=("layered", "volumetric", "rhizotron"),
+        default=None,
         help=(
-            "how depth is drawn: 'layered' (three 2.5D sheets, the default) "
-            "or 'volumetric' (a raymarched slab). Each keeps its own saved "
-            "field, so switching does not discard the other one. Omit to use "
-            "the config's setting."
+            "what is drawn: 'layered' (three 2.5D sheets of the fungal "
+            "field, the default), 'volumetric' (the same field as a "
+            "raymarched slab), or 'rhizotron' (the plant-root world: a pane "
+            "of living soil, descending). Each keeps its own saved field, so "
+            "switching does not discard the others. Omit to use the config's "
+            "setting."
         ),
     )
     parser.add_argument(

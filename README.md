@@ -281,6 +281,25 @@ axis, so a wider slab can also be a deeper one — at **Finest** the ceiling ris
 from 288 to 576. Memory is the product of both, so if you raise both, read the
 line under the thickness slider before committing.
 
+## A second world, growing in
+
+There is a third entry in the **Depth** selector, and unlike the other two it
+is not another way of drawing the fungal field: **Rhizotron** is a different
+metaphor — a pane of glass pressed against living soil. Stratified earth in
+real soil-chart colours, stones the water pools above, rain events that soak
+down through the column over minutes, and the whole window sinking at
+hour-hand speed through soil that is generated below, retired above, and can
+never repeat. Roots — tips steered by gravity, water and stone, the point of
+the thing — are the next build step; what is there today is the world they
+will grow into. `DESIGN.md` §15 is the design and the build record.
+
+It is a backend like the others: structural, so it applies to a new field,
+and it keeps its own saved column — switching away and back finds it where
+you left it, deeper. The flash-safety bound of [Safety](#safety) is the same
+output stage and holds identically; the descent is honest motion the
+limiter's reprojection is told about, so it costs the luminance budget
+nothing. Start it with `--backend rhizotron`, or from the panel.
+
 ## Adjusting it
 
 Eight knobs, all 0–1:
@@ -476,6 +495,15 @@ unrecoverable:
 - `test_shutdown.py` — that closing the window saves the field and really ends
   the process, the last part in a subprocess with a live Qt loop, because a
   session left running behind a closed window leaves no other trace.
+- `test_rhizotron.py` — the plant-root backend's foundations (§15 step 1):
+  that the descent really is an exact integer translation, bit for bit, with
+  fresh soil generated below; that the soil is deterministic in its seed and
+  different ten thousand rows down; that the scroll reaches the safety
+  stage's reprojection with the right sign and magnitude; that the flash
+  bound holds exactly with the descent stopped while the wetting machinery is
+  slammed, and by the WCAG area criterion with it running in the rain; that
+  rain soaks *downward*, isolated against a control run; and that a resumed
+  column, descent counters included, evolves bit-identically.
 - `test_volume.py` — the volumetric backend: that its flow really is
   divergence-free (checked numerically, because the failure it prevents is
   pigment slowly pooling over hours), that the slab wraps on all three axes and
@@ -491,16 +519,17 @@ unrecoverable:
 ```
 anastomosis/
   app.py          window, frame pacing, hot reload, budget governor
-  backend.py      what the two depth backends share: output chain, safety, plumbing
+  backend.py      what every backend shares: output chain, safety, plumbing
   engine.py       the layered 2.5D backend
   volume.py       the volumetric slab backend
+  rhizotron.py    the plant-root world: soil, moisture, the descent (§15)
   config.py       parameters, macros, safety ceilings, ramping
   gpu_params.py   GPU struct layout (generates the WGSL, drives the packing)
   events.py       Poisson-arrival slow events
   checkpoint.py   periodic save and restore of the simulation state
   diagnostics.py  stall watchdog and crash handler
   bluenoise.py    void-and-cluster dither mask
-  shaders/        30 top-level WGSL modules, plus two shared includes
+  shaders/        32 top-level WGSL modules, plus three shared includes
   ui/             Qt control panel
 ```
 

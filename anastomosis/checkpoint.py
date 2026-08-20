@@ -51,16 +51,16 @@ version, missing or wrongly-shaped arrays, or a geometry no engine could be
 built at. Every failure here degrades to "start fresh" -- a mismatched,
 truncated or foreign file must never be able to stop the application opening.
 
-**Two backends, two files.** The layered stack and the volumetric slab
-(DESIGN.md §5.1) hold different state in different shapes, and no amount of
-resampling turns one into the other, so a checkpoint records which backend
-wrote it and :func:`default_checkpoint_path` gives each its own file. Switching
-backend therefore does not destroy the field you switched away from: switch
-back and it is still there, older but intact. What the two share is everything
-about *how* a checkpoint behaves -- the same version gating, the same
-build-to-fit-the-file launch, the same degrade-to-fresh on anything unusable --
-which is why the difference between them is one small object per backend
-(:data:`LAYOUTS`) rather than a second copy of this module.
+**One file per backend.** The layered stack, the volumetric slab (DESIGN.md
+§5.1) and the rhizotron's soil column (§15) hold different state in different
+shapes, and no amount of resampling turns one into another, so a checkpoint
+records which backend wrote it and :func:`default_checkpoint_path` gives each
+its own file. Switching backend therefore does not destroy the field you
+switched away from: switch back and it is still there, older but intact. What
+they share is everything about *how* a checkpoint behaves -- the same version
+gating, the same build-to-fit-the-file launch, the same degrade-to-fresh on
+anything unusable -- which is why the difference between them is one small
+object per backend (:data:`LAYOUTS`) rather than more copies of this module.
 """
 
 from __future__ import annotations
@@ -80,6 +80,7 @@ import numpy as np
 from . import config as config_module
 from . import engine as engine_module
 from . import gpu_params
+from . import rhizotron as rhizotron_module
 from . import volume as volume_module
 
 log = logging.getLogger(__name__)
@@ -294,6 +295,10 @@ def capture(engine, scheduler=None, sim_hz: float = 0.0) -> Checkpoint:
         },
         "events": scheduler.state() if scheduler is not None else {},
     }
+    # Backend-specific counters -- the rhizotron's descent -- land inside the
+    # same engine block, so the test that resumes bit-identically covers them
+    # with no per-backend special case.
+    meta["engine"].update(layout.engine_meta(engine))
     return Checkpoint(meta=meta, arrays=arrays)
 
 
@@ -483,6 +488,20 @@ class _Layout:
 
     def restore_arrays(self, engine, arrays: dict[str, np.ndarray]) -> None:
         raise NotImplementedError
+
+    def engine_meta(self, engine) -> dict[str, Any]:
+        """Backend-specific accumulated state that lives outside the arrays.
+
+        Merged into the shared ``engine`` metadata block by :func:`capture`.
+        Empty for the fungal backends -- everything host-side they accumulate
+        (counters, walks, the drift) is state every backend has and the shared
+        code saves. The rhizotron's descent is the first counter one backend
+        has and the others do not.
+        """
+        return {}
+
+    def restore_engine_meta(self, engine, saved: dict[str, Any]) -> None:
+        """The restore half of :meth:`engine_meta`. Untrusted input."""
 
 
 def _field_shape(layer, name: str) -> tuple[int, int, int]:
@@ -701,8 +720,70 @@ class _VolumeLayout(_Layout):
             slab.agents_buf, 0, arrays["slab.agents"].tobytes())
 
 
+class _RhizotronLayout(_Layout):
+    """The soil column: one moisture pair, and the descent's own counters.
+
+    The smallest layout by far, and that smallness is a design fact worth
+    keeping visible: the rhizotron's soil is a pure function of (seed, world
+    row) rather than a stored field (DESIGN.md §15.3), so the only array that
+    accumulates is the moisture -- everything else a resume needs is a few
+    numbers of descent state.
+    """
+
+    name = "rhizotron"
+
+    def geometry_meta(self, geometry) -> dict[str, Any]:
+        return {
+            "width": int(geometry.width),
+            "height": int(geometry.height),
+            "view_rows": int(geometry.view_rows),
+        }
+
+    def read_geometry(self, meta: dict[str, Any]):
+        block = meta.get("geometry")
+        if not isinstance(block, dict):
+            return None
+        try:
+            return rhizotron_module.RhizotronGeometry(
+                width=int(block["width"]),
+                height=int(block["height"]),
+                view_rows=int(block["view_rows"]),
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
+    def expected_arrays(
+        self, geometry, version: int = FORMAT_VERSION
+    ) -> dict[str, tuple[int, ...]]:
+        return {"column.moisture": (geometry.height, geometry.width, 4)}
+
+    def capture(self, engine) -> dict[str, np.ndarray]:
+        pair = engine.moisture
+        return {
+            "column.moisture": _read_texture(
+                engine.device, pair.textures[pair.index]),
+        }
+
+    def restore_arrays(self, engine, arrays: dict[str, np.ndarray]) -> None:
+        data = arrays.get("column.moisture")
+        if data is None:
+            return
+        for texture in engine.moisture.textures:
+            _write_texture(engine.device, texture, data)
+        engine.moisture.index = 0
+
+    def engine_meta(self, engine) -> dict[str, Any]:
+        return {"descent": engine.descent_state()}
+
+    def restore_engine_meta(self, engine, saved: dict[str, Any]) -> None:
+        descent = saved.get("descent")
+        if isinstance(descent, dict):
+            engine.restore_descent(descent)
+
+
 LAYOUTS: dict[str, _Layout] = {
-    layout.name: layout for layout in (_LayeredLayout(), _VolumeLayout())
+    layout.name: layout
+    for layout in (_LayeredLayout(), _VolumeLayout(), _RhizotronLayout())
 }
 
 
@@ -986,6 +1067,7 @@ def restore(engine, checkpoint: Checkpoint, scheduler=None) -> bool:
     except (TypeError, ValueError):
         engine._parallax = None
     _restore_walk(engine, saved)
+    layout_for(engine.name).restore_engine_meta(engine, saved)
 
     if scheduler is not None:
         scheduler.load_state(checkpoint.meta.get("events") or {})
