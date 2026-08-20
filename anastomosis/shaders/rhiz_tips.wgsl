@@ -42,12 +42,17 @@ struct Tip {
     heading: f32,
     rng: u32,
     // bits 0-1 order; bit 2 side (set = -1); bit 3 alive; bit 4 spent
-    // (born at least once -- a dead tip must not be reborn); bits 8-15 the
-    // parent's count of children handed out.
+    // (has lived at least once); bits 8-31 the parent's running count of
+    // children handed out -- 24 bits, which at a lateral every half minute
+    // wraps in years rather than the days a 16-bit count would.
     flags: u32,
     age: f32,
     since_branch: f32,
-    vigor: f32,
+    // Which life this slot is on. Slots recycle (§15.11 step 4): a child's
+    // n-th life begins when its parent's counter passes
+    // `index + n * capacity`, so a parent that keeps growing re-uses its
+    // block forever without any slot ever being written by another thread.
+    generation: f32,
 };
 
 @group(0) @binding(0) var<storage, read> rp: RhizParams;
@@ -57,17 +62,22 @@ struct Tip {
 @group(0) @binding(4) var structure_tex: texture_2d<f32>;
 @group(0) @binding(5) var<storage, read_write> deposit_buf: array<atomic<u32>>;
 @group(0) @binding(6) var samp: sampler;
+// Two words the front controller reads back rarely: the deepest living row
+// (fixed point, atomicMax) and the count of living tips. Derived state,
+// zeroed by the host every tick, never checkpointed.
+@group(0) @binding(7) var<storage, read_write> front_buf: array<atomic<u32>>;
 
 const DEPOSIT_SCALE: f32 = 1048576.0;
+const FRONT_SCALE: f32 = 64.0;
 const DOWN: f32 = 1.5707963267948966;  // +pi/2: rows grow downward
 
 fn order_of(flags: u32) -> u32 { return flags & 3u; }
 fn side_of(flags: u32) -> f32 { return select(1.0, -1.0, (flags & 4u) != 0u); }
 fn is_alive(flags: u32) -> bool { return (flags & 8u) != 0u; }
 fn is_spent(flags: u32) -> bool { return (flags & 16u) != 0u; }
-fn children_of(flags: u32) -> u32 { return (flags >> 8u) & 255u; }
+fn children_of(flags: u32) -> u32 { return flags >> 8u; }
 fn with_children(flags: u32, n: u32) -> u32 {
-    return (flags & 0xFFFF00FFu) | ((n & 255u) << 8u);
+    return (flags & 0x000000FFu) | (n << 8u);
 }
 
 fn wrap_angle(a: f32) -> f32 {
@@ -153,15 +163,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     tip.pos = finite_or2(tip.pos, 0.0);
     tip.heading = finite_or(tip.heading, DOWN);
 
-    // --- Birth -------------------------------------------------------------
-    // A slot that has never lived checks whether its parent has handed its
-    // index out. The parent's counter is read from the *previous* tick's
-    // state, so the decision this depends on is already made and immutable.
-    if (!is_alive(tip.flags) && !is_spent(tip.flags) && slot >= rp.max_axes) {
+    // --- Birth and rebirth ---------------------------------------------------
+    // A slot not currently living is a candidate for its next life. For a
+    // child, that life begins when its parent's counter passes
+    // `index + generation * capacity` -- reading the *previous* tick's
+    // counter, so the decision this depends on is already made and
+    // immutable, and slots recycle forever as the counter climbs. For an
+    // axis, it is germination (§15.4): the seed rests out its delay, then
+    // wakes at a hashed site -- eagerly where the soil is wet, so rain
+    // brings a pulse of new plants, and at a small unconditional floor so a
+    // drought cannot be an absorbing state.
+    if (!is_alive(tip.flags) && slot >= rp.max_axes) {
         let parent = parent_of(slot);
         let parent_tip = tips_src[parent.x];
-        if (is_spent(parent_tip.flags) && children_of(parent_tip.flags) > parent.y) {
-            var seed = pcg3(slot, rp.seed, 0xB1127u);
+        let capacity = select(
+            max(rp.fines_per_lateral, 1u), rp.laterals_per_axis,
+            slot < rp.max_axes + rp.max_axes * rp.laterals_per_axis);
+        let number = parent.y + u32(max(tip.generation, 0.0)) * capacity;
+        if (is_spent(parent_tip.flags) && is_alive(parent_tip.flags)
+            && children_of(parent_tip.flags) > number) {
+            var seed = pcg3(
+                slot, rp.seed ^ u32(tip.generation) * 0x85EBCA6Bu, 0xB1127u);
             let side = select(4u, 0u, rnd(&seed) < 0.5);
             let order = order_of(parent_tip.flags) + 1u;
             tip.pos = parent_tip.pos;
@@ -171,14 +193,50 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             tip.flags = order | side | 8u | 16u;  // alive, spent
             tip.age = 0.0;
             tip.since_branch = 0.0;
-            tip.vigor = 1.0;
+            tip.generation = tip.generation + 1.0;
         } else {
             tips_dst[slot] = tip;
             return;
         }
+    } else if (!is_alive(tip.flags) && slot < rp.max_axes) {
+        // A spent axis rests, then may wake as a new plant; an axis slot the
+        // first seeding never used is a seed in the bank, resting from the
+        // field's first tick, so the community fills toward the pool over
+        // time as the weather allows. A waking axis's child counter is
+        // deliberately *not* reset: the laterals keep cycling against the
+        // continuing count, so no other slot needs touching.
+        tip.age = tip.age + 1.0;
+        var seed = tip.rng ^ pcg2(rp.tick, rp.seed);
+        if (tip.age > rp.regerm_delay) {
+            let gen = u32(max(tip.generation, 0.0));
+            var site_seed = pcg3(slot, gen * 2654435761u, rp.seed ^ 0x5EEDu);
+            let fdims = vec2<f32>(f32(rp.dims_x), f32(rp.dims_y));
+            let site = vec2<f32>(
+                rnd(&site_seed) * fdims.x,
+                f32(rp.margin_top)
+                    + (0.06 + 0.16 * rnd(&site_seed)) * f32(rp.view_rows),
+            );
+            let wet = textureSampleLevel(
+                moisture_tex, samp,
+                vec2<f32>(site.x / fdims.x, site.y / fdims.y), 0.0).x;
+            let eager = smoothstep(
+                rp.germ_moisture * 0.5, rp.germ_moisture, wet);
+            if (rnd(&seed) < rp.germ_floor + rp.germ_prob * eager) {
+                tip.pos = site;
+                tip.heading = DOWN + 0.2 * gauss(&site_seed);
+                tip.flags = (tip.flags & 0xFFFFFF00u) | 8u | 16u;  // axis, alive
+                tip.age = 0.0;
+                tip.since_branch = 0.0;
+                tip.generation = tip.generation + 1.0;
+                tip.rng = pcg(seed ^ site_seed);
+            }
+        }
+        if (!is_alive(tip.flags)) {
+            tip.rng = seed;
+            tips_dst[slot] = tip;
+            return;
+        }
     } else if (!is_alive(tip.flags)) {
-        // Dead or waiting: carried across unchanged (the scroll no longer
-        // concerns it; nothing reads a dead tip's position).
         tips_dst[slot] = tip;
         return;
     }
@@ -278,19 +336,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // --- Branching ---------------------------------------------------------
     // Distance-gated, then stochastic: real inter-branch spacing with real
     // irregularity. The parent only moves its own counter; the child builds
-    // itself next tick. A spent block is determinate growth, not an error.
+    // itself next tick. The counter is unbounded and the block recycles by
+    // generation, so a long-lived axis keeps throwing laterals forever with
+    // never more than its block's worth alive at once.
     var flags = tip.flags;
     var since_branch = tip.since_branch + travelled;
-    let capacity = select(
-        rp.fines_per_lateral, rp.laterals_per_axis, order == 0u);
     let spacing = select(rp.spacing_lateral, rp.spacing_axis, order == 0u);
-    if (order < 2u && children_of(flags) < capacity
-        && since_branch > spacing && rnd(&seed) < rp.branch_prob) {
+    if (order < 2u && since_branch > spacing && rnd(&seed) < rp.branch_prob) {
         flags = with_children(flags, children_of(flags) + 1u);
         since_branch = 0.0;
     }
 
     // --- Ageing and the ends of things --------------------------------------
+    // Every order's growth is determinate: fines are ephemeral, laterals
+    // stop in minutes, and even an axis spends its life in a quarter hour --
+    // then rests as a seed and returns as the next plant (§15.4's
+    // succession). The other death is the window's top edge.
     var age = tip.age + 1.0;
     var alive = true;
     if (order == 2u && age > rp.fine_life) {
@@ -299,13 +360,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (order == 1u && age > rp.lateral_life) {
         alive = false;
     }
+    if (order == 0u && age > rp.axis_life) {
+        alive = false;
+        age = 0.0;  // the rest starts now; rebirth waits out regerm_delay
+    }
     // The shift out, and the top of the window.
     pos.y = pos.y - f32(rp.scroll_rows);
     if (pos.y < 1.0) {
         alive = false;
+        if (order == 0u) {
+            age = 0.0;
+        }
     }
     if (!alive) {
         flags = flags & ~8u;
+    } else {
+        // The front controller's two numbers: the deepest living tip, and
+        // how many are living at all. Fixed point for the atomicMax.
+        atomicMax(&front_buf[0], u32(max(pos.y, 0.0) * FRONT_SCALE));
+        atomicAdd(&front_buf[1], 1u);
     }
 
     tip.pos = pos;

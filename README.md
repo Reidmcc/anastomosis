@@ -294,9 +294,12 @@ gravity, water and stone, plunging axes throwing oblique laterals and fine
 fuzz, ivory at the living front and browning with age. Where the fungal
 field converges — filaments seeking and fusing into a network — the roots
 diverge, one crown ramifying and never rejoining, which is why the two
-worlds cannot be mistaken for each other at a glance. Succession — plants
-ageing out and seeds arriving in the soil below — is the next build step.
-`DESIGN.md` §15 is the design and the build record.
+worlds cannot be mistaken for each other at a glance. And it is a
+succession, not a specimen: fine roots fade in minutes while the woody
+skeleton persists, plants spend their lives in a quarter-hour and rest as
+seeds, rain wakes the seed bank, and the descent leans after whatever is
+growing — so the window never runs out of plants, and never holds the same
+community twice. `DESIGN.md` §15 is the design and the build record.
 
 It is a backend like the others: structural, so it applies to a new field,
 and it keeps its own saved column — switching away and back finds it where

@@ -472,7 +472,7 @@ def _single_tip(engine, x, y, heading, order=0, side=0):
     tips["heading"][0] = heading
     tips["rng"][0] = 12345
     tips["flags"][0] = order | (4 if side else 0) | TIP_ALIVE | TIP_SPENT
-    tips["vigor"][0] = 1.0
+    tips["generation"][0] = 1.0
     _write_tips(engine, tips)
 
 
@@ -525,19 +525,24 @@ def test_branching_builds_a_tree_in_its_own_slots(gpu_device):
     assert (born & (orders == 1)).sum() >= 4, "no laterals branched"
     assert (born & (orders == 2)).sum() >= 2, "no fines branched"
 
-    children = (tips["flags"] >> 8) & 255
+    children = tips["flags"] >> 8
+    generations = tips["generation"].astype(np.int64)
     for slot in np.nonzero(born)[0]:
         if slot < a:
             continue
         if slot < a + a * l:
             parent, index = (slot - a) // l, (slot - a) % l
+            cycle = l
         else:
             fi = slot - a - a * l
             f = g.fines_per_lateral
             parent, index = a + fi // f, fi % f
-        assert children[parent] > index, (
-            f"slot {slot} exists but its parent {parent} only handed out "
-            f"{children[parent]} children"
+            cycle = f
+        # A slot on its n-th life needed the parent's counter past
+        # index + (n-1) * cycle when that life began.
+        assert children[parent] > index + (generations[slot] - 1) * cycle, (
+            f"slot {slot} (life {generations[slot]}) exists but its parent "
+            f"{parent} only handed out {children[parent]} children"
         )
         assert orders[slot] == orders[parent] + 1
 
@@ -629,6 +634,123 @@ def test_tips_carried_off_the_top_are_done(gpu_device):
     # Spent stays spent: the slots must not be reborn.
     assert ((tips["flags"] & TIP_SPENT) != 0)[
         : params.rhizotron.axes_per_plant].all()
+
+
+def test_fine_structure_turns_over(gpu_device):
+    """Senescence: the same plant, with and without the forgetting.
+
+    With turnover on, the community carries measurably less standing fine
+    mass than the identical run with it off -- the fuzz is a process, not an
+    accumulating painting. Same seed, one knob, so the comparison is exact.
+    """
+    grown = {}
+    for label, rate in (("kept", 0.0), ("turning", 0.06)):
+        params = _resolve(overrides={
+            **STILL_WATER,
+            "rhizotron.descent_rate": 0.0,
+            "rhizotron.descent_wander": 0.0,
+            "rhizotron.senescence_rate": rate,
+            "rhizotron.senescence_delay": 5.0,
+        })
+        engine = _engine(gpu_device, params, seed=17)
+        for _ in range(700):
+            engine.tick(params, [])
+        grown[label] = float(_structure(engine).astype(np.float32)[..., 0].sum())
+    assert grown["turning"] < grown["kept"] * 0.9, (
+        f"senescence removed almost nothing "
+        f"({grown['turning']:.1f} vs {grown['kept']:.1f})"
+    )
+
+
+def test_succession_wakes_new_plants(gpu_device):
+    """§15.4: plants age out, rest as seeds, and return -- and the seed bank
+    fills axis slots the first seeding never used. Accelerated lifetimes, so
+    a minute of simulation holds several plant lives."""
+    params = _resolve(overrides={
+        "rhizotron.descent_rate": 0.0,
+        "rhizotron.descent_wander": 0.0,
+        "rhizotron.axis_life": 12.0,
+        "rhizotron.regermination_delay": 8.0,
+        "rhizotron.germination_rate": 4.0,
+        "rhizotron.germination_floor": 0.5,
+    })
+    engine = _engine(gpu_device, params, seed=23)
+    for _ in range(1400):
+        engine.tick(params, [])
+
+    tips = _tips(engine)
+    count = params.rhizotron.axes_per_plant
+    generations = tips["generation"][: engine.geometry.max_axes]
+    assert generations[:count].max() >= 2, (
+        "no first-seeding axis has lived a second life"
+    )
+    assert generations[count:].max() >= 1, (
+        "the seed bank never woke a reserve axis"
+    )
+
+
+def test_the_descent_follows_the_growing_front(gpu_device):
+    """§15.4's front controller: growth surges, and the window leans after
+    it. A fast-growing plant deep in the view pulls the rate multiplier up;
+    a world with nothing living idles it toward its floor."""
+    params = _resolve(overrides={
+        "rhizotron.descent_rate": 1.0,
+        "rhizotron.descent_wander": 0.0,
+        "rhizotron.elong_axis": 20.0,
+        "rhizotron.front_tau": 6.0,
+    })
+    engine = _engine(gpu_device, params)
+    for _ in range(400):
+        engine.tick(params, [])
+    assert engine._descent_mult > 1.2, (
+        f"the descent did not lean after a plant growing at the bottom "
+        f"(multiplier {engine._descent_mult:.2f})"
+    )
+
+    barren = _resolve(overrides={
+        "rhizotron.descent_rate": 1.0,
+        "rhizotron.descent_wander": 0.0,
+        "rhizotron.axis_life": 3.0,
+        "rhizotron.elong_axis": 0.0,
+        "rhizotron.elong_lateral": 0.0,
+        "rhizotron.elong_fine": 0.0,
+        "rhizotron.branch_prob": 0.0,
+        "rhizotron.germination_rate": 0.0,
+        "rhizotron.germination_floor": 0.0,
+        "rhizotron.front_tau": 6.0,
+    })
+    idle = _engine(gpu_device, barren)
+    for _ in range(400):
+        idle.tick(barren, [])
+    assert idle._descent_mult < 0.6, (
+        f"an empty world should idle the descent toward its floor "
+        f"(multiplier {idle._descent_mult:.2f})"
+    )
+
+
+def test_the_plant_is_not_a_comb(gpu_device):
+    """§15.7(5): the morphology hazard is parallel verticals. The grown
+    structure must spread across columns rather than condensing into cords --
+    the §4.9 anti-condensation spirit, applied to the new world."""
+    params = _resolve(overrides={
+        "rhizotron.descent_rate": 0.0,
+        "rhizotron.descent_wander": 0.0,
+    })
+    engine = _engine(gpu_device, params, seed=29)
+    for _ in range(700):
+        engine.tick(params, [])
+
+    density = _structure(engine).astype(np.float32)[..., 0]
+    total = float(density.sum())
+    assert total > 1.0
+    columns = density.sum(axis=0)
+    assert float(columns.max()) / total < 0.20, (
+        "a fifth of the plant's mass stands in one column: a cord, not a plant"
+    )
+    occupied = (columns > 0.02 * columns.max()).mean()
+    assert occupied > 0.15, (
+        f"the plant spans only {occupied:.0%} of the columns it could"
+    )
 
 
 def test_shipped_endpoints_sit_inside_the_swept_certificate():

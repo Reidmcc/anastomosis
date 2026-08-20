@@ -83,6 +83,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let youth = clamp(deposited / AGE_RESET_REF, 0.0, 1.0);
     age = min(age + rp.dt_seconds, AGE_CAP) * (1.0 - youth);
 
+    // Senescence (§15.11 step 4): fine material fades once it is old, at a
+    // rate scaling with its fineness -- fuzz in minutes, mixed lateral paths
+    // in tens of minutes, the woody axes effectively never. Every factor is
+    // smooth: the age gate is a saturating ramp past the grace period, so
+    // nothing anywhere switches. This is the turnover that keeps the visible
+    // plant a process instead of an accumulating painting, and it is why
+    // §15.7(2)'s sweep was re-run once it landed: sustained churn is now the
+    // steady state, not just the growth burst.
+    let ripeness = 1.0 - exp(
+        -max(age - rp.senesce_delay, 0.0) / max(rp.senesce_delay, 1.0));
+    density = density
+        * (1.0 - rp.senesce_rate * fineness * sqrt(fineness) * ripeness);
+
     // Fineness follows what deposits: order 0 pulls toward 0, fines toward 1.
     if (deposited > 1e-6) {
         let order_here = clamp(deposited_order / deposited, 0.0, 1.0);

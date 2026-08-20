@@ -72,13 +72,22 @@ MAX_SCROLL_PER_TICK = 2.0
 # pass having to reason about underflow. The descent only ever increases it.
 START_ORIGIN = 1 << 30
 
-# One tip record: pos.xy, heading, rng, flags, age, since_branch, vigor.
+# One tip record: pos.xy, heading, rng, flags, age, since_branch, generation.
 TIP_STRIDE = 32
 TIP_DTYPE = np.dtype([
     ("x", np.float32), ("y", np.float32), ("heading", np.float32),
     ("rng", np.uint32), ("flags", np.uint32), ("age", np.float32),
-    ("since_branch", np.float32), ("vigor", np.float32),
+    ("since_branch", np.float32), ("generation", np.float32),
 ])
+
+# The tips pass's fixed-point scale on the front row (rhiz_tips.wgsl).
+FRONT_SCALE = 64.0
+
+# How often the front controller reads its two words back, in ticks. Rare on
+# purpose: a readback synchronises the queue, and the controller is meant to
+# drift after the plant rather than track it. Three seconds at the default
+# tick rate.
+FRONT_READ_TICKS = 60
 
 # Tip flag bits, mirroring rhiz_tips.wgsl.
 TIP_ALIVE = 8
@@ -237,6 +246,21 @@ class RhizotronEngine(Backend):
             size=g.width * g.height * 8,
             usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
             label="root_deposit")
+        # The front controller's two words: deepest living row, living count.
+        # Derived -- zeroed before every tips dispatch, read back rarely.
+        self.front_buf = device.create_buffer(
+            size=8,
+            usage=(wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST
+                   | wgpu.BufferUsage.COPY_SRC),
+            label="root_front")
+        self._front_zero = np.zeros(2, dtype=np.uint32).tobytes()
+        # The controller's accumulated state: the rate multiplier the front
+        # error steers, and the last front reading (view fraction; negative
+        # means nothing living). Multiplier is checkpointed with the descent;
+        # the reading is derived and refreshed within FRONT_READ_TICKS.
+        self._descent_mult = 1.0
+        self._front_frac = -1.0
+        self._alive_tips = 0
 
         # The uniform scroll velocity the safety stage reprojects through:
         # one row of texels, rewritten each frame from the descent's actual
@@ -330,7 +354,12 @@ class RhizotronEngine(Backend):
             tips["heading"][a] = math.pi / 2.0 + spread * float(rng.normal())
             tips["rng"][a] = int(rng.integers(1, 2**32))
             tips["flags"][a] = TIP_ALIVE | TIP_SPENT
-            tips["vigor"][a] = 1.0
+            tips["generation"][a] = 1.0
+        # Axis slots beyond the first seeding get their own noise streams and
+        # stay dormant: seeds in the bank, which the germination path wakes
+        # over time as the weather allows (§15.4's succession).
+        for a in range(count, g.max_axes):
+            tips["rng"][a] = int(rng.integers(1, 2**32))
         for buffer in self.tips.buffers:
             self.device.queue.write_buffer(buffer, 0, tips.tobytes())
 
@@ -358,6 +387,9 @@ class RhizotronEngine(Backend):
         rows_per_second = (
             rhiz.descent_rate * self.geometry.view_rows / 3600.0
             * math.exp(rhiz.descent_wander * self._descent_walk)
+            # The front controller's slow correction (§15.4): the window
+            # drifts after the growing front rather than sinking blindly.
+            * self._descent_mult
         )
         advance = min(max(rows_per_second * dt, 0.0), MAX_SCROLL_PER_TICK)
 
@@ -370,6 +402,40 @@ class RhizotronEngine(Backend):
         """The world row of texture row 0, split for the GPU."""
         origin = int(math.floor(self._descent_pos)) - MARGIN_ROWS
         return origin & 0xFFFFFFFF, (origin >> 32) & 0xFFFFFFFF
+
+    def _update_front_controller(self, params: Params) -> None:
+        """Read the front words back and steer the descent's multiplier.
+
+        Rarely, on the tick counter -- an 8-byte readback synchronises the
+        queue, and the controller is meant to *drift* after the plant. The
+        error acts through a deadband and a bounded multiplier, relaxed over
+        `front_tau` seconds, so the window never chases: growth surges, and
+        tens of seconds later the descent has leaned into it. With nothing
+        living the descent idles at its floor, carrying the window gently
+        down toward the seeds that will wake (§15.4).
+        """
+        raw = np.frombuffer(
+            self.device.queue.read_buffer(self.front_buf), dtype=np.uint32)
+        self._alive_tips = int(raw[1])
+        rhiz = params.rhizotron
+        g = self.geometry
+        if self._alive_tips > 0:
+            front_rows = float(raw[0]) / FRONT_SCALE
+            self._front_frac = (front_rows - MARGIN_ROWS) / max(g.view_rows, 1)
+            error = self._front_frac - rhiz.front_target
+            if abs(error) < rhiz.front_deadband:
+                error = 0.0
+            else:
+                error -= math.copysign(rhiz.front_deadband, error)
+            desired = min(
+                max(1.0 + rhiz.front_gain * error, rhiz.descent_mult_min),
+                rhiz.descent_mult_max)
+        else:
+            self._front_frac = -1.0
+            desired = rhiz.descent_mult_min
+        interval = FRONT_READ_TICKS / max(params.sim_hz, 1e-3)
+        alpha = 1.0 - math.exp(-interval / max(rhiz.front_tau, 1e-3))
+        self._descent_mult += (desired - self._descent_mult) * alpha
 
     # -- parameter packing ----------------------------------------------------
 
@@ -463,11 +529,18 @@ class RhizotronEngine(Backend):
             "splat_fine": rhiz.splat_fine,
             "fine_life": rhiz.fine_life / dt,
             "lateral_life": rhiz.lateral_life / dt,
+            "axis_life": rhiz.axis_life / dt,
             "dt_seconds": dt,
             "root_knee": rhiz.root_knee,
             "root_edge": rhiz.root_edge,
             "root_age_scale": rhiz.root_age_scale,
             "root_brown": rhiz.root_brown,
+            "senesce_rate": per_tick(rhiz.senescence_rate),
+            "senesce_delay": rhiz.senescence_delay,
+            "regerm_delay": rhiz.regermination_delay / dt,
+            "germ_prob": rate(rhiz.germination_rate),
+            "germ_floor": rate(rhiz.germination_floor),
+            "germ_moisture": rhiz.germination_moisture,
         }
 
     def _write_rhiz_params(
@@ -513,6 +586,8 @@ class RhizotronEngine(Backend):
         # 1. Tips first, in the pre-shift frame the current textures are in:
         #    sense, steer, move, deposit, branch. They write their positions
         #    already shifted for the frame everything after them produces.
+        #    The front words are zeroed going in; the living rebuild them.
+        self.device.queue.write_buffer(self.front_buf, 0, self._front_zero)
         cpass.set_pipeline(self.p_tips)
         cpass.set_bind_group(0, self._bind(self.p_tips, [
             self._buffer_binding(self.rhiz_buf),
@@ -522,6 +597,7 @@ class RhizotronEngine(Backend):
             self.structure.cur,
             self._buffer_binding(self.deposit_buf),
             self.sampler,
+            self._buffer_binding(self.front_buf),
         ]))
         cpass.dispatch_workgroups(math.ceil(g.tips_total / 64), 1, 1)
 
@@ -552,6 +628,11 @@ class RhizotronEngine(Backend):
 
         self.device.queue.submit([encoder.finish()])
         self.tick_count += 1
+
+        # The front controller reads back on the tick counter -- deterministic
+        # in the state, so a resumed session reproduces its corrections.
+        if self.tick_count % FRONT_READ_TICKS == 0:
+            self._update_front_controller(params)
 
     # -- rendering ------------------------------------------------------------
 
@@ -621,6 +702,7 @@ class RhizotronEngine(Backend):
             "remainder": float(self._descent_pos - origin),
             "prev_delta": float(self._descent_pos - self._descent_prev),
             "walk": float(self._descent_walk),
+            "rate_mult": float(self._descent_mult),
         }
 
     def restore_descent(self, saved: dict) -> None:
@@ -645,3 +727,11 @@ class RhizotronEngine(Backend):
         # relaunch.
         self._display_prev = self._descent_pos
         self._descent_walk = max(-2.0, min(2.0, walk))
+        try:
+            mult = float(saved.get("rate_mult", 1.0))
+        except (TypeError, ValueError):
+            mult = 1.0
+        # Bounded by the widest limits `validate` admits, so a foreign value
+        # cannot pin the descent anywhere the controller could not have.
+        self._descent_mult = (
+            min(max(mult, 0.05), 10.0) if math.isfinite(mult) else 1.0)

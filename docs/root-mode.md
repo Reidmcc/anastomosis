@@ -484,10 +484,11 @@ retirement:
    `test_agents.py`-style harness: dispatch tips against a manufactured
    soil with a known right answer — a stone to deflect around, a wet patch
    to find, existing structure to avoid.~~ **Built**; see the record below.
-4. **The long-duration core.** Senescence and recycling, the carbon
+4. ~~**The long-duration core.** Senescence and recycling, the carbon
    homeostat, seeds and succession; the soak suite's liveness and
    non-repetition assertions against multi-hour runs, and the comb measure
-   of §15.7(5) into the morphology suite.
+   of §15.7(5) into the morphology suite.~~ **Built**, with two honest
+   narrowings; see the record below.
 5. **The rest of the rhizosphere.** Nutrients and foraging, the full event
    set, panes with haze and parallax, root hairs, the mycorrhizal accent —
    and the first presets, which are §13-style judgements for eyes once
@@ -660,6 +661,69 @@ slot against the parents' counters, the downward centroid and upward age
 gradient, stones costing the same seed's plant measurable travel, tips
 dying when the descent carries them out, and the resume comparing tips and
 structure bit-for-bit alongside the moisture.
+
+### What step 4 actually did
+
+The step §1(a) lives or dies on, built as three mechanisms and two honest
+narrowings.
+
+**Senescence.** Fine structure fades once it is old, at a rate scaling with
+its fineness to the three-halves — fuzz in minutes, mixed lateral paths in
+tens of minutes, the woody axes effectively never — gated past a grace
+period by a saturating ramp, so nothing anywhere switches. The visible
+plant is now a *process*: the fuzz the eye watches is always recent, the
+skeleton is the history, and mid-window density is bounded over an endless
+descent. §15.7(2)'s sweep was re-run with the turnover live, as the step 2
+record said it was owed: still 0.0% area at every point, both thresholds,
+peaks 0.027–0.037 — the certificate stands.
+
+**Succession, by extending the birth mechanism instead of adding one.**
+Every order's growth is now determinate — fines ephemeral, laterals minutes,
+an axis a quarter-hour of life — and a spent axis rests out a delay, then
+wakes at a hashed seed site as the next plant: eagerly where the soil is
+wet, so rain brings germination pulses (which is real), and at a small
+unconditional floor so drought cannot be an absorbing state — §4.5's
+argument, replayed for a world where the absorbing state is everything
+having died. Axis slots the first seeding never used are seeds in the bank,
+resting from the field's first tick, so the community also *fills in* over
+time. The deep design question was slot recycling without breaking the
+deterministic birth mechanism, and the answer was to remove the cap rather
+than add machinery: a parent's child counter is unbounded (24 bits — years
+at the shipped pacing), and a child slot's n-th life begins when the
+counter passes `index + n × capacity`. Nothing is ever reset, no thread
+ever writes another's slot, and a waking axis keeps its counter so its old
+children finish their lives undisturbed while the new plant's laterals
+cycle in behind them. The bit-identical resume test covers all of it
+unchanged.
+
+**The front controller.** The descent finally follows the plant (§15.4):
+the tips pass folds two words into a buffer — deepest living row, count
+living — and the host reads them back every sixty ticks (eight bytes, on
+the tick counter, so a resume reproduces the controller exactly) and steers
+a bounded multiplier on the descent rate through a deadband and a
+twenty-second relaxation. Growth surges, and tens of seconds later the
+window has leaned into it; nothing living, and the descent idles at its
+floor, carrying the window gently down toward the seeds that will wake.
+The §15.13 question "does the plant outrun the stub descent" is closed:
+neither outruns the other for long, by construction.
+
+The two narrowings, recorded rather than glossed: there is no stored
+nutrient field yet, so what a senesced root returns to the soil is nothing
+but room — the recycling *memory* (decayed roots enriching the ground for
+future roots) arrives with step 5's nutrients, where the proposal always
+kept the foraging. And the carbon homeostat is not yet a §4.2-style PI
+controller: the pool's determinate blocks and the succession pacing bound
+the community on both sides so firmly that a controller would have nothing
+to hold, and building one before there is a nutrient economy for it to
+regulate would be §14.2's "separate simulation" mistake in miniature. If
+step 5's economy destabilises the community, the controller lands there,
+with the §4.2 pattern to copy.
+
+The morphology watch opened: `test_the_plant_is_not_a_comb` holds the grown
+structure to spreading across its columns — no cord may carry a fifth of
+the mass — alongside turnover, succession and front-controller tests, all
+at accelerated lifetimes so a minute of simulation holds several plant
+lives.
 
 ### 15.12 Open questions
 

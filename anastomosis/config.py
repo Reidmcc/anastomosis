@@ -840,11 +840,13 @@ class RhizotronParams:
     splat_axis: float = 1.3
     splat_lateral: float = 0.7
     splat_fine: float = 0.4
-    # Lifetimes, seconds. Fines are ephemeral by construction even before
-    # step 4's senescence; laterals stop elongating (determinate growth) but
-    # their structure persists.
+    # Lifetimes, seconds. Fines are ephemeral, laterals stop in minutes, and
+    # even an axis spends its life in a quarter of an hour -- then rests as a
+    # seed and returns as the next plant (§15.4's succession). Growth being
+    # determinate at every order is what paces the whole community.
     fine_life: float = 18.0
     lateral_life: float = 240.0
+    axis_life: float = 900.0
 
     # Root shading (§15.2): the transfer from structure density to coverage,
     # and pallor-by-age. `root_edge` is the transfer's softness -- 0.5 is the
@@ -854,6 +856,33 @@ class RhizotronParams:
     root_edge: float = 0.18
     root_age_scale: float = 600.0  # seconds to brown
     root_brown: float = 0.82       # how far a browned root sinks toward soil
+
+    # --- The long-duration core (§15.11 step 4) ----------------------------
+    # Senescence: fine structure fades once it is old, at a rate that scales
+    # with its fineness -- pure fuzz in a few minutes, mixed lateral paths in
+    # ten, the woody axes effectively never. This is the turnover that keeps
+    # the visible plant a *process* rather than an accumulating painting, and
+    # what bounds the mid-window density over an endless descent.
+    senescence_rate: float = 0.007   # per second, at full fineness and age
+    senescence_delay: float = 45.0   # seconds of grace before it starts
+    # Succession: a spent axis rests, then may wake as a new plant at a
+    # hashed seed site -- eagerly where the soil is wet (rain brings
+    # germination pulses, which is real), and at a small unconditional floor
+    # so drought cannot be an absorbing state (§15.4).
+    regermination_delay: float = 300.0  # seconds
+    germination_rate: float = 0.030     # per second, at full wetness
+    germination_floor: float = 0.0015   # per second, regardless
+    germination_moisture: float = 0.30  # the wetness that makes a seed eager
+    # The front controller (§15.4): the descent tracks the deepest living
+    # tip toward this fraction of the view, correcting the rate by up to the
+    # bounds below. Slow and deadbanded like every controller here -- the
+    # window drifts after the plant, it does not chase it.
+    front_target: float = 0.68
+    front_deadband: float = 0.08     # fraction of the view
+    front_gain: float = 3.0          # rate multiplier per unit of error
+    front_tau: float = 20.0          # seconds; how fast the correction moves
+    descent_mult_min: float = 0.2
+    descent_mult_max: float = 5.0
 
     # --- The look (§15.2) --------------------------------------------------
     # Lightness span of the soil above the background anchor, in Oklab L. The
@@ -1711,6 +1740,25 @@ def validate(params: Params) -> Params:
     rhiz.tip_deposit = min(max(float(rhiz.tip_deposit), 0.0), 2.0)
     rhiz.fine_life = min(max(float(rhiz.fine_life), 1.0), 3600.0)
     rhiz.lateral_life = min(max(float(rhiz.lateral_life), 1.0), 36000.0)
+    rhiz.axis_life = min(max(float(rhiz.axis_life), 5.0), 86400.0)
+    rhiz.senescence_rate = min(max(float(rhiz.senescence_rate), 0.0), 1.0)
+    rhiz.senescence_delay = min(max(float(rhiz.senescence_delay), 0.0), 3600.0)
+    rhiz.regermination_delay = min(
+        max(float(rhiz.regermination_delay), 1.0), 36000.0)
+    rhiz.germination_rate = min(max(float(rhiz.germination_rate), 0.0), 10.0)
+    rhiz.germination_floor = min(max(float(rhiz.germination_floor), 0.0), 10.0)
+    rhiz.germination_moisture = min(
+        max(float(rhiz.germination_moisture), 0.0), 1.5)
+    # The front controller stays a drift, not a chase: the correction is
+    # bounded on both sides and its time constant floored well above anything
+    # visible, for the §4.2 reason -- a fast controller is itself a source of
+    # coordinated global motion.
+    rhiz.front_target = min(max(float(rhiz.front_target), 0.2), 0.9)
+    rhiz.front_deadband = min(max(float(rhiz.front_deadband), 0.0), 0.5)
+    rhiz.front_gain = min(max(float(rhiz.front_gain), 0.0), 20.0)
+    rhiz.front_tau = min(max(float(rhiz.front_tau), 4.0), 3600.0)
+    rhiz.descent_mult_min = min(max(float(rhiz.descent_mult_min), 0.05), 1.0)
+    rhiz.descent_mult_max = min(max(float(rhiz.descent_mult_max), 1.0), 10.0)
 
     # Luminance-relevant: the wetting front and the soil span both spend the
     # slew budget, and both are bounded here the way every luminance actor is.

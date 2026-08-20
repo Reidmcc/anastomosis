@@ -298,12 +298,25 @@ RHIZ_FIELDS: list[Field] = [
     # Lifetimes, in ticks (converted from seconds where they are packed).
     ("fine_life", "f32"),
     ("lateral_life", "f32"),
+    ("axis_life", "f32"),
     ("dt_seconds", "f32"),      # one tick, for ageing the structure in seconds
     # Root shading.
     ("root_knee", "f32"),       # density at half coverage
     ("root_edge", "f32"),       # transfer softness; the §15.7(2) sweep's knob
     ("root_age_scale", "f32"),  # seconds to brown
     ("root_brown", "f32"),      # how far a browned root sinks toward the soil
+    # --- The long-duration core (§15.11 step 4) ---------------------------
+    # Senescence: per-tick decay of fine structure, gated by age.
+    ("senesce_rate", "f32"),
+    ("senesce_delay", "f32"),   # seconds before fine material starts to go
+    # Succession: how long a spent axis rests before it may re-germinate, in
+    # ticks, and the per-tick germination chances -- one earned by moisture,
+    # one unconditional floor so a drought cannot end the world (§15.4's
+    # absorbing-state argument).
+    ("regerm_delay", "f32"),
+    ("germ_prob", "f32"),
+    ("germ_floor", "f32"),
+    ("germ_moisture", "f32"),   # the wetness that makes a seed eager
 ]
 
 # --------------------------------------------------------------------------
