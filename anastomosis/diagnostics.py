@@ -278,7 +278,7 @@ class StallWatchdog:
             return
 
         if episode is None:
-            episode = self._begin(phase, waited, now)
+            episode = self._begin(phase, waited, limit, now)
         elif (
             episode.samples < MAX_SAMPLES
             and now - episode.sampled_at >= RESAMPLE_SECONDS
@@ -286,7 +286,9 @@ class StallWatchdog:
             self._write(episode, phase, waited, limit, now)
         episode.peak = max(episode.peak, waited)
 
-    def _begin(self, phase: str, waited: float, now: float) -> _Episode:
+    def _begin(
+        self, phase: str, waited: float, limit: float, now: float
+    ) -> _Episode:
         episode = _Episode(
             path=self._report_path("stall"),
             phase=phase,
@@ -299,7 +301,12 @@ class StallWatchdog:
         # that froze *inside* a log call is holding that lock -- writing the
         # report first means a freeze of exactly that shape still produces the
         # file, and only loses the line about it.
-        self._write(episode, phase, waited, self.stall_seconds, now, first=True)
+        #
+        # ``limit`` is the one that actually applied, which for a patient phase
+        # is not ``stall_seconds``: a first sample headed "stalled 45.1s in
+        # phase 'idle' (limit 10s)" reads like a watchdog that fired 35
+        # seconds late.
+        self._write(episode, phase, waited, limit, now, first=True)
         # The log line the user did not get last time.
         log.error(
             "frame loop stalled: %.1fs in phase '%s'; wrote %s",
@@ -490,12 +497,23 @@ def _preamble() -> str:
 def _process_lines() -> list[str]:
     """Facts about the process that say whether it is working or waiting.
 
-    The CPU counters are the reason this is here. Two samples thirty seconds
-    apart with the same stacks and the same user time is a thread blocked in a
+    The CPU counter is the reason this is here. Two samples thirty seconds
+    apart with the same stacks and the same CPU time is a thread blocked in a
     driver call; the same stacks with the time climbing is one spinning in a
     poll loop, which is a different bug with a different fix.
+
+    So it is read through ``time.process_time``, which every platform has,
+    rather than through ``resource``, which POSIX has and Windows does not.
+    That distinction was not academic: the counter this function exists for
+    was missing from every report written on Windows, and the report that
+    finally needed it was one of them. ``resource`` still contributes the
+    user/system split and the peak footprint where it exists, as extras.
     """
-    lines = [f"pid: {os.getpid()}", f"threads: {threading.active_count()}"]
+    lines = [
+        f"pid: {os.getpid()}",
+        f"threads: {threading.active_count()}",
+        f"cpu: {time.process_time():.1f}s",
+    ]
     try:
         import resource
     except ImportError:  # pragma: no cover - Windows
@@ -505,7 +523,7 @@ def _process_lines() -> list[str]:
     # spelling out rather than reporting a peak a thousand times off.
     scale = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
     lines.append(
-        f"cpu: {usage.ru_utime:.1f}s user, {usage.ru_stime:.1f}s system"
+        f"cpu split: {usage.ru_utime:.1f}s user, {usage.ru_stime:.1f}s system"
     )
     lines.append(f"peak rss: {usage.ru_maxrss / scale:.0f} MiB")
     return lines

@@ -408,6 +408,9 @@ Reports land in `~/.local/state/anastomosis/diagnostics/`:
 
 ```
 stall-20260820-141133.txt   one freeze, sampled every 30s while it lasts
+dump-20260820-141133.txt    a fault noticed by something other than the watchdog
+anastomosis.log             the log, kept here because a freeze needs the
+                            lines before it and a desktop has no console
 crash.log                   hard crashes, and manual dumps (below)
 ```
 
@@ -415,8 +418,11 @@ A stall report says which phase of the frame the loop went into and never came
 out of — `tick`, `acquire`, `render`, `telemetry`, `checkpoint`, or `idle` for
 a loop that simply stopped being asked to paint — carries a stack for every
 thread in the process, and repeats both every 30 seconds while the freeze
-lasts. Two samples with the same stacks and unmoving CPU counters mean
-genuinely wedged; moving ones mean merely slow. It logs an ERROR line at the
+lasts. Two samples with the same stacks and an unmoving CPU counter mean
+genuinely wedged; a moving one means merely slow. It says what the window was
+doing at the time too — on screen or not, and the size the canvas had against
+the size the window had — which is what separates a loop nobody is asking to
+draw from one that is stuck. It logs an ERROR line at the
 same time, and a WARNING if the loop later recovers.
 
 Being asked to paint is not guaranteed — a minimised or occluded window

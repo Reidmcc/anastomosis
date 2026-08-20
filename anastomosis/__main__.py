@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--diagnostics-dir", type=Path, default=None, metavar="PATH",
         help=(
-            "where stall reports and the crash log go "
+            "where stall reports, the log and the crash log go "
             "(default: ~/.local/state/anastomosis/diagnostics)"
         ),
     )
@@ -152,14 +152,59 @@ def arm_exit_guard(seconds: float = EXIT_GRACE_SECONDS) -> threading.Thread:
     return thread
 
 
+LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+
+# How much log to keep, and in how many files. Two megabytes is somewhere
+# between one and two days of a session's telemetry at the default interval,
+# and four of them is enough that a freeze noticed the next morning still has
+# the evening that led up to it.
+LOG_BYTES = 2_000_000
+LOG_FILES = 3
+
+
+def add_log_file(directory: Path | None) -> Path | None:
+    """Keep the log on disk, beside the diagnostic reports.
+
+    When a session freezes, the log is the only account of what led up to it --
+    and up to now it went to a console that, on the desktop this runs on, does
+    not exist: launched from a shortcut there is no terminal at all, and
+    launched from a terminal the scrollback goes with the window. So the
+    freeze that most needed the last few lines before it was the freeze least
+    likely to have them.
+
+    Rotating, because this is a program that runs for days and must not fill a
+    disk to say so. Never fatal: a session that cannot open its log file is
+    still a session, and it still logs to the console.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    from . import diagnostics as diagnostics_module
+
+    root = Path(directory) if directory else diagnostics_module.default_report_dir()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            root / "anastomosis.log", maxBytes=LOG_BYTES,
+            backupCount=LOG_FILES, encoding="utf-8",
+        )
+    except OSError as exc:
+        log.warning("could not open the log file: %s", exc)
+        return None
+    handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
+    logging.getLogger().addHandler(handler)
+    log.info("logging to %s", handler.baseFilename)
+    return Path(handler.baseFilename)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        format=LOG_FORMAT,
         datefmt="%H:%M:%S",
     )
+    add_log_file(args.diagnostics_dir)
 
     from . import config as config_module
     from . import presets as presets_module

@@ -213,6 +213,13 @@ class Application:
         self._window_poll = None
         self._window_visible: bool | None = None
         self._paused_since: float | None = None
+        # What the last poll saw, for the stall report to read. Plain
+        # attributes because the watchdog thread is what reads them, and it
+        # may not ask Qt anything -- see `diagnostic_snapshot`.
+        self._polled_at: float | None = None
+        self._canvas_size: tuple[int, int] = (0, 0)
+        # None until a window has been found that can be asked its own size.
+        self._window_geometry: tuple[int, int] | None = None
         self._frames_seen = 0
         self._frames_at = time.perf_counter()
         self._kicks = 0
@@ -471,6 +478,7 @@ class Application:
 
     def _reconcile_window(self) -> None:
         """Push the window's real state into the canvas, and kick if needed."""
+        self._polled_at = time.perf_counter()
         visible = self._window_is_up()
         self._tell_the_canvas(visible)
         width, height = self._reconcile_size()
@@ -563,10 +571,12 @@ class Application:
         that really is zero-sized is a window that really has nothing to draw.
         """
         try:
-            cached = self.canvas.get_physical_size()
+            cached = tuple(self.canvas.get_physical_size())
         except Exception as exc:  # pragma: no cover - a canvas mid-teardown
             log.debug("could not read the canvas' size: %s", exc)
+            self._canvas_size = (0, 0)
             return (0, 0)
+        self._canvas_size = cached
 
         subwidget = getattr(self.canvas, "_subwidget", None)
         size_info = getattr(subwidget, "_size_info", None)
@@ -586,15 +596,71 @@ class Application:
         except Exception as exc:  # pragma: no cover - backend internals
             log.debug("could not read the window's geometry: %s", exc)
             return cached
+        self._window_geometry = real
 
-        if real == tuple(cached) or real[0] <= 0 or real[1] <= 0:
+        if real == cached or real[0] <= 0 or real[1] <= 0:
             return cached
         log.warning(
             "the canvas has the window at %sx%s and the window has itself at "
             "%dx%d; correcting it", cached[0], cached[1], *real,
         )
         setter(real[0], real[1], ratio)
+        self._canvas_size = real
         return real
+
+    # -- what the poll saw, for a report written by a thread that cannot ask --
+
+    def _window_summary(self) -> str:
+        """The window, as of the last poll. Attribute reads only.
+
+        The line a stall report was missing. A loop sitting in `idle` is
+        either a window that stopped being asked to paint or one that stopped
+        being drawn, and from inside the watchdog those are the same thing;
+        this is the difference, written down by the thread that is allowed to
+        ask. The two sizes are printed even when they agree, because their
+        agreeing is itself the fact worth having.
+        """
+        if self._polled_at is None:
+            return "not polled yet"
+        state = {True: "on screen", False: "off screen", None: "cannot say"}[
+            self._window_visible
+        ]
+        summary = f"{state}, canvas {self._canvas_size[0]}x{self._canvas_size[1]}"
+        if self._window_geometry is not None:
+            summary += (
+                f", window {self._window_geometry[0]}"
+                f"x{self._window_geometry[1]}"
+            )
+        if self._paused_since is not None:
+            gone = time.perf_counter() - self._paused_since
+            summary += f", frames paused for {gone:.0f}s"
+        return summary
+
+    def _poll_summary(self) -> str:
+        """Whether the poll itself is still running.
+
+        A poll that has not run for minutes is not a detail: it means the Qt
+        event loop stopped dispatching, which is a different fault from the
+        one this poll was written for and would otherwise look identical from
+        the watchdog's side.
+        """
+        if self._polled_at is None:
+            return "armed, has not run yet" if self._window_poll else "not running"
+        summary = f"last ran {time.perf_counter() - self._polled_at:.0f}s ago"
+        if self._window_poll is None:
+            # It disarmed itself, which it only does after a traceback -- and
+            # that traceback is in the log rather than in here.
+            summary += " (no longer armed)"
+        return summary
+
+    def _kick_summary(self) -> str:
+        if not self._kicks:
+            return "none"
+        last = (
+            f", last {time.perf_counter() - self._kicked_at:.0f}s ago"
+            if self._kicked_at is not None else ""
+        )
+        return f"{self._kicks} in a row{last}"
 
     def _kick_the_loop(self, unasked: float, width: int, height: int) -> None:
         """Force a frame the scheduler did not ask for.
@@ -1499,6 +1565,9 @@ class Application:
             ),
             "window size": self._size,
             "pending resize": self._pending_size,
+            "window": safe("window", self._window_summary),
+            "window poll": safe("window poll", self._poll_summary),
+            "forced frames": safe("forced frames", self._kick_summary),
             "sim_hz": (
                 f"{self.params.sim_hz * self._sim_hz_scale:.1f} "
                 f"(x{self._sim_hz_scale:.2f})"

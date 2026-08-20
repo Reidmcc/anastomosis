@@ -17,6 +17,7 @@ thread wakes on its own, and that a wedged process still answers a signal.
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import subprocess
@@ -186,6 +187,104 @@ def test_recovery_closes_the_episode_and_says_so(tmp_path):
     clock.advance(20.0)
     dog.poll()
     assert len(dog.reports) == 2 and dog.reports[1] != first
+
+
+# ---------------------------------------------------------------------------
+# Saying enough to be acted on
+# ---------------------------------------------------------------------------
+
+
+def test_the_first_sample_names_the_limit_that_actually_applied(tmp_path):
+    """A report headed with the wrong limit reads like a late watchdog.
+
+    Between frames the leash is `IDLE_STALL_SECONDS`, and the first sample used
+    to print `stall_seconds` regardless -- so a report that fired exactly on
+    time announced itself as 45 seconds against a limit of 10.
+    """
+    clock = _Clock()
+    dog = _watchdog(tmp_path, clock, stall_seconds=10.0)
+
+    dog.mark(diagnostics.IDLE)
+    clock.advance(diagnostics.IDLE_STALL_SECONDS + 0.1)
+    dog.poll()
+
+    first = dog.reports[0].read_text().split("===== sample 2")[0]
+    assert f"limit {diagnostics.IDLE_STALL_SECONDS:.0f}s" in first
+
+
+def test_every_sample_carries_a_cpu_counter(tmp_path):
+    """Whether the time is being spent or waited, on every platform.
+
+    This is what tells a thread blocked in a driver call from one spinning in a
+    poll loop, and it was read through ``resource`` -- which Windows does not
+    have. Every report written there came without the number the samples exist
+    to be compared on.
+    """
+    clock = _Clock()
+    dog = _watchdog(tmp_path, clock)
+
+    dog.mark("render")
+    clock.advance(20.0)
+    dog.poll()
+
+    assert "cpu:" in dog.reports[0].read_text()
+
+
+def test_the_report_says_what_the_window_was_doing(tmp_path):
+    """The line this whole exercise was missing.
+
+    A loop sitting in `idle` is either a window that stopped being asked to
+    paint or a loop that stopped being drawn, and from inside the watchdog
+    those are indistinguishable. The poll can tell them apart, so what it saw
+    goes in the report -- including how long ago it last ran, since a poll that
+    has stopped means the event loop has.
+    """
+    app = _stubbed_app(tmp_path)
+    app._window_poll = object()
+    app._reconcile_window()
+
+    snapshot = app.diagnostic_snapshot()
+
+    assert "canvas 96x72" in snapshot["window"]
+    assert "ago" in snapshot["window poll"]
+    assert snapshot["forced frames"] == "none"
+
+
+def test_the_report_says_when_the_poll_itself_stopped(tmp_path):
+    """A poll that is not running means the event loop is not either."""
+    app = _stubbed_app(tmp_path)
+    app._window_poll = object()
+    app._reconcile_window()
+    app._window_poll = None  # as it leaves itself after a traceback
+
+    assert "no longer armed" in app.diagnostic_snapshot()["window poll"]
+
+
+def test_the_window_lines_survive_a_window_that_cannot_answer(tmp_path):
+    """They are read from the watchdog's thread; nothing there may raise."""
+    app = _stubbed_app(tmp_path)
+
+    snapshot = app.diagnostic_snapshot()
+
+    assert snapshot["window"] == "not polled yet"
+    assert snapshot["window poll"] == "not running"
+
+
+def test_the_log_is_kept_on_disk_beside_the_reports(tmp_path):
+    """A console the user does not have is not somewhere to keep the log."""
+    from anastomosis import __main__ as main_module
+
+    path = main_module.add_log_file(tmp_path / "diagnostics")
+    try:
+        logging.getLogger("anastomosis.test").error("the line before the freeze")
+    finally:
+        for handler in list(logging.getLogger().handlers):
+            if getattr(handler, "baseFilename", None) == str(path):
+                logging.getLogger().removeHandler(handler)
+                handler.close()
+
+    assert path is not None and path.parent == tmp_path / "diagnostics"
+    assert "the line before the freeze" in path.read_text()
 
 
 # ---------------------------------------------------------------------------
