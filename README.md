@@ -70,7 +70,9 @@ a rift. Pressing one asks for that event *now* instead of waiting for it to come
 up by chance. It is the same event either way: it arrives in one region, builds
 over a minute or two, holds, and fades, and it counts against the same limit on
 how many can run at once — so the buttons go quiet while that limit is reached,
-and come back as events fade. Nothing here cuts.
+and come back as events fade. Nothing here cuts. (In the activation mode, a
+high **Tempo** also makes events build in tens of seconds rather than minutes,
+and two more may run at once — same shape, same size limits, quicker.)
 
 Above the buttons, **How often** sets how frequently those events arrive on
 their own, from about one every two hours at the left to about one every three

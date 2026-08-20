@@ -354,17 +354,20 @@ def test_the_centre_of_the_event_rate_knob_is_the_designed_interval():
         assert 7.0 <= minutes <= 9.0, f"{minutes:.1f} min at the centre detent"
 
 
-def test_the_event_rate_moves_nothing_but_the_rate():
+@pytest.mark.parametrize("mode", config.MODES)
+def test_the_event_rate_moves_nothing_but_the_rate(mode):
     """Frequency is not amplitude. Nothing that shapes an event may move.
 
     This is what makes the knob safe to expose without a ceiling of its own:
     at the top of its travel the field spends more of its time inside an
-    event, but no event is bigger, stronger or faster than it was.
+    event, but no event is bigger, stronger or faster than it was. Per mode,
+    because the activation table carries the concurrency cap on this macro --
+    as a *constant*, which this test is what keeps honest.
     """
     from dataclasses import fields as dataclass_fields
 
-    low = config.Config(macros=config.Macros(event_rate=0.0)).resolve()
-    high = config.Config(macros=config.Macros(event_rate=1.0)).resolve()
+    low = config.Config(macros=config.Macros(event_rate=0.0), mode=mode).resolve()
+    high = config.Config(macros=config.Macros(event_rate=1.0), mode=mode).resolve()
     for f in dataclass_fields(config.EventParams):
         if f.name == "rate_per_hour":
             continue
@@ -372,6 +375,31 @@ def test_the_event_rate_moves_nothing_but_the_rate():
             f"the event rate knob moved events.{f.name}"
         )
     assert low.render == high.render and low.agents == high.agents
+
+
+def test_only_activation_shortens_the_event_envelope():
+    """§14.6: the envelope rides the *tempo* macro, in activation only.
+
+    Regulation events take the §4.3 minute-or-two to come up at any tempo;
+    activation's build to ~15 s at the fast end, with the slow end shared, so
+    the bottom of the travel is the same instrument. The concurrency cap is
+    per mode and off every knob's travel.
+    """
+    for tempo in (0.0, 1.0):
+        reg = config.Config(
+            macros=config.Macros(tempo=tempo), mode="regulation").resolve()
+        assert reg.events.attack_seconds == pytest.approx(45.0)
+        assert reg.events.release_seconds == pytest.approx(90.0)
+        assert reg.events.max_concurrent == 4
+
+    act_slow = config.Config(
+        macros=config.Macros(tempo=0.0), mode="activation").resolve()
+    act_fast = config.Config(
+        macros=config.Macros(tempo=1.0), mode="activation").resolve()
+    assert act_slow.events.attack_seconds == pytest.approx(45.0)
+    assert act_fast.events.attack_seconds == pytest.approx(15.0)
+    assert act_fast.events.release_seconds == pytest.approx(40.0)
+    assert act_slow.events.max_concurrent == act_fast.events.max_concurrent == 6
 
 
 def test_presets_keep_the_arrival_rate_they_had():

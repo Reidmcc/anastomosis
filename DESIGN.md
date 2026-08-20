@@ -2121,8 +2121,8 @@ invisible:
    measurement says the controller leans (14.3).~~ **Built**; see below.
 4. ~~**The polychrome palette warp**, regulation-identical at gain zero, plus
    the first activation presets.~~ **Built**; see below.
-5. **Shorter event envelopes and higher concurrency**, with soak and heal
-   tests at the fast end.
+5. ~~**Shorter event envelopes and higher concurrency**, with soak and heal
+   tests at the fast end.~~ **Built**; see below.
 6. **Trail advection** behind an activation-only gain. Last, as §4.7
    always said.
 
@@ -2345,6 +2345,46 @@ list was mode-filtered from step 1.
 Nothing stateful was added: the warp is a pure mapping, the checkpoint
 format is untouched, and a field saved under either mode still resumes
 into the other.
+
+### What step 5 actually did
+
+**The envelope rides the tempo macro, not the event-rate one.** §14.6 said
+"the activation curve set may shorten the envelopes" without saying which
+knob carries them, and the choice matters more than the values: §4.3
+promises — in the code, the panel tooltip and the README — that the rate
+knob moves *when* events come and nothing about what they do, and hanging
+the envelope on it would have quietly broken that promise in one mode.
+How briskly a perturbation builds is a tempo question, so activation's
+tempo curve takes `attack_seconds` 45 → 15 and `release_seconds` 90 → 40
+across its travel, with the slow end shared — a low-tempo activation
+field keeps the minute-long arrivals, and only the fast end gets the
+brisk ones. Regulation's tempo curve pins both at 45/90 as constants,
+the same paired-constant pattern as `c_max`.
+
+**The concurrency cap is a per-mode value wearing a curve entry.** A
+constant is not a coupling: `max_concurrent` sits on the event-rate curve
+at 4 in regulation and 6 in activation, flat in both, so the knob itself
+still moves only the rate — the parametrised rate-isolation test is what
+keeps that honest — and the *mode* sets the cap. Six because at one event
+every ~90 s with ~2-minute envelopes, overlap is the fast end's normal
+condition, and a cap that refused it would turn the top of the knob into
+a queue of refusals.
+
+**The safety claims at the fast end were mostly already held.** The
+envelope-step test now runs per mode at the worst case — the 0.75 jitter
+floor of the 15 s attack, ticked at 30 Hz — and the raised cosine moves
+~0.005 of its range per tick there, a quarter of the existing bound. And
+the heal requirement ("a rift that arrives in 15 s must still heal")
+turned out to be *already verified*: the rift recovery test has always
+run its attack compressed to 200 ticks — 10 s at 20 Hz, faster than
+anything the activation table can ask for — because the severance
+feedback needs the hold, not the ramp. That is recorded here instead of
+duplicating a multi-minute GPU test to re-prove it.
+
+One small honesty fix rode along: the panel's "it comes up over the next
+minute or two" note now reads the live attack time, since under a fast
+activation tempo that sentence would describe a fault rather than the
+event.
 
 The same caveat as §13, sharpened: every endpoint above is an argument, not
 a judgement. Specifically open: whether activation keeps the dark ground

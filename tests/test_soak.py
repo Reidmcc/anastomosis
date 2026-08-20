@@ -536,12 +536,25 @@ def test_an_event_kind_can_sever_the_network():
         )
 
 
-def test_event_envelope_never_steps():
-    params = config.EventParams()
-    scheduler = events.EventScheduler(seed=1)
-    event = scheduler._spawn(params)
+@pytest.mark.parametrize("mode", config.MODES)
+def test_event_envelope_never_steps(mode):
+    """At each mode's fastest envelope, under that mode's fastest tick.
 
-    dt = 1.0 / 20.0
+    The activation table shortens the attack to ~15 s at the top of tempo
+    (DESIGN.md §14.6) and the spawn jitter can take a quarter off that, so
+    the worst case asserted here is the jitter floor at 30 Hz -- about
+    11 s of raised cosine, which still cannot move fast per tick.
+    """
+    resolved = config.Config(
+        macros=config.Macros(tempo=1.0), mode=mode).resolve()
+    scheduler = events.EventScheduler(seed=1)
+    event = scheduler._spawn(resolved.events)
+    # Pin the jitter at its floor rather than trusting one draw of it.
+    event.attack = resolved.events.attack_seconds * 0.75
+    event.hold = resolved.events.hold_seconds * 0.75
+    event.release = resolved.events.release_seconds * 0.75
+
+    dt = 1.0 / resolved.sim_hz
     previous = event.envelope()
     largest = 0.0
     while not event.finished:

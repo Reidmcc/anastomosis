@@ -924,10 +924,16 @@ class ControlPanel(QtWidgets.QWidget):
             self._set_note(f"Could not start a {kind}: {exc}")
             return
         if started:
-            self._set_note(
-                f"{kind.capitalize()} started — it comes up over the next "
-                "minute or two."
+            # The build time follows the live envelope: under the activation
+            # mode's fast tempo an event arrives in tens of seconds, and a
+            # note promising "a minute or two" would read as a fault.
+            attack = self.app.params.events.attack_seconds
+            pace = (
+                "over the next minute or two"
+                if attack >= 25.0 else
+                "over the next half minute"
             )
+            self._set_note(f"{kind.capitalize()} started — it comes up {pace}.")
         else:
             # Refused, not lost: queueing it would mean an event arriving long
             # after the press that asked for it, which is worse than saying no.

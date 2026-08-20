@@ -693,6 +693,11 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("flow.psi_theta", 0.0012, 0.0038, 1.0),
         ("climate.advect_gain", 0.12, 0.38, 1.0),
         ("render.hue_turns_per_hour", 0.55, 2.60, 1.2),
+        # Held flat here, driven by the activation table (§14.6): regulation
+        # events take the §4.3 minute-or-two to come up whatever the tempo.
+        # Same paired-constant pattern as intensity's c_max above.
+        ("events.attack_seconds", 45.0, 45.0, 1.0),
+        ("events.release_seconds", 90.0, 90.0, 1.0),
     ],
     "palette": [
         # Palette selects a hue anchor; the spatial spread widens slightly at
@@ -753,6 +758,10 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
     # travel covers everything faster than that.
     "event_rate": [
         ("events.rate_per_hour", 0.5, 20.0, 1.5),
+        # A constant is not a coupling: the knob still moves nothing but the
+        # rate (§4.3's promise, kept), and the *mode* sets the cap -- 4 here,
+        # 6 under activation, where overlap is the point of the fast end.
+        ("events.max_concurrent", 4.0, 4.0, 1.0),
     ],
 }
 
@@ -840,6 +849,17 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         # A full turn in 7-8 minutes at the top -- visible drift, not a spin;
         # the 8 s ramp tau on this path smooths any adjustment to it.
         ("render.hue_turns_per_hour", 0.55, 8.0, 1.2),
+        # Shorter envelopes at the fast end (§14.6): an event still arrives
+        # as a raised cosine, still through the climate's diffusion and the
+        # colour pipeline's lowpasses, still under the 25% area cap -- it
+        # just takes ~15 s to come up instead of a minute. On tempo rather
+        # than event_rate, because §4.3 promises that knob moves timing and
+        # nothing else, and how briskly a perturbation builds is exactly a
+        # tempo question. The heal claim is re-verified at this pace: the
+        # rift recovery test has always run a 10 s attack, faster than this
+        # end's worst case (15 x 0.75 jitter).
+        ("events.attack_seconds", 45.0, 15.0, 1.0),
+        ("events.release_seconds", 90.0, 40.0, 1.0),
     ],
     "palette": [
         # Most of the hue circle in play at once. This is spread around the
@@ -870,8 +890,13 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
     ],
     "event_rate": [
         # One every ~90 s at the top. Still arrival-time only: what an event
-        # *does* is untouched here, and the envelope work is step 5's.
+        # *does* is untouched by this knob; the envelope rides tempo above.
         ("events.rate_per_hour", 0.5, 40.0, 1.5),
+        # Six at once instead of four: at one event every ~90 s with ~2-minute
+        # envelopes, overlap is the normal condition rather than the corner,
+        # and a cap that refused it would turn the fast end into a queue of
+        # refusals. Constant, so the knob itself still moves only the rate.
+        ("events.max_concurrent", 6.0, 6.0, 1.0),
     ],
 }
 
