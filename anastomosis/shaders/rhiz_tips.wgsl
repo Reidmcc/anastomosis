@@ -149,7 +149,7 @@ fn probe(pos: vec2<f32>) -> f32 {
         textureSampleLevel(structure_tex, samp, uv, 0.0).x, 1.0);
     let soil = soil_at(rp, uv.x, pos.y - f32(rp.scroll_rows));
     return rp.hydro_gain * wet
-        - rp.thigmo_gain * soil.stone
+        - rp.thigmo_gain * soil.imped
         - rp.avoid_gain * structure;
 }
 
@@ -286,7 +286,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dir = vec2<f32>(cos(heading), sin(heading));
     let next = tip.pos + dir * elong_for(order);
     let stone_ahead = soil_at(
-        rp, fract(next.x / fdims.x), next.y - f32(rp.scroll_rows)).stone;
+        rp, fract(next.x / fdims.x), next.y - f32(rp.scroll_rows)).imped;
     var slow = 1.0 - smoothstep(0.30, 0.75, stone_ahead);
     if (next.y > fdims.y - 2.5) {
         slow = 0.0;

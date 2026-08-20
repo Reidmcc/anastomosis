@@ -754,6 +754,14 @@ class RhizotronParams:
     # Mineral grain: the fine static speckle of the matrix. An amplitude on
     # lightness, kept small -- the grain is texture, not noise.
     grain_amount: float = 0.55
+    # Hardpan and biopores (§15.5, rethought in the step 5 record): rare
+    # near-horizontal bands of compacted low-conductivity clay that water
+    # pools above and roots run along, and rare near-vertical old worm
+    # channels that water races down and roots follow. Hashed features of the
+    # soil itself rather than events -- they arrive by descent, at the
+    # descent's own speed, which is as non-punctuating as anything can be.
+    hardpan_amount: float = 0.55
+    biopore_amount: float = 0.5
 
     # --- Moisture (§15.3) --------------------------------------------------
     moisture_baseline: float = 0.22
@@ -856,6 +864,15 @@ class RhizotronParams:
     root_edge: float = 0.18
     root_age_scale: float = 600.0  # seconds to brown
     root_brown: float = 0.82       # how far a browned root sinks toward soil
+    # Root hairs: the pale skirt around young material -- the transfer's soft
+    # approach, re-admitted only where the structure is young, so growing
+    # tips carry a halo of fuzz that fades as they lignify.
+    root_hair: float = 0.35
+    # The mycorrhizal accent (§15.2's grace note): a faint cool shimmer in
+    # the hair zone of young *fine* material -- the one cool accent in a warm
+    # field, the mode remembering where it came from. Spends chroma, not
+    # lightness, and the intensity macro is what brings it in.
+    mycorrhiza: float = 0.11
 
     # --- The long-duration core (§15.11 step 4) ----------------------------
     # Senescence: fine structure fades once it is old, at a rate that scales
@@ -1055,6 +1072,16 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("render.c_max", 0.145, 0.145, 1.0),
         ("render.chroma_floor", 0.012, 0.012, 1.0),
         ("render.polychrome", 0.0, 0.0, 1.0),
+        # The rhizotron's community investment (§15.6): how eagerly seeds
+        # wake, how densely parents branch, how hard the weather reads, and
+        # -- in the top half of the travel -- the mycorrhizal shimmer. The
+        # fungal backends resolve and ignore these, exactly as the slab's
+        # parameters have always ridden along. Ranges centre the shipped
+        # defaults at the untouched slider.
+        ("rhizotron.germination_rate", 0.012, 0.048, 1.0),
+        ("rhizotron.branch_prob", 0.7, 2.1, 1.0),
+        ("rhizotron.wet_darken", 0.32, 0.52, 1.0),
+        ("rhizotron.mycorrhiza", 0.0, 0.45, 2.0),
     ],
     "scale": [
         # Larger scale == coarser features: slower agents, longer sensors,
@@ -1071,6 +1098,17 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("reaction.du", 0.16, 0.26, 1.0),
         ("reaction.dv", 0.080, 0.130, 1.0),
         ("flow.psi_noise_scale", 2.0, 5.0, 1.0),
+        # Under the rhizotron, Scale chooses a flora (§15.6): left is fine and
+        # fibrous -- tight branch spacing, hairline widths, small stones, thin
+        # strata -- and right is coarse and taprooted. The most
+        # character-changing knob in the mode.
+        ("rhizotron.spacing_axis", 8.0, 18.0, 1.0),
+        ("rhizotron.spacing_lateral", 5.5, 12.5, 1.0),
+        ("rhizotron.splat_axis", 1.0, 1.6, 1.0),
+        ("rhizotron.splat_lateral", 0.55, 0.85, 1.0),
+        ("rhizotron.splat_fine", 0.32, 0.48, 1.0),
+        ("rhizotron.stone_cells", 7.0, 17.0, 1.0),
+        ("rhizotron.strata_thickness", 0.28, 0.62, 1.0),
     ],
     "tempo": [
         ("sim_hz", 12.0, 26.0, 1.0),
@@ -1091,6 +1129,14 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         # advection that dissolves the hubs, which is a fix for a real visual
         # defect rather than an activation flourish.
         ("agents.trail_advect", 0.5, 0.5, 1.0),
+        # The rhizotron's pace (§15.6): elongation by order, the percolation,
+        # and the base descent the front controller corrects around. The
+        # elongation tops stay inside the §15.7(2) certificate's ceilings.
+        ("rhizotron.elong_axis", 4.0, 8.4, 1.0),
+        ("rhizotron.elong_lateral", 2.5, 4.9, 1.0),
+        ("rhizotron.elong_fine", 1.4, 2.7, 1.0),
+        ("rhizotron.percolation_rate", 0.55, 1.33, 1.0),
+        ("rhizotron.descent_rate", 0.55, 1.55, 1.0),
     ],
     "palette": [
         # Palette selects a hue anchor; the spatial spread widens slightly at
@@ -1214,6 +1260,14 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         # are -- and the low end at zero keeps the bottom of the travel the
         # same instrument as regulation, like every other curve here.
         ("render.polychrome", 0.0, 1.0, 1.0),
+        # The rhizotron entries are regulation's verbatim: that mode has not
+        # had its activation retune (§15.11 step 6, deliberately last and
+        # only if it earns it), and diverging these before that judgement
+        # would be tuning nobody has looked at.
+        ("rhizotron.germination_rate", 0.012, 0.048, 1.0),
+        ("rhizotron.branch_prob", 0.7, 2.1, 1.0),
+        ("rhizotron.wet_darken", 0.32, 0.52, 1.0),
+        ("rhizotron.mycorrhiza", 0.0, 0.45, 2.0),
     ],
     "scale": [
         # The whole knob biased ~15% finer at the top: busier texture. The
@@ -1228,6 +1282,14 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("reaction.du", 0.16, 0.22, 1.0),
         ("reaction.dv", 0.080, 0.110, 1.0),  # dv/du held at 0.50, as §4.7 requires
         ("flow.psi_noise_scale", 2.0, 4.3, 1.0),
+        # Regulation's rhizotron flora, verbatim -- see the intensity note.
+        ("rhizotron.spacing_axis", 8.0, 18.0, 1.0),
+        ("rhizotron.spacing_lateral", 5.5, 12.5, 1.0),
+        ("rhizotron.splat_axis", 1.0, 1.6, 1.0),
+        ("rhizotron.splat_lateral", 0.55, 0.85, 1.0),
+        ("rhizotron.splat_fine", 0.32, 0.48, 1.0),
+        ("rhizotron.stone_cells", 7.0, 17.0, 1.0),
+        ("rhizotron.strata_thickness", 0.28, 0.62, 1.0),
     ],
     "tempo": [
         # 30 Hz at the top: one sim tick per displayed frame at the 30 FPS
@@ -1261,6 +1323,12 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         # exactly as the pigment does, and the shear that stretches and pinches
         # filaments is precisely the *difference* between the two rates.
         ("agents.trail_advect", 0.5, 0.80, 1.0),
+        # Regulation's rhizotron pace, verbatim -- see the intensity note.
+        ("rhizotron.elong_axis", 4.0, 8.4, 1.0),
+        ("rhizotron.elong_lateral", 2.5, 4.9, 1.0),
+        ("rhizotron.elong_fine", 1.4, 2.7, 1.0),
+        ("rhizotron.percolation_rate", 0.55, 1.33, 1.0),
+        ("rhizotron.descent_rate", 0.55, 1.55, 1.0),
     ],
     "palette": [
         # Most of the hue circle in play at once. This is spread around the
@@ -1695,6 +1763,10 @@ def validate(params: Params) -> Params:
     rhiz.descent_wander_tau = min(max(float(rhiz.descent_wander_tau), 8.0), 7200.0)
     rhiz.strata_thickness = min(max(float(rhiz.strata_thickness), 0.02), 4.0)
     rhiz.stone_cells = min(max(float(rhiz.stone_cells), 2.0), 256.0)
+    rhiz.hardpan_amount = min(max(float(rhiz.hardpan_amount), 0.0), 1.0)
+    rhiz.biopore_amount = min(max(float(rhiz.biopore_amount), 0.0), 1.0)
+    rhiz.root_hair = min(max(float(rhiz.root_hair), 0.0), 1.0)
+    rhiz.mycorrhiza = min(max(float(rhiz.mycorrhiza), 0.0), 1.0)
     # Percolation is explicit: the per-tick flux is additionally clamped to a
     # quarter of the donor texel in the shader, so this bound is about keeping
     # the per-second number meaningful rather than about stability.

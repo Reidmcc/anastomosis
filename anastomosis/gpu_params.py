@@ -252,6 +252,8 @@ RHIZ_FIELDS: list[Field] = [
     ("strata_tilt", "f32"),
     ("stone_amount", "f32"),
     ("grain_amount", "f32"),
+    ("hardpan_amount", "f32"),
+    ("biopore_amount", "f32"),
     ("soil_l_range", "f32"),
     ("wet_darken", "f32"),
     ("wet_chroma", "f32"),
@@ -305,6 +307,8 @@ RHIZ_FIELDS: list[Field] = [
     ("root_edge", "f32"),       # transfer softness; the §15.7(2) sweep's knob
     ("root_age_scale", "f32"),  # seconds to brown
     ("root_brown", "f32"),      # how far a browned root sinks toward the soil
+    ("root_hair", "f32"),       # the pale skirt around young material
+    ("mycorrhiza", "f32"),      # the cool shimmer in young fine fuzz
     # --- The long-duration core (§15.11 step 4) ---------------------------
     # Senescence: per-tick decay of fine structure, gated by age.
     ("senesce_rate", "f32"),

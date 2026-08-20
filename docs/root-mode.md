@@ -494,6 +494,9 @@ retirement:
    and the first presets, which are §13-style judgements for eyes once
    there is something to judge. Candidates: `meadow` (fine, fibrous, busy),
    `taproot` (sparse, deep, austere), `loam` (the balanced default).
+   **First half built** — the macro wiring, hardpan and biopores, hairs and
+   the shimmer; see the record below for what landed, what moved, and what
+   still waits.
 6. **Later, separately:** an activation retune of the rhizotron against
    §14's checklist, and only if the mode earns it.
 
@@ -724,6 +727,69 @@ structure to spreading across its columns — no cord may carry a fifth of
 the mass — alongside turnover, succession and front-controller tests, all
 at accelerated lifetimes so a minute of simulation holds several plant
 lives.
+
+### What the first half of step 5 actually did
+
+**The §15.6 promise is closed: the eight knobs reach this world.** Both
+mode tables now carry rhizotron entries — Tempo paces elongation, the
+percolation and the base descent (tops inside the §15.7(2) certificate);
+Scale chooses a flora, from fine and fibrous (tight spacing, hairline
+widths, small stones, thin strata) to coarse and taprooted, which makes it
+the most character-changing knob in the mode exactly as §15.6 predicted;
+Intensity sets the community's investment (germination, branching, the
+weather's contrast) and, in the top half of its travel only, brings in the
+mycorrhizal shimmer. The two tables' entries are verbatim identical: the
+activation retune is step 6's, deliberately last, and diverging them before
+that judgement would be tuning nobody has looked at. Ranges centre the
+shipped defaults at the untouched sliders (to the same couple of per cent
+the fungal curves do), and `test_the_macros_reach_the_rhizotron` pins the
+endpoints, the certificate ceiling, the shimmer's zero at the bottom of the
+travel, and the two tables' identity.
+
+**Hardpan and biopores landed as hashed soil, not as events — a recorded
+deviation from §15.5.** The proposal had events writing impedance bands
+into future rows, which needs stored generator state and a second event
+path; hashed features of the soil itself need neither, keep the soil a pure
+function of (seed, world row), and arrive by descent — at the descent's own
+speed, which is as non-punctuating as any event could hope to be. What
+events remain are the weather (rain, drought, the conductivity seep), which
+is what they were always best at. The percolation does the imagery
+unprompted — water pools above the bands and races down the old worm
+channels — the thigmotropic slowdown makes roots run along hardpan (felt as
+impedance but painted as dark clay, its own field, not grey stone), and the
+hydrotropism finds the wet pores without being told about them. One
+mechanism lesson is worth its sentence: bilinear value noise contracts
+toward zero between lattice corners, so the first gates — set where raw
+noise statistics suggested — fired almost nowhere, and the bands existed
+mostly in theory. Measured on a test column (heavy rain,
+transport-dominated), the corrected gates take the moisture's vertical
+organisation up by a third, and `test_hardpan_structures_the_water` holds
+that against a same-seed control.
+
+**Root hairs and the shimmer are one mechanism.** The coverage transfer's
+soft skirt — everything the crisp edge excludes — is re-admitted around
+*young* material only, as a pale halo that fades as the root lignifies:
+the hairs. Where the young material is also *fine*, the same skirt carries
+a faint cool cast: the mycorrhizae, the one cool accent in a warm field,
+gated by Intensity. Both spend the chroma budget;
+`test_the_shimmer_spends_chroma_not_lightness` renders the same field with
+the shimmer off and on and holds the lightness residual under the chroma
+spend.
+
+**What still waits, and why.** Nutrients, foraging and the recycling
+memory are the second half of this step — they are one economy and should
+land together, with the carbon homeostat question re-opened when they do
+(step 4's record). Presets wait on them: a `meadow` tuned before the
+economy exists would be re-judged after it. And the pane question
+(§15.12) leans further toward *flat*: everything added since the proposal
+— the crisp architecture, the strata, the descent — reads as one pane of
+glass, and haze-separated copies of it would be three fictions stacked;
+the decision is still §13's to make with eyes, but the parallax macro
+staying inert in this backend is looking less like a gap and more like
+honesty. The germination *button* (§15.5's manual kind) also waits: event
+kinds are a shared vocabulary across backends, and adding a kind the
+fungal modes would fire as a no-op wants more thought than a button is
+worth.
 
 ### 15.12 Open questions
 

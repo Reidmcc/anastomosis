@@ -753,6 +753,103 @@ def test_the_plant_is_not_a_comb(gpu_device):
     )
 
 
+def test_the_macros_reach_the_rhizotron():
+    """§15.6, the deferred half landed: Tempo paces the world, Scale chooses
+    a flora, Intensity sets the community's investment -- and the two mode
+    tables carry identical rhizotron entries until step 6 earns a retune."""
+    quiet = config.Config(macros=config.Macros(
+        tempo=0.0, scale=0.0, intensity=0.0)).resolve()
+    busy = config.Config(macros=config.Macros(
+        tempo=1.0, scale=1.0, intensity=1.0)).resolve()
+
+    assert busy.rhizotron.elong_axis > quiet.rhizotron.elong_axis
+    assert busy.rhizotron.descent_rate > quiet.rhizotron.descent_rate
+    assert busy.rhizotron.percolation_rate > quiet.rhizotron.percolation_rate
+    assert busy.rhizotron.spacing_axis > quiet.rhizotron.spacing_axis
+    assert busy.rhizotron.splat_axis > quiet.rhizotron.splat_axis
+    assert busy.rhizotron.germination_rate > quiet.rhizotron.germination_rate
+    assert busy.rhizotron.branch_prob > quiet.rhizotron.branch_prob
+    # The shimmer starts at exactly zero: the bottom of the travel is the
+    # plain instrument.
+    assert quiet.rhizotron.mycorrhiza == 0.0
+    assert busy.rhizotron.mycorrhiza > 0.3
+    # The tempo top stays inside the §15.7(2) certificate.
+    assert busy.rhizotron.elong_axis <= 24.0
+
+    for mode in ("regulation", "activation"):
+        resolved = config.Config(mode=mode, macros=config.Macros(
+            tempo=1.0, scale=1.0, intensity=1.0)).resolve()
+        assert resolved.rhizotron == busy.rhizotron, (
+            f"the {mode} table's rhizotron entries diverged before step 6"
+        )
+
+    # An untouched slider stays within a hair of the shipped look.
+    mid = config.Config().resolve().rhizotron
+    defaults = config.RhizotronParams()
+    for name in ("elong_axis", "spacing_axis", "splat_axis",
+                 "germination_rate", "branch_prob", "descent_rate"):
+        assert abs(getattr(mid, name) - getattr(defaults, name)) \
+            <= 0.02 * max(abs(getattr(defaults, name)), 1e-6), name
+
+
+def test_the_shimmer_spends_chroma_not_lightness(gpu_device, offscreen_target):
+    """The mycorrhizal accent and the hairs must colour the fuzz, not
+    brighten it: the luminance architecture is shared and stays put."""
+    images = {}
+    for label, myco in (("plain", 0.0), ("shimmer", 0.9)):
+        params = _resolve(overrides={
+            **STILL_WATER,
+            "rhizotron.descent_rate": 0.0,
+            "rhizotron.descent_wander": 0.0,
+            "rhizotron.mycorrhiza": myco,
+        })
+        engine = _engine(gpu_device, params, seed=31)
+        target, fmt = offscreen_target(engine.width, engine.height)
+        for _ in range(400):
+            engine.tick(params, [])
+        for _ in range(60):
+            engine.render(params, frac=0.5, target_view=target,
+                          target_format=fmt)
+        images[label] = R.linear_srgb_to_oklab(
+            engine.read_final_rgba()[..., :3])
+    delta = images["shimmer"] - images["plain"]
+    chroma_moved = float(np.abs(delta[..., 1:]).mean())
+    luma_moved = float(np.abs(delta[..., 0]).mean())
+    assert chroma_moved > 1e-5, "the shimmer did nothing at all"
+    assert luma_moved < chroma_moved * 0.75, (
+        f"the shimmer moved lightness ({luma_moved:.2e}) more than it "
+        f"should against its chroma ({chroma_moved:.2e})"
+    )
+
+
+def test_hardpan_structures_the_water(gpu_device):
+    """A band that passes almost nothing makes the moisture field *vertically*
+    organised -- water pools above it -- against the same seed without it."""
+    spread = {}
+    for label, amount in (("open", 0.0), ("panned", 1.0)):
+        params = _resolve(overrides={
+            "rhizotron.descent_rate": 0.0,
+            "rhizotron.descent_wander": 0.0,
+            # Heavy rain, slow relaxation: transport-dominated, so what the
+            # bands do to the water is what the measurement sees.
+            "rhizotron.rain_base": 0.04,
+            "rhizotron.drainage_rate": 0.003,
+            "rhizotron.hardpan_amount": amount,
+            # Thin strata, so the hardpan lattice -- a scale above them --
+            # actually crosses a test-sized window a few times.
+            "rhizotron.strata_thickness": 0.12,
+        })
+        engine = _engine(gpu_device, params, seed=37)
+        for _ in range(700):
+            engine.tick(params, [])
+        wet = _moisture(engine).astype(np.float32)[..., 0]
+        spread[label] = float(wet.mean(axis=1).std())
+    assert spread["panned"] > spread["open"] * 1.1, (
+        f"hardpan did not organise the water "
+        f"(row spread {spread['panned']:.4f} vs {spread['open']:.4f})"
+    )
+
+
 def test_shipped_endpoints_sit_inside_the_swept_certificate():
     """§15.7(2): crispness and speed are licensed by measurement.
 

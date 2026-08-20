@@ -142,12 +142,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let saturated = density / (density + max(rp.root_knee, 1e-4));
     let coverage = smoothstep(
         0.5 - rp.root_edge, 0.5 + rp.root_edge, saturated);
+    let age = max(finite_or(root.y, 0.0), 0.0);
+    let young_f = exp(-age / max(rp.root_age_scale * 0.4, 1.0));
+    let l_young = clamp(
+        render.background_luma + render.filament_luma, 0.0, render.l_max);
+
+    // Root hairs, and the mycorrhizal accent (§15.2): the transfer's soft
+    // skirt, re-admitted only around *young* material -- a halo of pale fuzz
+    // at the growing front that fades as the root lignifies. Where the
+    // material is young *and fine*, the same skirt carries a faint cool
+    // shimmer: the hyphae, the one cool accent in a warm field, spending the
+    // chroma budget and none of the luminance budget beyond the hairs'.
+    let skirt = smoothstep(0.04, 0.5, saturated) * (1.0 - coverage);
+    let hair = skirt * young_f;
+    l = mix(l, l_young, hair * rp.root_hair * 0.5);
+    let fineness = clamp(finite_or(root.z, 0.0), 0.0, 1.0);
+    let shimmer = hair * fineness * rp.mycorrhiza;
+    ab = ab + vec2<f32>(-0.010, -0.024) * shimmer;
+
     if (coverage > 1e-4) {
-        let age = max(finite_or(root.y, 0.0), 0.0);
         let brown = (1.0 - exp(-age / max(rp.root_age_scale, 1.0)))
             * rp.root_brown;
-        let l_young = clamp(
-            render.background_luma + render.filament_luma, 0.0, render.l_max);
         // Warm ivory: a faint 10YR-ish cast so young roots sit in the soil's
         // own colour world rather than reading as neutral grey.
         let young = vec3<f32>(l_young, 0.010 * l_young / 0.4, 0.045 * l_young / 0.4);

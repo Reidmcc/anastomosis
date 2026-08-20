@@ -180,7 +180,7 @@ fn stones_at(rp: RhizParams, ux: f32, rel_row: f32, stoniness: f32) -> f32 {
 struct Soil {
     // Stratum character in [-1, 1]: which kind of band this row sits in.
     strat: f32,
-    // Stone presence in [0, 1].
+    // Stone presence in [0, 1] -- the visual material.
     stone: f32,
     // Fine mineral grain in [-1, 1].
     grain: f32,
@@ -189,6 +189,10 @@ struct Soil {
     // Dry-soil ramp position in [0, 1]: where between the family's dark and
     // pale chips this texel sits.
     light: f32,
+    // What the tips push against, in [0, 1]: the stones plus most of the
+    // hardpan -- which is felt as resistance but must not be *painted* as
+    // stone, so it is its own number.
+    imped: f32,
 };
 
 //!struct RhizParams
@@ -231,18 +235,51 @@ fn soil_at(rp: RhizParams, ux: f32, rel_row: f32) -> Soil {
     let grain = soil_noise(ux, rp.grain_cells_x, origin, rel_row,
                            rp.grain_shift, rp.seed ^ 0x0506u);
 
-    // Conductivity: permeable bands pass water, stones nearly block it, and
-    // the floor keeps any of it from damming the column forever.
+    // Hardpan (§15.5, as a hashed feature rather than an event): rare
+    // near-horizontal bands of compacted clay, flatter than the strata they
+    // cut through, that pass almost no water. The percolation does the rest
+    // unprompted -- water pools above them and races through their gaps --
+    // and the thigmotropic slowdown reads them too, so roots run along them
+    // the way excavated roots actually do.
+    // The gate sits where the *interpolated* noise actually reaches:
+    // bilinear value noise contracts toward zero between lattice corners, so
+    // a gate up at 0.6 fires almost nowhere and the bands existed mostly in
+    // theory (measured: no retention change at all on a test column).
+    let hp = soil_noise(ux, 2u, origin, rel_row + tilt * 0.35
+                        * f32(1u << rp.strata_shift),
+                        rp.strata_shift + 1u, rp.seed ^ 0x0AD0u);
+    let hardpan = smoothstep(0.38, 0.58, hp) * rp.hardpan_amount;
+
+    // Biopores: rare near-vertical old worm channels, tall thin lattices
+    // wobbled slightly in x, that water races down and roots follow -- the
+    // hydrotropism finds the wet channel on its own.
+    let wobble = value_noise_octaves_tiled(
+        vec2<f32>(ux * 0.5 + 0.11, 0.73), 5, rp.seed ^ 0x0B10u) * 0.004;
+    let bp = soil_noise(ux + wobble, max(rp.stone_cells_x, 4u), origin,
+                        rel_row, rp.stone_shift + 5u, rp.seed ^ 0x0B11u);
+    let pore = smoothstep(0.55, 0.75, bp) * rp.biopore_amount;
+
+    // Conductivity: permeable bands pass water, stones nearly block it,
+    // hardpan more so, pores open it right up, and the floor keeps any of it
+    // from damming the column forever.
     var cond = clamp(0.5 + 0.42 * perm, 0.0, 1.0) * (1.0 - 0.92 * stone);
+    cond = cond * (1.0 - 0.88 * hardpan);
+    cond = min(cond * (1.0 + 5.0 * pore), 1.0);
     cond = max(cond, rp.cond_floor);
 
     // Dry lightness: the stratum carries it, the grain only textures it --
     // grain much above a tenth of the travel reads as broadcast noise rather
     // than as material (measured by eye on the first build, and the kind of
-    // judgement §15.13 says this section will keep needing).
-    let light = clamp(0.5 + 0.38 * strat + 0.10 * grain, 0.0, 1.0);
+    // judgement §15.13 says this section will keep needing). Hardpan reads
+    // as its own material: a shade darker and denser than the band it cuts.
+    let light = clamp(
+        0.5 + 0.38 * strat + 0.10 * grain - 0.16 * hardpan, 0.0, 1.0);
 
-    return Soil(strat, stone, grain, cond, light);
+    // The impedance the tips feel is the stone plus most of the hardpan --
+    // roots do force hardpan eventually, which is why it is not a wall.
+    let impedance = min(stone + 0.7 * hardpan, 1.0);
+
+    return Soil(strat, stone, grain, cond, light, impedance);
 }
 
 // The lateral profile of an event, on the wrapping x axis.
