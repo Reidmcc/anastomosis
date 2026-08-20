@@ -119,16 +119,65 @@ ACTIVATION_PRESETS: dict[str, Macros] = {
 
 PRESETS.update(ACTIVATION_PRESETS)
 
+# The rhizotron's presets (DESIGN.md §15). A preset here is macro positions
+# through the *regulation* table -- the root world has one tuning -- plus the
+# world it describes: `meadow` at scale 0.25 is a fibrous root community, and
+# the same numbers under a fungal backend would describe a picture nobody has
+# judged, which is why the panel's list follows the backend as well as the
+# mode. First cuts, for the judgement §13 defers to eyes.
+RHIZOTRON_PRESETS: dict[str, Macros] = {
+    # The balanced default: the shipped look, exactly.
+    "loam": Macros(
+        intensity=0.50, scale=0.50, tempo=0.45, palette=0.30,
+        brightness=0.35, filament_glow=0.45, depth=0.60,
+        parallax=0.60,
+        event_rate=0.50,
+    ),
+    # Fine and fibrous: tight spacing, hairline widths, an eager busy
+    # community -- grass country.
+    "meadow": Macros(
+        intensity=0.68, scale=0.25, tempo=0.55, palette=0.22,
+        brightness=0.36, filament_glow=0.50, depth=0.60,
+        parallax=0.60,
+        event_rate=0.55,
+    ),
+    # Sparse, deep and austere: a few bold plunging axes in rusty ground,
+    # rain rare, everything slower.
+    "taproot": Macros(
+        intensity=0.30, scale=0.85, tempo=0.35, palette=0.42,
+        brightness=0.30, filament_glow=0.42, depth=0.60,
+        parallax=0.60,
+        event_rate=0.40,
+    ),
+}
+
+PRESETS.update(RHIZOTRON_PRESETS)
+
 DEFAULT_PRESET = "default"
 
 # Which mode each preset was tuned in. A separate table rather than a field on
 # `Macros`, because a mode is not a knob: `Macros` is the shape of the eight
 # sliders and travels through ramping and TOML as exactly that. Every preset
 # must appear here; `mode_of` treats absence as an error rather than guessing.
+# The rhizotron presets are regulation presets: that world has one tuning.
 PRESET_MODES: dict[str, str] = {
     name: ("activation" if name in ACTIVATION_PRESETS else "regulation")
     for name in PRESETS
 }
+
+# Which *world* each preset describes: the fungal field (either depth
+# backend) or the rhizotron. Same reasoning as the mode table -- macro
+# positions only mean something through the world that renders them -- and
+# the same discipline: every preset appears, absence is an error.
+PRESET_WORLDS: dict[str, str] = {
+    name: ("rhizotron" if name in RHIZOTRON_PRESETS else "fungal")
+    for name in PRESETS
+}
+
+
+def world_for_backend(backend: str) -> str:
+    """The preset world a backend draws from."""
+    return "rhizotron" if backend == "rhizotron" else "fungal"
 
 
 def get(name: str) -> Macros:
@@ -149,11 +198,20 @@ def mode_of(name: str) -> str:
     return mode
 
 
-def names(mode: str | None = None) -> list[str]:
-    """Preset names, optionally only those tuned for ``mode``.
+def world_of(name: str) -> str:
+    """The world a preset describes -- ``"fungal"`` or ``"rhizotron"``."""
+    if name not in PRESET_WORLDS:
+        raise KeyError(f"preset {name!r} has no world; add it to PRESET_WORLDS")
+    return PRESET_WORLDS[name]
+
+
+def names(mode: str | None = None, world: str | None = None) -> list[str]:
+    """Preset names, optionally filtered by mode and by world.
 
     Unfiltered by default, which is what every pre-mode caller meant.
     """
-    if mode is None:
-        return list(PRESETS)
-    return [name for name in PRESETS if mode_of(name) == mode]
+    return [
+        name for name in PRESETS
+        if (mode is None or mode_of(name) == mode)
+        and (world is None or world_of(name) == world)
+    ]

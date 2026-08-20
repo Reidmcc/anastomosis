@@ -440,10 +440,10 @@ def test_presets_keep_the_arrival_rate_they_had():
     returning to `quiet` after this change should find the same one. These are
     the rates the old curve produced -- lerp(2.5, 14.0, intensity ** 1.3).
 
-    Regulation presets only: the activation set postdates the split, so there
-    is no old rate for them to keep.
+    Regulation *fungal* presets only: the activation set and the rhizotron's
+    both postdate the split, so there is no old rate for them to keep.
     """
-    for name in presets.names("regulation"):
+    for name in presets.names("regulation", "fungal"):
         macros = presets.get(name)
         was = 2.5 + 11.5 * (macros.intensity**1.3)
         now = config.Config(macros=macros).resolve().events.rate_per_hour

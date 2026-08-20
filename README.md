@@ -180,10 +180,16 @@ families drift and hand over the way regimes already do, rather than the
 whole image shifting at once. **Palette** still says where on the circle
 the whole arrangement sits.
 
-The preset list follows the mode: `prism` (colour first), `cascade`
-(motion first, events every few minutes) and `spark` (fine, dense, brisk)
-are activation's, and choosing one — including with `--preset` — brings
-the activation tuning with it.
+The preset list follows the mode — and the world. `prism` (colour first),
+`cascade` (motion first, events every few minutes) and `spark` (fine,
+dense, brisk) are activation's; `loam` (the balanced default), `meadow`
+(fine, fibrous, eager) and `taproot` (sparse, deep, austere) are the
+rhizotron's. Choosing one — including with `--preset` — brings its tuning
+and its world with it: `--preset meadow` opens the rhizotron.
+
+The rhizotron itself has **one** tuning: under it the knobs always move
+through the regulation table, the Mode selector greys out and says so,
+and switching back to a fungal view finds the mode where you left it.
 
 The filament network rides the flow in both modes; at higher **Tempo**
 under activation it rides it *harder* than the colour it carries, and that
@@ -280,6 +286,33 @@ The two settings meet in one place: the thickness ceiling is the shorter lateral
 axis, so a wider slab can also be a deeper one — at **Finest** the ceiling rises
 from 288 to 576. Memory is the product of both, so if you raise both, read the
 line under the thickness slider before committing.
+
+## A second world, growing in
+
+There is a third entry in the **Depth** selector, and unlike the other two it
+is not another way of drawing the fungal field: **Rhizotron** is a different
+metaphor — a pane of glass pressed against living soil. Stratified earth in
+real soil-chart colours, stones the water pools above, rain events that soak
+down through the column over minutes, the whole window sinking at hour-hand
+speed through soil that is generated below, retired above, and can never
+repeat — and a plant growing through all of it: pale root tips steered by
+gravity, water and stone, plunging axes throwing oblique laterals and fine
+fuzz, ivory at the living front and browning with age. Where the fungal
+field converges — filaments seeking and fusing into a network — the roots
+diverge, one crown ramifying and never rejoining, which is why the two
+worlds cannot be mistaken for each other at a glance. And it is a
+succession, not a specimen: fine roots fade in minutes while the woody
+skeleton persists, plants spend their lives in a quarter-hour and rest as
+seeds, rain wakes the seed bank, and the descent leans after whatever is
+growing — so the window never runs out of plants, and never holds the same
+community twice. `DESIGN.md` §15 is the design and the build record.
+
+It is a backend like the others: structural, so it applies to a new field,
+and it keeps its own saved column — switching away and back finds it where
+you left it, deeper. The flash-safety bound of [Safety](#safety) is the same
+output stage and holds identically; the descent is honest motion the
+limiter's reprojection is told about, so it costs the luminance budget
+nothing. Start it with `--backend rhizotron`, or from the panel.
 
 ## Adjusting it
 
@@ -500,6 +533,19 @@ unrecoverable:
 - `test_shutdown.py` — that closing the window saves the field and really ends
   the process, the last part in a subprocess with a live Qt loop, because a
   session left running behind a closed window leaves no other trace.
+- `test_rhizotron.py` — the plant-root backend (§15, steps 1–3): that the
+  descent really is an exact integer translation, bit for bit, with fresh
+  soil generated below; that the soil is deterministic in its seed and
+  different ten thousand rows down; that the scroll reaches the safety
+  stage's reprojection with the right sign and magnitude; that the flash
+  bound holds exactly with the descent stopped while the wetting machinery is
+  slammed, and by the WCAG area criterion with it running in the rain; that
+  rain soaks *downward*, isolated against a control run; that gravitropism
+  turns a sideways tip down, the branch tree is consistent slot by slot,
+  structure builds downward and ages upward, stones cost the plant travel,
+  and the shipped crispness sits inside `crisp_sweep.py`'s measured
+  certificate; and that a resumed column — descent counters, structure and
+  every tip included — evolves bit-identically.
 - `test_volume.py` — the volumetric backend: that its flow really is
   divergence-free (checked numerically, because the failure it prevents is
   pigment slowly pooling over hours), that the slab wraps on all three axes and
@@ -515,16 +561,17 @@ unrecoverable:
 ```
 anastomosis/
   app.py          window, frame pacing, hot reload, budget governor
-  backend.py      what the two depth backends share: output chain, safety, plumbing
+  backend.py      what every backend shares: output chain, safety, plumbing
   engine.py       the layered 2.5D backend
   volume.py       the volumetric slab backend
+  rhizotron.py    the plant-root world: soil, moisture, the descent (§15)
   config.py       parameters, macros, safety ceilings, ramping
   gpu_params.py   GPU struct layout (generates the WGSL, drives the packing)
   events.py       Poisson-arrival slow events
   checkpoint.py   periodic save and restore of the simulation state
   diagnostics.py  stall watchdog and crash handler
   bluenoise.py    void-and-cluster dither mask
-  shaders/        30 top-level WGSL modules, plus two shared includes
+  shaders/        32 top-level WGSL modules, plus three shared includes
   ui/             Qt control panel
 ```
 

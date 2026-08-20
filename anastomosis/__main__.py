@@ -55,12 +55,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="fix the random seed; omit for a different world each launch",
     )
     parser.add_argument(
-        "--backend", choices=("layered", "volumetric"), default=None,
+        "--backend", choices=("layered", "volumetric", "rhizotron"),
+        default=None,
         help=(
-            "how depth is drawn: 'layered' (three 2.5D sheets, the default) "
-            "or 'volumetric' (a raymarched slab). Each keeps its own saved "
-            "field, so switching does not discard the other one. Omit to use "
-            "the config's setting."
+            "what is drawn: 'layered' (three 2.5D sheets of the fungal "
+            "field, the default), 'volumetric' (the same field as a "
+            "raymarched slab), or 'rhizotron' (the plant-root world: a pane "
+            "of living soil, descending). Each keeps its own saved field, so "
+            "switching does not discard the others. Omit to use the config's "
+            "setting."
         ),
     )
     parser.add_argument(
@@ -152,6 +155,25 @@ def arm_exit_guard(seconds: float = EXIT_GRACE_SECONDS) -> threading.Thread:
     return thread
 
 
+def _backend_for_preset(current: str, preset: str) -> str:
+    """The backend a preset's world needs, disturbing the choice least.
+
+    A rhizotron preset means the rhizotron. A fungal preset from a config
+    left on the rhizotron means *a* fungal backend, and the default layered
+    one is the only sensible guess; a config already on a fungal backend
+    keeps it, because `dense` is `dense` under either depth view.
+    """
+    from . import config as config_module
+    from . import presets as presets_module
+
+    world = presets_module.world_of(preset)
+    if world == "rhizotron":
+        return "rhizotron"
+    if current == "rhizotron":
+        return config_module.DEFAULT_BACKEND
+    return current
+
+
 LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 
 # How much log to keep, and in how many files. Two megabytes is somewhere
@@ -222,8 +244,11 @@ def main(argv: list[str] | None = None) -> int:
             cfg.macros = presets_module.get(args.preset)
             cfg.preset_name = args.preset
             # A preset is macro positions *plus* the curve table they were
-            # tuned against; asking for one means asking for its mode.
+            # tuned against *plus* the world that renders them; asking for
+            # one means asking for its mode and, when the current backend is
+            # the wrong world entirely, for a backend that world runs on.
             cfg.mode = presets_module.mode_of(args.preset)
+            cfg.backend = _backend_for_preset(cfg.backend, args.preset)
         if args.backend:
             cfg.backend = args.backend
         if args.volume_detail:
@@ -241,8 +266,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         cfg.preset_name = args.preset
         # The preset's macros only mean what they meant in the mode they were
-        # tuned in, so the preset brings its mode with it.
+        # tuned in, so the preset brings its mode with it -- and its world:
+        # `--preset meadow` means the rhizotron, whatever backend the file
+        # was left on.
         cfg.mode = presets_module.mode_of(args.preset)
+        cfg.backend = _backend_for_preset(cfg.backend, args.preset)
         config_module.save(cfg, config_path)
 
     from .app import AppOptions, Application

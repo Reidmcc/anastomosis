@@ -14,7 +14,7 @@ because nothing has ever been watched.
 
 Here, then: built and verified headless against a software adapter (Mesa
 lavapipe), so every shader compiles and the full tick/render sequence runs in CI
-without a GPU. The suite is 422 tests, split the way their costs are:
+without a GPU. The suite is 456 tests, split the way their costs are:
 `.github/workflows/ci.yml` runs everything not marked `slow` on every push,
 across three Python versions plus a leg with no PySide6 that holds the README's
 promise that the panel is optional, and runs the `slow` marks -- drift,
@@ -36,11 +36,18 @@ demand; CLI; checkpointing on a five-minute interval and
 on close, resuming by default, with an explicit reset in the control panel;
 shutdown as a single idempotent path reached from the window closing, a signal,
 or the loop ending, so closing the window saves the field and ends the process;
-and **both depth backends** -- the layered 2.5D stack and the volumetric slab of
-§5.1 -- selectable from the config, the command line or the control panel, with
-one saved field each so switching between them is not destructive. The slab's
-thickness is a control panel knob as well, from 8 voxels to the shorter lateral
-axis, priced in graphics memory beside the slider.
+and **all three backends** -- the layered 2.5D stack, the volumetric slab of
+§5.1, and the rhizotron of §15 -- selectable from the config, the command line
+or the control panel, with one saved field each so switching between them is not
+destructive. The slab's thickness is a control panel knob as well, from 8 voxels
+to the shorter lateral axis, priced in graphics memory beside the slider.
+
+The rhizotron is the newest and the only one on a second metaphor: a soil column
+generated as a pure function of an unbounded depth counter, moisture percolating
+through it, a community of root systems growing by tropism and branching, and a
+window that sinks after the growing front. Steps 1-5 of §15.11 are built and
+tested here; what it has not had is a long watching, so its endpoints are the
+ones in this section's "wants eyes" list rather than settled ones.
 
 Also complete: **both modes** (§14) -- regulation and activation, as two macro
 curve tables over one engine, with the mode a non-structural setting, so

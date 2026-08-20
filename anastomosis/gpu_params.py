@@ -185,6 +185,158 @@ SIM_FIELDS: list[Field] = [
 ]
 
 # --------------------------------------------------------------------------
+# Rhizotron parameters -- bound to the root backend's passes (DESIGN.md §15).
+#
+# Its own block rather than more fields on SimParams, because the rhizotron
+# shares no simulation machinery with the fungal backends: nothing here means
+# anything to agents.wgsl, and none of the Gray-Scott plumbing means anything
+# to soil. What the backends *do* share -- the output chain -- speaks
+# RenderParams, which the rhizotron packs exactly as the other two do.
+# --------------------------------------------------------------------------
+
+RHIZ_FIELDS: list[Field] = [
+    # Texture shape, and where the window sits inside it. The texture is the
+    # view plus a margin above and below (see rhizotron.py): the margin above
+    # is where the display offset may reach between ticks, the margin below is
+    # where rows are generated before the view arrives at them.
+    ("dims_x", "u32"),
+    ("dims_y", "u32"),
+    ("view_rows", "u32"),
+    ("margin_top", "u32"),
+    # The world row of texture row 0, as a u64 split across two words. This is
+    # the depth counter of DESIGN.md §15.4: an integer, never a float, used
+    # only as hash input -- §3's pattern exactly -- so the soil below can never
+    # repeat and never loses precision however long the descent runs.
+    ("origin_lo", "u32"),
+    ("origin_hi", "u32"),
+    # How many whole rows the world moves up through the texture this tick.
+    # Zero on most ticks; the pass reads its source at (x, y + scroll) so the
+    # shift costs nothing and resamples nothing.
+    ("scroll_rows", "u32"),
+    ("tick", "u32"),
+    ("seed", "u32"),
+    ("event_count", "u32"),
+    # Vertical noise lattice sizes, as log2 of rows. Powers of two because the
+    # lattice cell of an unbounded u64 row is found by shift and mask, which is
+    # exact forever; a division would need 64-bit arithmetic WGSL does not have.
+    ("strata_shift", "u32"),
+    ("stone_shift", "u32"),
+    ("grain_shift", "u32"),
+    # Horizontal lattice sizes, in cells around the wrapping x axis -- integers
+    # so the noise tiles the cylinder exactly (see common.wgsl on why tiling
+    # is a requirement, not a nicety).
+    ("stone_cells_x", "u32"),
+    ("grain_cells_x", "u32"),
+    # Where the top of the *view* sits in the texture this frame, in fractional
+    # rows -- margin_top plus the sub-row remainder of the descent, interpolated
+    # between the last two ticks so the scroll presents as a continuous glide
+    # rather than a per-tick step.
+    ("base_row", "f32"),
+    # Lateral aspect correction: how much of the (wrapping) x axis the window
+    # samples. The vertical axis never wraps, so it takes no correction; see
+    # rhiz_composite.wgsl.
+    ("x_span", "f32"),
+    # Moisture physics, all in per-tick units -- converted from the per-second
+    # values in RhizotronParams against sim_hz where they are packed, so the
+    # tempo macro cannot retune the physics by changing the tick rate.
+    ("perc_rate", "f32"),
+    ("perc_pow", "f32"),
+    ("lat_spread", "f32"),
+    ("drain_rate", "f32"),
+    ("rain_base", "f32"),
+    ("rain_event_gain", "f32"),
+    ("cond_floor", "f32"),
+    ("moisture_baseline", "f32"),
+    ("wet_ema_rate", "f32"),
+    # Soil generation and its look.
+    ("strata_tilt", "f32"),
+    ("stone_amount", "f32"),
+    ("grain_amount", "f32"),
+    ("hardpan_amount", "f32"),
+    ("biopore_amount", "f32"),
+    # The nutrient economy (step 5, second half). Rates arrive per tick.
+    ("nutrient_baseline", "f32"),
+    ("nutrient_cache", "f32"),
+    ("nutrient_uptake", "f32"),
+    ("nutrient_recycle", "f32"),
+    ("nutrient_spread", "f32"),
+    ("chemo_gain", "f32"),
+    ("forage_gain", "f32"),
+    ("soil_l_range", "f32"),
+    ("wet_darken", "f32"),
+    ("wet_chroma", "f32"),
+    # --- The plant (§15.11 step 3) ----------------------------------------
+    # Tip pool shape. Slots are allocated by position in the tree, not by an
+    # atomic bump: axis a is slot a, lateral (a, l) is A + a*L + l, fine
+    # (a, l, f) is A + A*L + (a*L + l)*F + f. Each parent owns its children's
+    # slots outright and hands them out from its own counter, so branching is
+    # deterministic under any GPU scheduling -- the property the bit-identical
+    # resume test needs -- and needs no atomics at all.
+    ("max_axes", "u32"),
+    ("laterals_per_axis", "u32"),
+    ("fines_per_lateral", "u32"),
+    ("tips_total", "u32"),
+    # Tropism steering, per order where an order needs its own value. The
+    # gravitropic setpoint angle is measured off straight down; the axis's is
+    # zero by definition.
+    ("elong_axis", "f32"),      # cells per tick, this order's elongation
+    ("elong_lateral", "f32"),
+    ("elong_fine", "f32"),
+    # Growth decelerates with age toward a floor: factor
+    # floor + (1-floor) * exp(-age * elong_slow), with elong_slow the
+    # per-tick decay. What lets the window keep pace with the front.
+    ("elong_floor", "f32"),
+    ("elong_slow", "f32"),
+    ("gsa_lateral", "f32"),     # radians off vertical
+    ("gsa_fine", "f32"),
+    ("gsa_gain_axis", "f32"),   # angular relaxation toward the setpoint, /tick
+    ("gsa_gain_lateral", "f32"),
+    ("gsa_gain_fine", "f32"),
+    ("thigmo_gain", "f32"),
+    ("hydro_gain", "f32"),
+    ("avoid_gain", "f32"),
+    ("tip_turn", "f32"),        # radians per tick, the flank-steering step
+    ("tip_jitter", "f32"),
+    ("sense_dist", "f32"),      # cells ahead of the tip
+    ("sense_angle", "f32"),     # radians off-axis for the flank probes
+    # Branching.
+    ("spacing_axis", "f32"),    # cells between laterals along an axis
+    ("spacing_lateral", "f32"), # cells between fines along a lateral
+    ("branch_prob", "f32"),     # per tick, once the spacing is met
+    ("branch_angle", "f32"),    # radians the child leaves its parent at
+    ("branch_jitter", "f32"),
+    # Deposits into the structure field.
+    ("tip_deposit", "f32"),     # per cell travelled
+    ("splat_axis", "f32"),      # gaussian sigma, cells
+    ("splat_lateral", "f32"),
+    ("splat_fine", "f32"),
+    # Lifetimes, in ticks (converted from seconds where they are packed).
+    ("fine_life", "f32"),
+    ("lateral_life", "f32"),
+    ("axis_life", "f32"),
+    ("dt_seconds", "f32"),      # one tick, for ageing the structure in seconds
+    # Root shading.
+    ("root_knee", "f32"),       # density at half coverage
+    ("root_edge", "f32"),       # transfer softness; the §15.7(2) sweep's knob
+    ("root_age_scale", "f32"),  # seconds to brown
+    ("root_brown", "f32"),      # how far a browned root sinks toward the soil
+    ("root_hair", "f32"),       # the pale skirt around young material
+    ("mycorrhiza", "f32"),      # the cool shimmer in young fine fuzz
+    # --- The long-duration core (§15.11 step 4) ---------------------------
+    # Senescence: per-tick decay of fine structure, gated by age.
+    ("senesce_rate", "f32"),
+    ("senesce_delay", "f32"),   # seconds before fine material starts to go
+    # Succession: how long a spent axis rests before it may re-germinate, in
+    # ticks, and the per-tick germination chances -- one earned by moisture,
+    # one unconditional floor so a drought cannot end the world (§15.4's
+    # absorbing-state argument).
+    ("regerm_delay", "f32"),
+    ("germ_prob", "f32"),
+    ("germ_floor", "f32"),
+    ("germ_moisture", "f32"),   # the wetness that makes a seed eager
+]
+
+# --------------------------------------------------------------------------
 # Render parameters -- bound to composite / safety / blit.
 # --------------------------------------------------------------------------
 
@@ -344,6 +496,7 @@ def _dtype(fields: list[Field]) -> np.dtype:
 
 
 SIM_DTYPE = _dtype(SIM_FIELDS)
+RHIZ_DTYPE = _dtype(RHIZ_FIELDS)
 RENDER_DTYPE = _dtype(RENDER_FIELDS)
 LAYER_DTYPE = _dtype(LAYER_FIELDS)
 EVENT_DTYPE = _dtype(EVENT_FIELDS)
