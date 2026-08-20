@@ -31,6 +31,7 @@ reduction is the one the full-size slab runs.
 
 from __future__ import annotations
 
+import re
 import time
 
 import numpy as np
@@ -1247,6 +1248,34 @@ def test_a_resize_rebuilds_only_the_presentation(gpu_device, offscreen_target):
     assert np.isfinite(image).all()
 
 
+def _governor_clamp() -> float:
+    """The ceiling the exposure governor clamps to, read from the shader.
+
+    Copied into the test it would be a number whose entire meaning is being
+    the same one `exposure.wgsl` enforces, kept somewhere that cannot notice
+    when that one moves.
+    """
+    bounds = set(re.findall(
+        r",\s*0\.02,\s*([0-9.]+)\)", shaders.load("exposure.wgsl")))
+    assert len(bounds) == 1, (
+        f"exposure.wgsl no longer clamps to a single ceiling: {sorted(bounds)}")
+    return float(bounds.pop())
+
+
+def _brightest_exposure_target() -> float:
+    """`safety.exposure_target` at the top of the brightness macro.
+
+    Across both mode tables, because the ceiling has to hold in whichever of
+    them asks the governor for most.
+    """
+    return max(
+        high
+        for table in config.MODE_CURVES.values()
+        for path, _low, high, _gamma in table.get("brightness", ())
+        if path == "safety.exposure_target"
+    )
+
+
 @pytest.mark.slow
 def test_the_exposure_governor_reaches_its_target_through_the_march(
     gpu_device, offscreen_target
@@ -1260,39 +1289,87 @@ def test_the_exposure_governor_reaches_its_target_through_the_march(
     dark, and one too dense would pin it at the floor. Either would mean the
     knobs the two backends share do not mean the same thing under both.
 
+    The slab is narrow and it is the shipped *thickness*, which is the one
+    dimension this cannot economise on. A ray's optical depth accumulates per
+    filament crossed, so it scales with the depth in voxels and with nothing
+    else here: the same field measures 15.5 through the 24-voxel slab this
+    test used to run and 9.8 through the shipped 48 -- both read the way this
+    test used to read them -- and the ceiling below falls between the two.
+    Width is free -- a ray crosses the same material at any lateral resolution
+    -- and 96 is what a software adapter can afford.
+
     The governor's time constant is measured in seconds by design, so this
     needs several hundred frames to be a statement about the settled level
     rather than about the fade-in -- and the climb got longer when the shading
     rebalance of DESIGN.md 4.7 step 5 reduced how much of the image arrives
-    already bright. Brightening is the deliberately slow direction, so the
-    attack rate is raised here to keep the frame count affordable on a software
-    adapter. That is the same move the feature-size loop's own tests make with
-    their time constants: what is under test is where the governor settles,
-    which the rate does not change, not how long it takes to get there.
+    already bright. Both rates are raised by one factor, and that they are the
+    same factor is the point: the governor's asymmetry -- brightening slower
+    than darkening, because the unsafe direction is always "gets brighter" --
+    is what decides where it settles against a field that fluctuates, so
+    raising the attack alone moves the level under test instead of merely
+    arriving at it sooner. Scaled together the settled level is the shipped
+    one, and measured it settles 4.5% above target where raising the attack
+    alone put it 10.6% above.
+
+    Both numbers are read as a mean over the last fifth of the run rather than
+    off the final frame, because both fluctuate by a few per cent from frame to
+    frame and one frame's reading of a settled level is a reading of the
+    fluctuation. The slab is still filling in by then -- run on to 1400 frames
+    the multiplier falls from 8.9 to 6.3 -- so what this measures is an upper
+    bound on what a mature field asks for, which is the safe direction for a
+    ceiling to be wrong in.
     """
-    params = _params(width=96, depth=24, climate_width=12, climate_height=8,
-                     climate_depth=4, steps=24)
-    params.safety.exposure_attack = 0.015
+    params = _params(width=96, depth=48, climate_width=12, climate_height=8,
+                     climate_depth=4, steps=48)
+    # 4.3x, which puts the attack at the 0.015 the frame count below was set
+    # against, and the release at the same multiple of its own shipped value.
+    speedup = 4.3
+    params.safety.exposure_attack *= speedup
+    params.safety.exposure_release *= speedup
     engine = _engine(gpu_device, params, seed=8, size=(160, 96))
     view, fmt = offscreen_target(160, 96)
 
-    for _ in range(700):
+    frames = 700
+    late: list[tuple[float, float]] = []
+    for frame in range(frames):
         engine.tick(params)
         engine.render(params, frac=0.5, target_view=view, target_format=fmt)
+        if frame >= frames * 4 // 5 and frame % 20 == 0:
+            stats = engine.read_stats()
+            late.append((stats["img_sum_l"] / max(stats["img_count"], 1.0),
+                         stats["exposure"]))
 
-    stats = engine.read_stats()
-    settled = stats["img_sum_l"] / max(stats["img_count"], 1.0)
+    assert late, "nothing was sampled from the settled stretch"
+    settled = sum(value for value, _ in late) / len(late)
+    exposure = sum(value for _, value in late) / len(late)
     target = params.safety.exposure_target
     assert abs(settled - target) < 0.03 * max(target, 1e-6) + 0.02, (
         f"mean image lightness settled at {settled:.4f} against a target of "
         f"{target:.4f}")
-    # The multiplier the slab needs is much larger than the stack's, and larger
-    # again since the shading rebalance: a filament network fills far less of a
-    # volume than of a plane, so gating the reaction on the network costs the
-    # march more than it costs the compositor (DESIGN.md 4.7 step 5, and 13,
-    # which lists this among the slab-specific numbers wanting a viewer). What
-    # this bound is protecting is the case where that stops being a correction
-    # and becomes a saturation, leaving the image permanently dim.
-    assert 0.05 < stats["exposure"] < 14.0, (
-        f"the governor is at {stats['exposure']:.2f}, near one of its bounds; "
-        "the march is handing it an image it can only just correct")
+    # The multiplier the slab needs is much larger than the stack's: a filament
+    # network fills far less of a volume than of a plane, so gating the
+    # reaction on the network costs the march more than it costs the compositor
+    # (DESIGN.md 4.7 step 5, and 13, which lists this among the slab-specific
+    # numbers wanting a viewer). Dimming the trail hubs -- step 6's deposit
+    # capacity and shading knee -- cost it again and by more. Measured on the
+    # 24-voxel slab this test used to run: 8.3 after step 5, 17.6 after step 6,
+    # 15.5 once the sensing saturation handed some of it back.
+    #
+    # What the ceiling protects is the case where that stops being a correction
+    # and becomes a saturation, leaving the image permanently dim. It is
+    # derived rather than chosen, because the chosen one was raised twice and
+    # each raise recorded only that the number had moved. The governor clamps;
+    # the brightness macro's top end asks for `safety.exposure_target` at its
+    # own ceiling where this run asks for it here; so a multiplier past
+    # `clamp * target / top` is one the top of the brightness knob cannot be
+    # reached from -- there the governor pins and the image stays dim however
+    # far the knob is turned. Measured at the top of that knob the slab does
+    # settle its target, with the multiplier at 15.5 against a clamp of 20.
+    clamp = _governor_clamp()
+    top = _brightest_exposure_target()
+    ceiling = clamp * target / top
+    assert 0.05 < exposure < ceiling, (
+        f"the governor settles at {exposure:.2f} against a ceiling of "
+        f"{ceiling:.2f}: the top of the brightness macro would ask it for "
+        f"{exposure * top / target:.1f} against its clamp of {clamp:.0f}, so "
+        f"the march is handing it an image it can only just correct")
