@@ -152,8 +152,20 @@ hue rotation up to a turn every seven minutes, more of the colour circle in
 play at once, more saturated throughout, events up to one every ninety
 seconds — while the bottom of every travel stays where regulation has it,
 so the two tunings overlap rather than abut. Set it in the config with
-`mode = "activation"`. It has no presets of its own yet; the sliders carry
-it in the meantime.
+`mode = "activation"`.
+
+Activation also has a colour mechanism of its own: turn **Intensity** up
+and different regions of the field settle into *contrasting* colour
+families, three of them spaced around the hue circle, chosen region by
+region by the same slow climate that decides everything else — so the
+families drift and hand over the way regimes already do, rather than the
+whole image shifting at once. **Palette** still says where on the circle
+the whole arrangement sits.
+
+The preset list follows the mode: `prism` (colour first), `cascade`
+(motion first, events every few minutes) and `spark` (fine, dense, brisk)
+are activation's, and choosing one — including with `--preset` — brings
+the activation tuning with it.
 
 ## Two ways of drawing depth
 

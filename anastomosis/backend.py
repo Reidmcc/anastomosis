@@ -585,6 +585,8 @@ class Backend:
             "hue_spread": params.render.hue_spread,
             "hue_from_orientation": pg.hue_from_orientation,
             "hue_inject_mix": pg.hue_inject_mix,
+            "polychrome": params.render.polychrome,
+            "polychrome_threshold": params.render.polychrome_threshold,
             "inject_rate": pg.inject_rate,
             "activity_rate": pg.activity_rate,
             "activity_gain": pg.activity_gain,

@@ -220,6 +220,88 @@ def test_the_activation_scale_respects_the_measured_reaction_floor():
         assert ratio == pytest.approx(0.50, abs=0.01)
 
 
+# --- the polychrome palette -- DESIGN.md §14.4 ------------------------------
+
+
+def test_polychrome_is_identically_zero_at_gain_zero():
+    """Gain zero is the regulation mapping, bit for bit, not merely nearby."""
+    import reference
+
+    import numpy as np
+
+    c = np.linspace(-1.0, 1.0, 2001)
+    assert np.all(reference.polychrome_offset(c, 0.0, 0.06) == 0.0)
+
+
+def test_polychrome_reaches_three_distinct_families():
+    """Plateaus at -120, 0 and +120 degrees, reachable at the climate's own
+    realised extremes (~+-0.44 -- §4.1), not just at the [-1, 1] clamp."""
+    import reference
+
+    import numpy as np
+
+    well = 2.0 * math.pi / 3.0
+    off = reference.polychrome_offset(np.array([-0.44, 0.0, 0.44]), 1.0, 0.06)
+    assert off[0] == pytest.approx(-well, abs=1e-3)
+    assert off[1] == pytest.approx(0.0, abs=1e-12)
+    assert off[2] == pytest.approx(well, abs=1e-3)
+    # Half gain, half separation: the gain scales the triad rather than
+    # gating it, so the ramp on the parameter is a smooth widening.
+    assert reference.polychrome_offset(
+        np.array([0.44]), 0.5, 0.06)[0] == pytest.approx(well / 2, abs=1e-3)
+
+
+def test_polychrome_is_a_smooth_staircase_not_a_threshold():
+    """"No thresholds anywhere in shading" (§1) applies to the warp.
+
+    Monotone, and with its slope bounded by the analytic maximum
+    gain * well * k -- a jump would show up as a slope far past it. The
+    climate's bilinear smoothness then makes the spatial transition at least
+    a climate texel wide on top of this.
+    """
+    import reference
+
+    import numpy as np
+
+    c = np.linspace(-1.0, 1.0, 40001)
+    off = reference.polychrome_offset(c, 1.0, 0.06)
+    slopes = np.diff(off) / np.diff(c)
+    assert np.all(slopes >= -1e-12), "the staircase must be monotone"
+    k = 2.5 / 0.06
+    ceiling = (2.0 * math.pi / 3.0) * k
+    assert slopes.max() <= ceiling * 1.01, "slope beyond the analytic bound"
+
+
+def test_regulation_cannot_reach_the_polychrome_and_activation_can():
+    for value in (0.0, 0.5, 1.0):
+        macros = config.Macros(intensity=value)
+        reg = config.Config(macros=macros, mode="regulation").resolve()
+        assert reg.render.polychrome == 0.0
+    act = config.Config(
+        macros=config.Macros(intensity=1.0), mode="activation").resolve()
+    assert act.render.polychrome == pytest.approx(1.0)
+
+
+def test_a_preset_asked_for_at_launch_brings_its_mode(tmp_path):
+    """`--preset spark` must not resolve spark's macros through the
+    regulation table: a preset is positions plus the table they were tuned
+    against, so the CLI carries the mode into the config it writes."""
+    import subprocess
+    import sys
+
+    for name, mode in (("spark", "activation"), ("quiet", "regulation")):
+        path = tmp_path / f"{name}.toml"
+        result = subprocess.run(
+            [sys.executable, "-m", "anastomosis", "--write-config",
+             "--preset", name, "--config", str(path)],
+            capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        loaded = config.load(path)
+        assert loaded.mode == mode
+        assert loaded.preset_name == name
+
+
 # --- event rate ------------------------------------------------------------
 
 
@@ -298,8 +380,11 @@ def test_presets_keep_the_arrival_rate_they_had():
     Each preset implied an arrival rate through its intensity, and someone
     returning to `quiet` after this change should find the same one. These are
     the rates the old curve produced -- lerp(2.5, 14.0, intensity ** 1.3).
+
+    Regulation presets only: the activation set postdates the split, so there
+    is no old rate for them to keep.
     """
-    for name in presets.names():
+    for name in presets.names("regulation"):
         macros = presets.get(name)
         was = 2.5 + 11.5 * (macros.intensity**1.3)
         now = config.Config(macros=macros).resolve().events.rate_per_hour

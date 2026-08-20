@@ -576,6 +576,18 @@ class RenderParams:
     hue_turns_per_hour: float = 1.33  # ~45 min per full rotation
     hue_anchor: float = 0.0  # radians; set by the palette macro
     hue_spread: float = 0.85  # spatial hue variation, radians
+    # The polychrome palette (DESIGN.md §14.4): the climate hue channel picks
+    # among three hue families +-120 degrees apart, through a smooth
+    # three-plateau warp. `polychrome` scales the family separation -- 0 is
+    # the regulation mapping exactly, 1 the full triad -- and is driven by the
+    # activation table's intensity curve; regulation pins it at 0.
+    # `polychrome_threshold` is where the transitions sit, in the channel's
+    # *realised* units (the field settles at s.d. ~0.11 -- §4.1): 0.06 puts
+    # roughly two fifths of the field in the middle family and three tenths
+    # in each of the others. The transition width is tied to it (2.5 / t in
+    # the shader), so this one value moves the wells and their ramps together.
+    polychrome: float = 0.0
+    polychrome_threshold: float = 0.06
 
 
 @dataclass
@@ -655,6 +667,7 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         # at their defaults, so here the curve pins them there.
         ("render.c_max", 0.145, 0.145, 1.0),
         ("render.chroma_floor", 0.012, 0.012, 1.0),
+        ("render.polychrome", 0.0, 0.0, 1.0),
     ],
     "scale": [
         # Larger scale == coarser features: slower agents, longer sensors,
@@ -792,6 +805,13 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("render.c_max", 0.145, 0.205, 1.0),
         # Quiet regions stay coloured instead of falling to grey.
         ("render.chroma_floor", 0.012, 0.035, 1.0),
+        # The polychrome warp (§14.4): at the top, three full hue families
+        # +-120 degrees apart, chosen per region by the climate. On intensity
+        # rather than palette because it is a "how much colour" question --
+        # palette says *where* the families sit, this says how far apart they
+        # are -- and the low end at zero keeps the bottom of the travel the
+        # same instrument as regulation, like every other curve here.
+        ("render.polychrome", 0.0, 1.0, 1.0),
     ],
     "scale": [
         # The whole knob biased ~15% finer at the top: busier texture. The

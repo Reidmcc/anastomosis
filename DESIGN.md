@@ -2119,8 +2119,8 @@ invisible:
 3. ~~**The activation curve set** for tempo, palette, intensity, scale and
    event_rate, endpoints from (2); homeostat per-mode targets if the
    measurement says the controller leans (14.3).~~ **Built**; see below.
-4. **The polychrome palette warp**, regulation-identical at gain zero, plus
-   the first activation presets.
+4. ~~**The polychrome palette warp**, regulation-identical at gain zero, plus
+   the first activation presets.~~ **Built**; see below.
 5. **Shorter event envelopes and higher concurrency**, with soak and heal
    tests at the fast end.
 6. **Trail advection** behind an activation-only gain. Last, as §4.7
@@ -2295,6 +2295,56 @@ changes (step 5's, deliberate), no touched `feed`/`kill` ranges or
 clamps, and the luminance architecture — brightness, glow, depth,
 parallax — shared verbatim. The chroma budget and the motion budget carry
 the mode, exactly as §14.1 argued they could.
+
+### What step 4 actually did
+
+**The warp is a C∞ three-plateau staircase, applied at hue injection.**
+`polychrome_offset` in `common.wgsl` (mirrored in `tests/reference.py`,
+property-tested rather than merely ported): plateaus at −2π/3, 0 and
++2π/3, tanh transitions whose steepness is tied to the threshold
+(k = 2.5/t) so one value moves the wells and their ramps together, gain
+scaling the whole triad so the parameter ramp is a smooth widening rather
+than a gate. It rides the climate hue channel at the *injection* site in
+both backends — the one place hue enters pigment — so material carries its
+family with it and the families migrate exactly as regimes do. The
+threshold defaults to 0.06 in the channel's realised units (§4.1's
+σ ≈ 0.11), placing roughly two fifths of the field in the middle family.
+
+**The gain lives on the activation intensity curve, not on palette.** The
+palette macro says *where* the families sit (they all ride the anchor);
+polychrome says *how much* colour contrast the field carries, which is an
+intensity question — and its low end at zero keeps the bottom of the
+travel the same instrument as regulation, like every other activation
+curve. Regulation pins the gain at zero through a constant curve entry,
+the same pattern `c_max` and `chroma_floor` use.
+
+**Measured on the rendered image**, with injected hue isolated
+(`hue_inject_mix` 1, orientation and spread zero, 500 ticks): at gain 0
+the output hue concentration R = 1.000 — one hue, the regulation mapping
+exactly; at gain 1 it falls to 0.650. The output triad is softer than the
+injected one (the tri-modal statistic is low): bilinear sampling mixes hue
+vectors across family boundaries, the interpolator blends them again, and
+the chroma slew limiter lags migrating families — at the default threshold
+about a third of the field sits between plateaus at any moment. Whether
+that reads as marbled richness or as mud, and whether the threshold should
+tighten (fewer, crisper transitions), is precisely a §14.9 judgement for
+real hardware; the conservative default errs toward smoothness, which is
+the safe direction to err.
+
+**Presets: `prism`, `cascade`, `spark`** — colour-forward, motion-forward,
+and busiest-texture respectively, each a step short of the measured corner
+on every axis, all keeping the dark ground. First cuts for the judgement
+§13 defers to eyes, not its record. A preset now *brings its mode with
+it*: the CLI's `--preset` writes the preset's mode into the config
+(`presets.mode_of`), because macro positions only mean something through
+the table they were tuned against — `spark` resolved through the
+regulation table would be a picture nobody has judged under a name that
+promises one somebody has. The panel needed no such change: its preset
+list was mode-filtered from step 1.
+
+Nothing stateful was added: the warp is a pure mapping, the checkpoint
+format is untouched, and a field saved under either mode still resumes
+into the other.
 
 The same caveat as §13, sharpened: every endpoint above is an argument, not
 a judgement. Specifically open: whether activation keeps the dark ground

@@ -161,6 +161,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.preset:
             cfg.macros = presets_module.get(args.preset)
             cfg.preset_name = args.preset
+            # A preset is macro positions *plus* the curve table they were
+            # tuned against; asking for one means asking for its mode.
+            cfg.mode = presets_module.mode_of(args.preset)
         if args.backend:
             cfg.backend = args.backend
         if args.volume_detail:
@@ -177,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
             print(exc, file=sys.stderr)
             return 2
         cfg.preset_name = args.preset
+        # The preset's macros only mean what they meant in the mode they were
+        # tuned in, so the preset brings its mode with it.
+        cfg.mode = presets_module.mode_of(args.preset)
         config_module.save(cfg, config_path)
 
     from .app import AppOptions, Application

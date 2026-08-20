@@ -259,6 +259,34 @@ fn finite_or4(v: vec4<f32>, fallback: f32) -> vec4<f32> {
     );
 }
 
+// The polychrome palette's multi-well warp -- DESIGN.md §14.4.
+//
+// Maps the climate hue channel onto three hue-family offsets: a C-infinity
+// staircase with plateaus at -2pi/3, 0 and +2pi/3, so different regions of
+// the field sit in *contrasting* colour families rather than in excursions
+// around one, and the families migrate exactly as regimes already do --
+// the input is the same advected, diffused, mean-reverting channel as ever.
+//
+// Not a threshold, and that is the point of the shape: the transitions are
+// tanh ramps about `threshold` wide in channel units, and the channel itself
+// is bilinear-sampled 64x36 climate (§4.1, "it can never introduce a hard
+// edge"), so the warp is smooth in space by inheritance and smooth in time
+// because the channel drifts over minutes. The steepness is tied to the
+// threshold (2.5 / t) so one parameter moves the well positions and the
+// transition width together and the staircase keeps its proportions.
+//
+// `threshold` is in the channel's *realised* units: the field is clamped to
+// [-1, 1] but settles at s.d. ~0.11 (§4.1), so the default 0.06 puts roughly
+// two fifths of the field in the middle family and three tenths in each of
+// the others. At gain 0 the offset is identically zero -- the regulation
+// mapping, bit for bit.
+fn polychrome_offset(c: f32, gain: f32, threshold: f32) -> f32 {
+    let t = max(threshold, 0.02);
+    let k = 2.5 / t;
+    let well = 2.0943951023931953; // 2*pi/3
+    return gain * well * 0.5 * (tanh(k * (c - t)) + tanh(k * (c + t)));
+}
+
 // Circular quantities (hue) are carried as a unit vector so that advection and
 // blending interpolate along the shortest arc automatically.
 fn hue_to_vec(h: f32) -> vec2<f32> {

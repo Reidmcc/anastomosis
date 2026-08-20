@@ -107,6 +107,11 @@ SIM_FIELDS: list[Field] = [
     ("hue_spread", "f32"),
     ("hue_from_orientation", "f32"),
     ("hue_inject_mix", "f32"),
+    # The polychrome palette's multi-well warp (DESIGN.md §14.4): gain and
+    # transition threshold. Gain zero -- the regulation mode -- makes the
+    # warp identically zero and the hue mapping what it always was.
+    ("polychrome", "f32"),
+    ("polychrome_threshold", "f32"),
     ("inject_rate", "f32"),
     ("activity_rate", "f32"),
     ("activity_gain", "f32"),
