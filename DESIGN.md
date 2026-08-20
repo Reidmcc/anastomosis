@@ -2116,9 +2116,9 @@ invisible:
    the frame-rate ceiling fix of 14.5(2) (which is due regardless).~~
    **Built** — and both measurements returned answers the plan did not
    predict; see below.
-3. **The activation curve set** for tempo, palette, intensity, scale and
+3. ~~**The activation curve set** for tempo, palette, intensity, scale and
    event_rate, endpoints from (2); homeostat per-mode targets if the
-   measurement says the controller leans (14.3).
+   measurement says the controller leans (14.3).~~ **Built**; see below.
 4. **The polychrome palette warp**, regulation-identical at gain zero, plus
    the first activation presets.
 5. **Shorter event envelopes and higher concurrency**, with soak and heal
@@ -2254,6 +2254,47 @@ targets** — the bands of §4.2 serve both modes, which is one less way the
 two tunings can drift apart. The caveat is horizon: 2400 ticks is minutes,
 and the multi-hour answer belongs to the soak test once step 3 fixes the
 real endpoints.
+
+### What step 3 actually did
+
+The endpoints landed essentially as §14.3 proposed, now that the
+measurements license them: `ACTIVATION_CURVES` in `config.py` is a full
+literal beside the regulation table rather than anything derived from it —
+a tuned table should read like one — with the low ends at regulation's
+throughout, so the bottom of activation is recognisably the same
+instrument. The one addition the proposal's table only gestured at:
+`c_max` rises to 0.205 (toward the 0.22 ceiling, not to it — gamut-mapping
+pressure grows with chroma and the margin is deliberate) and
+`chroma_floor` to 0.035, both on the intensity macro. Driving them needed
+a small structural pattern worth naming: the two tables must drive the
+same paths (the structure test forbids a slider going dead across modes),
+so regulation's intensity curve now carries those two paths as
+*constant* entries, pinned at the defaults its look was tuned with. A flat
+curve is the honest way for one mode to say "not this lever" while the
+other uses it.
+
+Three tests hold the endpoints to their evidence rather than merely to
+themselves. The tempo tops must stay inside the swept certificate — at or
+under 6× the regulation motion tops, which is as far as step 2's sweep
+measured and no further; a retune past that fails the test until
+`tempo_sweep.py` is re-run. The activation scale curve must not dig the
+`du` floor below regulation's (§4.7's activity-collapse edge) and must
+hold `dv/du` at 0.50 at both ends. And the §4.9 sensing-ratio assertion
+now runs per mode, since each mode's scale curve sweeps its own range and
+the bifurcation does not care which tuning walks over it (the activation
+ratio spans 2.58–2.59). At the GPU level, the WCAG area criterion is
+pinned at the shipped activation top over the fresh-start frames, and the
+soak suite gains the activation twin of the long-run liveness test — same
+thresholds, same homeostat-convergence assertion, at the busy corner of
+the mode. All pass, the mode-slam test of step 1 now slamming genuinely
+divergent tables.
+
+What did *not* change is as load-bearing as what did: no per-mode
+homeostat targets (measured unnecessary in step 2), no event envelope
+changes (step 5's, deliberate), no touched `feed`/`kill` ranges or
+clamps, and the luminance architecture — brightness, glow, depth,
+parallax — shared verbatim. The chroma budget and the motion budget carry
+the mode, exactly as §14.1 argued they could.
 
 The same caveat as §13, sharpened: every endpoint above is an argument, not
 a judgement. Specifically open: whether activation keeps the dark ground

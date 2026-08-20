@@ -203,6 +203,37 @@ def test_wcag_flash_criterion(gpu_device, offscreen_target):
     )
 
 
+def test_wcag_flash_criterion_at_the_activation_top(gpu_device, offscreen_target):
+    """The shipped activation endpoints, at the busy corner, under the area
+    criterion.
+
+    Step 2's sweep (tests/tempo_sweep.py) certified this axis to 6x the
+    regulation tops on a warmed-up field; this pins the *shipped* endpoints
+    the way the regulation test above pins the defaults, over the fresh-start
+    frames where the most change happens. The macros sit at the corner that
+    maximises the metric -- most material, finest features, fastest motion,
+    brightest -- not at the defaults.
+    """
+    params = config.Config(macros=config.Macros(
+        intensity=1.0, scale=0.0, tempo=1.0,
+        filament_glow=1.0, brightness=1.0,
+    ), mode="activation").resolve()
+    params.render.layers = 2
+
+    engine = _make_engine(gpu_device, params)
+    target, fmt = offscreen_target(WIDTH, HEIGHT)
+    frames = _capture(engine, params, target, fmt, 45)
+
+    deltas = np.abs(np.diff(frames, axis=0))
+    flashing = (deltas >= FLASH_LUMINANCE_FRACTION).mean(axis=(1, 2))
+    worst = float(flashing.max())
+    assert worst < FLASH_AREA_FRACTION, (
+        f"{worst:.1%} of the screen changed by >={FLASH_LUMINANCE_FRACTION:.0%} "
+        f"lightness in a single frame at the activation top; the WCAG area "
+        f"threshold is {FLASH_AREA_FRACTION:.0%}"
+    )
+
+
 def test_global_luminance_is_stable(gpu_device, offscreen_target):
     """Mean screen lightness must not lurch, even as exposure adapts.
 

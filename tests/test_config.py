@@ -178,6 +178,48 @@ def test_a_file_predating_the_mode_is_a_regulation_file(tmp_path):
     assert config.load(path).mode == "regulation"
 
 
+def test_the_activation_table_is_a_tuning_not_a_copy():
+    """Step 3 landed: the two modes genuinely differ.
+
+    A refactor that quietly reverted the activation table to a copy would
+    leave every mode test green -- the structure tests are *meant* to pass on
+    a copy -- and the second mode a placebo.
+    """
+    assert config.ACTIVATION_CURVES != config.MACRO_CURVES
+
+
+def test_the_activation_tempo_tops_stay_inside_the_swept_certificate():
+    """The motion endpoints must not outrun their measurement.
+
+    Step 2's sweep certified the WCAG area criterion out to 6x the regulation
+    tops on the three motion primitives (DESIGN.md §14.8) -- and to nothing
+    beyond that. A future retune past the certificate needs a new sweep, and
+    this is the test that says so; `tests/tempo_sweep.py` is how.
+    """
+    motion = {"agents.speed", "flow.psi_gain", "flow.field_gain"}
+    reg = {p: hi for p, _lo, hi, _g in config.MACRO_CURVES["tempo"]}
+    act = {p: hi for p, _lo, hi, _g in config.ACTIVATION_CURVES["tempo"]}
+    for path in motion:
+        assert act[path] <= 6.0 * reg[path], (
+            f"{path} tops out at {act[path]}, beyond the swept 6x of "
+            f"{reg[path]} -- re-run the sweep before shipping this"
+        )
+
+
+def test_the_activation_scale_respects_the_measured_reaction_floor():
+    """§4.7: du below ~0.17 walks activity toward the homeostat's floor, and
+    0.16 -- the shipped low end -- is already at the edge. Activation biases
+    the knob finer at the *top*; its floor must not dig below regulation's."""
+    reg = {p: (lo, hi) for p, lo, hi, _g in config.MACRO_CURVES["scale"]}
+    act = {p: (lo, hi) for p, lo, hi, _g in config.ACTIVATION_CURVES["scale"]}
+    assert act["reaction.du"][0] >= reg["reaction.du"][0]
+    # And the dv/du ratio §4.7 requires (moving it moves mass, which drags
+    # the exposure governor into a global luminance swing) holds at both ends.
+    for lo_hi in (0, 1):
+        ratio = act["reaction.dv"][lo_hi] / act["reaction.du"][lo_hi]
+        assert ratio == pytest.approx(0.50, abs=0.01)
+
+
 # --- event rate ------------------------------------------------------------
 
 
@@ -496,7 +538,8 @@ def test_hue_anchor_covers_the_circle():
     assert high.render.hue_anchor == pytest.approx(math.tau)
 
 
-def test_the_sensing_reach_stays_inside_the_band_it_is_stable_in():
+@pytest.mark.parametrize("mode", config.MODES)
+def test_the_sensing_reach_stays_inside_the_band_it_is_stable_in(mode):
     """DESIGN.md §4.9: sensing reach is bounded by the width of what it senses.
 
     An agent that senses much further than a strand is wide cuts corners hard
@@ -510,9 +553,13 @@ def test_the_sensing_reach_stays_inside_the_band_it_is_stable_in():
     length, default included -- and the climate deviation on top of that, which
     reaches its own clamp in the tails. The last of those is the shader's job;
     :func:`config.clamp_sensor_distance` mirrors it.
+
+    Per mode, because each mode's `scale` curve moves the reach and the
+    diffusion over its own range, and §4.9's bifurcation does not care which
+    tuning walked over it.
     """
     for step in range(21):
-        cfg = config.Config()
+        cfg = config.Config(mode=mode)
         cfg.macros.scale = step / 20.0
         params = cfg.resolve()
         agents = params.agents

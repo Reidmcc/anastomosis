@@ -648,6 +648,13 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("reaction.trail_feed_gain", 0.012, 0.034, 1.0),
         ("render.chroma_activity_gain", 3.5, 8.0, 1.0),
         ("pigment.inject_rate", 0.032, 0.085, 1.0),
+        # Held flat here and driven for real by the activation table: the two
+        # tables must drive the same paths under each macro (a slider that
+        # goes dead, or gains a hidden effect, crossing modes is what the
+        # structure test forbids), and regulation's look was tuned with these
+        # at their defaults, so here the curve pins them there.
+        ("render.c_max", 0.145, 0.145, 1.0),
+        ("render.chroma_floor", 0.012, 0.012, 1.0),
     ],
     "scale": [
         # Larger scale == coarser features: slower agents, longer sensors,
@@ -756,19 +763,101 @@ def _palette_hue_anchor(v: float) -> float:
 MODES = ("regulation", "activation")
 DEFAULT_MODE = "regulation"
 
-# The activation table starts as an exact copy of the regulation one, on
-# purpose: DESIGN.md §14.8 step 1 is the plumbing alone, visually inert, so
-# that the mechanism is tested before any endpoint moves. Step 3 retunes the
-# copy's endpoints from the measurements of step 2; until then the two modes
-# resolve identically. What must survive that retuning is the *structure* --
-# both tables driving the same macros and the same paths, so no slider goes
-# dead or gains a hidden effect when the mode changes -- and the tests assert
-# exactly that rather than the temporary equality of the values.
+# The activation table. Same eight macros, same meanings, same paths in the
+# same order (the structure test holds the two tables to that); what differs
+# is where the top of each travel reaches. Low ends stay at regulation's, so
+# the modes overlap rather than abut and the bottom of activation is
+# recognisably the same instrument.
+#
+# The endpoints rest on the step 2 measurements (DESIGN.md §14.8): the WCAG
+# area criterion does not bind the tempo axis anywhere up to 6x the
+# regulation tops -- worst per-frame per-pixel |dL| grows only 0.018 -> 0.043
+# across that whole sweep -- so the tempo tops here (1.6-1.9x) are perceptual
+# choices carrying an order of magnitude of measured headroom, to be judged
+# on real hardware. And the homeostat holds every measure in band at these
+# endpoints with *smaller* corrections than the regulation busy corner needs,
+# so there are no per-mode homeostat targets; the bands of §4.2 serve both.
+ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
+    "intensity": [
+        ("agents.density", 0.10, 0.44, 1.0),
+        ("agents.deposit", 0.009, 0.028, 1.0),
+        ("agents.fusion_bias", 0.35, 0.72, 1.0),
+        ("reaction.trail_feed_gain", 0.012, 0.034, 1.0),
+        # Chroma carries this mode (§14.1): change is far less provocative in
+        # chroma than in luminance, and the budget was mostly unspent.
+        ("render.chroma_activity_gain", 3.5, 11.0, 1.0),
+        ("pigment.inject_rate", 0.032, 0.085, 1.0),
+        # Toward the 0.22 ceiling, not to it -- gamut-mapping pressure rises
+        # with chroma and the margin is deliberate.
+        ("render.c_max", 0.145, 0.205, 1.0),
+        # Quiet regions stay coloured instead of falling to grey.
+        ("render.chroma_floor", 0.012, 0.035, 1.0),
+    ],
+    "scale": [
+        # The whole knob biased ~15% finer at the top: busier texture. The
+        # low ends hold at regulation's, since going *below* them has
+        # measured risk -- du under ~0.17 walks activity toward the homeostat
+        # floor (§4.7), and the shipped 0.16 is already at the edge. Sensing
+        # and diffusion move together as ever, ratio ~2.6 across the whole
+        # travel (§4.9); found_radius keeps its ~0.72x of the reach.
+        ("agents.sensor_distance", 2.2, 4.2, 1.0),
+        ("agents.trail_diffuse", 0.85, 1.63, 1.0),
+        ("agents.found_radius", 1.6, 3.0, 1.0),
+        ("reaction.du", 0.16, 0.22, 1.0),
+        ("reaction.dv", 0.080, 0.110, 1.0),  # dv/du held at 0.50, as §4.7 requires
+        ("flow.psi_noise_scale", 2.0, 4.3, 1.0),
+    ],
+    "tempo": [
+        # 30 Hz at the top: one sim tick per displayed frame at the 30 FPS
+        # cap. Budget: ~21 GB/s at 30 Hz, ~3% of the target card (§8.1).
+        ("sim_hz", 12.0, 30.0, 1.0),
+        ("agents.speed", 0.55, 2.2, 1.0),
+        ("flow.psi_gain", 0.70, 4.0, 1.0),
+        ("flow.field_gain", 0.45, 2.4, 1.0),
+        # Faster reversion: the weather changes its mind sooner.
+        ("flow.psi_theta", 0.0012, 0.0055, 1.0),
+        ("climate.advect_gain", 0.12, 0.55, 1.0),
+        # A full turn in 7-8 minutes at the top -- visible drift, not a spin;
+        # the 8 s ramp tau on this path smooths any adjustment to it.
+        ("render.hue_turns_per_hour", 0.55, 8.0, 1.2),
+    ],
+    "palette": [
+        # Most of the hue circle in play at once. This is spread around the
+        # anchor; simultaneous *contrasting* families are step 4's warp.
+        ("render.hue_spread", 0.55, 2.8, 1.0),
+    ],
+    # Nothing about activation wants a different luminance architecture, so
+    # brightness, glow, depth and the viewpoint keep regulation's curves.
+    "brightness": [
+        ("render.background_luma", 0.012, 0.075, 1.0),
+        ("render.l_max", 0.44, 0.78, 1.0),
+        ("safety.exposure_target", 0.10, 0.26, 1.0),
+    ],
+    "filament_glow": [
+        ("render.filament_luma", 0.16, 0.62, 1.0),
+        ("render.glow_gamma", 0.92, 0.62, 1.0),
+        ("render.extinction", 1.9, 3.6, 1.0),
+    ],
+    "depth": [
+        ("render.dof_radius", 1.2, 5.4, 1.0),
+        ("render.fog_amount", 0.18, 0.62, 1.0),
+        ("render.depth_dim", 0.78, 0.38, 1.0),
+        ("render.depth_desat", 0.72, 0.30, 1.0),
+    ],
+    "parallax": [
+        ("render.parallax", 0.0, 0.25, 1.0),
+        ("render.parallax_tau", 150.0, 60.0, 1.0),
+    ],
+    "event_rate": [
+        # One every ~90 s at the top. Still arrival-time only: what an event
+        # *does* is untouched here, and the envelope work is step 5's.
+        ("events.rate_per_hour", 0.5, 40.0, 1.5),
+    ],
+}
+
 MODE_CURVES: dict[str, dict[str, list[tuple[str, float, float, float]]]] = {
     "regulation": MACRO_CURVES,
-    "activation": {
-        macro: list(entries) for macro, entries in MACRO_CURVES.items()
-    },
+    "activation": ACTIVATION_CURVES,
 }
 
 

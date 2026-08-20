@@ -146,11 +146,14 @@ everything it has grown and changes character over a few seconds, and
 switching back is just as smooth. The flash-safety bound is identical in
 both modes; neither can flash — see [Safety](#safety).
 
-The activation tuning itself is still being built (`DESIGN.md` §14): its
-curve table is currently an exact copy of regulation's, so switching does
-not change what you see yet, and it has no presets of its own. The
-selector, the config key (`mode = "activation"`) and the plumbing are in
-place so the tuning can land as measurements finish.
+What activation changes is where the knobs *reach*, never what they mean:
+the same slider goes further — faster flow and agents, quicker weather, a
+hue rotation up to a turn every seven minutes, more of the colour circle in
+play at once, more saturated throughout, events up to one every ninety
+seconds — while the bottom of every travel stays where regulation has it,
+so the two tunings overlap rather than abut. Set it in the config with
+`mode = "activation"`. It has no presets of its own yet; the sliders carry
+it in the meantime.
 
 ## Two ways of drawing depth
 
