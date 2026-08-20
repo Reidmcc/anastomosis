@@ -800,7 +800,11 @@ SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
     # 0.012 gives 1.8 flashes/s at 30 FPS in the worst case (a sustained
     # maximum-rate oscillation), against the WCAG limit of 3. The 0.03 this
     # was originally set to allows 4.5/s and is NOT safe -- see
-    # test_ceiling_implies_wcag_margin.
+    # test_ceiling_implies_wcag_margin. This entry alone is not the whole
+    # bound: the flash arithmetic is per-frame times frame rate, so `validate`
+    # additionally holds the *product* to MAX_LUMA_PER_SECOND -- at the 60 FPS
+    # this table permits, 0.012 per frame would be 3.6 flashes/s, over the
+    # WCAG limit rather than under it.
     "safety.max_luma_delta": (0.0005, 0.012),
     "safety.max_chroma_delta": (0.0005, 0.100),
     "safety.iir_alpha": (0.02, 1.000),
@@ -815,6 +819,15 @@ SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
     "sim_hz": (4.0, 60.0),
     "max_fps": (5, 60),
 }
+
+# The lightness slew budget per *second* -- the quantity the WCAG arithmetic
+# actually runs on. The per-frame ceiling above is this at the design's 30 FPS
+# (0.012 x 30), and the worst case it permits is budget / 0.2 = 1.8 flashes/s,
+# whatever the frame rate: a sustained maximum-rate oscillation spends
+# 2 x 10% of lightness per flash pair however the frames are sliced. Found
+# while writing DESIGN.md §14.5(2): the per-frame ceiling alone, at the 60 FPS
+# the table permits, allows 3.6/s -- above the WCAG limit of 3, not below it.
+MAX_LUMA_PER_SECOND = 0.36
 
 
 # --------------------------------------------------------------------------
@@ -1051,6 +1064,25 @@ def validate(params: Params) -> Params:
                 clamped,
             )
             set_path(params, path, clamped)
+
+    # The luma slew ceiling is per frame, and the flash arithmetic multiplies
+    # it by the frame rate, so the two ceilings above are only jointly safe:
+    # the product is held to MAX_LUMA_PER_SECOND here, after both have been
+    # clamped. At the design's 30 FPS this binds at exactly the table's 0.012
+    # and changes nothing; at a raised frame-rate cap the per-frame allowance
+    # shrinks so the worst case stays 1.8 flashes/s. Conservative on purpose:
+    # `max_fps` is the fastest the canvas may present, and a frame rate below
+    # it only slows the worst case further.
+    fps = max(float(params.max_fps), 1.0)
+    per_frame = MAX_LUMA_PER_SECOND / fps
+    if params.safety.max_luma_delta > per_frame:
+        log.warning(
+            "safety.max_luma_delta = %g at max_fps = %g exceeds the "
+            "%g/second flash budget; clamped to %g",
+            params.safety.max_luma_delta, params.max_fps,
+            MAX_LUMA_PER_SECOND, per_frame,
+        )
+        params.safety.max_luma_delta = per_frame
 
     # The diffusion band is a stability bound, not a stylistic one: this is an
     # explicit scheme, and the averaging-form Laplacian in reaction.wgsl goes

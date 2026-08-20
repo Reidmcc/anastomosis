@@ -337,3 +337,33 @@ def test_default_has_comfortable_margin():
     default = config.SafetyParams().max_luma_delta
     rate = _worst_case_flashes_per_second(default)
     assert rate <= 1.6, f"default {default} gives {rate:.2f} flashes/second"
+
+
+def test_the_two_ceilings_are_jointly_safe_at_any_frame_rate():
+    """The luma-delta and frame-rate ceilings must be safe as a *pair*.
+
+    The flash arithmetic is per-frame times frame rate, and for as long as the
+    two ceilings were independent the pair (0.012, 60 FPS) was reachable --
+    3.6 flashes/second, above the WCAG limit of 3, found while writing
+    DESIGN.md §14.5(2). `validate` now holds the product to
+    `MAX_LUMA_PER_SECOND`, so the worst case is 1.8/s at every frame rate the
+    table admits, asked for here exactly the way a config file would ask:
+    both values at once, as large as they will go.
+    """
+    fps_lo, fps_hi = config.SAFETY_CEILINGS["max_fps"]
+    for fps in sorted({fps_lo, 24, 30, 48, fps_hi}):
+        resolved = config.Config(overrides={
+            "max_fps": fps,
+            "safety.max_luma_delta": 1.0,
+        }).resolve()
+        rate = _worst_case_flashes_per_second(
+            resolved.safety.max_luma_delta, fps=float(resolved.max_fps))
+        assert rate <= 1.8 + 1e-9, (
+            f"at max_fps = {fps} the ceilings jointly permit "
+            f"{rate:.2f} flashes/second"
+        )
+        # And at the design's 30 FPS the coupling binds at exactly the
+        # documented per-frame ceiling -- it must not tighten what §7 promises.
+        if fps == 30:
+            assert resolved.safety.max_luma_delta == pytest.approx(
+                config.SAFETY_CEILINGS["safety.max_luma_delta"][1])

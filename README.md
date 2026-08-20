@@ -341,6 +341,11 @@ it two ways: with flow disabled, so reprojection is the identity and the
 per-pixel bound is exact; and under normal operation against the WCAG area
 criterion. Both are checked while parameters are slammed between extremes.
 
+The two ceilings hold as a pair, not just individually: the per-frame limit
+and the frame-rate cap multiply out to a per-second budget, and raising the
+frame rate in the config automatically shrinks the per-frame allowance so the
+worst case stays 1.8 flashes/second at any frame rate the settings allow.
+
 If you are photosensitive, note that this is a well-tested engineering bound, not
 a medical assurance.
 

@@ -1512,6 +1512,19 @@ arithmetic error: 0.03 permits 4.5 flashes/second, *above* the WCAG limit rather
 than below it. The test that encodes this criterion caught it, which is the entire
 reason for expressing the property numerically instead of describing it in prose.
 
+The same class of error survived in a second place for considerably longer,
+because it lived between two ceilings rather than inside one: the per-frame
+ceiling was safe *at 30 FPS*, and `max_fps` had its own ceiling of 60, so the
+pair (0.012, 60) was reachable — 3.6 flashes/second. Found while planning the
+activation mode (§14.5(2)), whose whole character invites raising exactly
+these two values. The bound is therefore now expressed the way the arithmetic
+runs: `validate` holds the *product* to `MAX_LUMA_PER_SECOND` (0.36/s, i.e.
+0.012 × 30), so the per-frame allowance shrinks as the frame-rate cap rises
+and the worst case is 1.8 flashes/s at every frame rate the table admits.
+At the design's 30 FPS the coupling binds at exactly the documented 0.012
+and changes nothing. `test_the_two_ceilings_are_jointly_safe_at_any_frame_rate`
+asks for both ceilings at once, the way a config file would.
+
 ### One non-obvious implementation constraint
 
 The safety stage stores its output and reads it back as the next frame's history,
