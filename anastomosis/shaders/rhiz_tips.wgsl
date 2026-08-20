@@ -84,12 +84,20 @@ fn wrap_angle(a: f32) -> f32 {
     return a - TAU * floor((a + PI) / TAU);
 }
 
-fn elong_for(order: u32) -> f32 {
+// Elongation by order, decelerating with the tip's age toward a floor: a
+// young apex sprints, a mature one advances at roughly the descent's own
+// pace, so the front hovers in the window instead of racing off its bottom
+// edge, which is what it did when elongation was a flat rate.
+fn elong_for(order: u32, age: f32) -> f32 {
+    var base = rp.elong_fine;
     switch order {
-        case 0u: { return rp.elong_axis; }
-        case 1u: { return rp.elong_lateral; }
-        default: { return rp.elong_fine; }
+        case 0u: { base = rp.elong_axis; }
+        case 1u: { base = rp.elong_lateral; }
+        default: { base = rp.elong_fine; }
     }
+    let factor = rp.elong_floor
+        + (1.0 - rp.elong_floor) * exp(-max(age, 0.0) * rp.elong_slow);
+    return base * factor;
 }
 
 fn gsa_for(order: u32) -> f32 {
@@ -284,7 +292,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // stalled tip searches sideways, which is what a real root apex does at
     // hardpan -- and re-asserts as soon as the way is clear.
     let steered = vec2<f32>(cos(heading), sin(heading));
-    let probe_ahead = tip.pos + steered * elong_for(order);
+    let probe_ahead = tip.pos + steered * elong_for(order, tip.age);
     let blocked = soil_at(
         rp, fract(probe_ahead.x / fdims.x),
         probe_ahead.y - f32(rp.scroll_rows)).imped;
@@ -303,7 +311,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // rather than a bounce. The bottom margin is where growth waits for the
     // window (§15.4).
     let dir = vec2<f32>(cos(heading), sin(heading));
-    let next = tip.pos + dir * elong_for(order);
+    let next = tip.pos + dir * elong_for(order, tip.age);
     let stone_ahead = soil_at(
         rp, fract(next.x / fdims.x), next.y - f32(rp.scroll_rows)).imped;
     // Floored, not zeroed: a tip that lands *inside* rock -- a seed hashed
@@ -316,7 +324,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // The bottom margin is a true wait: the window will come.
         slow = 0.0;
     }
-    let travelled = elong_for(order) * slow;
+    let travelled = elong_for(order, tip.age) * slow;
     var pos = tip.pos + dir * travelled;
     pos.x = pos.x - floor(pos.x / fdims.x) * fdims.x;
 

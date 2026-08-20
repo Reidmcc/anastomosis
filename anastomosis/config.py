@@ -749,7 +749,10 @@ class RhizotronParams:
     strata_tilt: float = 0.45
     # Stones: how much of the matrix is stone at the stoniest strata, and the
     # typical stone size in sim cells (also power-of-two quantised).
-    stone_amount: float = 0.60
+    # Tempered after watching it: at 0.6 the matrix read as a field of pale
+    # dots -- §4.7's geometry, made of stone -- rather than as earth with
+    # stones in it.
+    stone_amount: float = 0.38
     stone_cells: float = 12.0
     # Mineral grain: the fine static speckle of the matrix. An amplitude on
     # lightness, kept small -- the grain is texture, not noise.
@@ -778,7 +781,14 @@ class RhizotronParams:
     # Foraging: the chemotropic pull toward richness, and how strongly local
     # richness modulates branching -- proliferation in a rich patch is the
     # documented root response (§15.3), and depleted ground halves it.
-    chemo_gain: float = 0.6
+    # The chemotropic pull is deliberately the weakest tropism, and weaker
+    # than the avoidance in particular: recycling lays richness along the
+    # dead skeleton, and a pull that out-votes the avoidance sends new roots
+    # crawling back up their ancestors -- real behaviour (roots do colonise
+    # decayed root channels), wrong picture (it reads as growth toward the
+    # trunk). The foraging therefore shows in *branching* more than in
+    # steering.
+    chemo_gain: float = 0.35
     forage_gain: float = 1.0
 
     # --- Moisture (§15.3) --------------------------------------------------
@@ -817,13 +827,25 @@ class RhizotronParams:
     axes_per_plant: int = 3
     axis_spread: float = 0.22  # radians of heading scatter at germination
 
-    # Elongation, cells per second by branching order. A few pixels a second
-    # at native resolution: visibly growing when watched, not crawling. The
-    # ceiling on the axis rate is measured, not chosen -- see the §15.7(2)
-    # sweep record -- and `validate` holds all three under it.
-    elong_axis: float = 6.0
-    elong_lateral: float = 3.6
-    elong_fine: float = 2.0
+    # Elongation, cells per second by branching order, at the moment a tip is
+    # born. A couple of pixels a second at native resolution: visibly growing
+    # when watched, not crawling. The first build ran nearly triple this and
+    # the arithmetic is unforgiving: growth faster than the fastest descent
+    # the window is *allowed* means every axis races to the bottom edge and
+    # waits there -- the whole community piled on the bottom margin, the rest
+    # of the screen idle, which is what it did. The
+    # ceiling on the axis rate is measured (§15.7(2)); the *balance* against
+    # the descent is what these values are actually chosen for.
+    elong_axis: float = 2.4
+    elong_lateral: float = 1.7
+    elong_fine: float = 1.1
+    # Growth decelerates with age, toward this floor over this timescale --
+    # real apices slow as they mature, and it is also what lets the window
+    # keep pace: a young axis sprints, an old one advances at roughly the
+    # descent's own speed, so the front hovers in view instead of running
+    # off the bottom of it.
+    elong_slow_floor: float = 0.18
+    elong_slow_tau: float = 300.0  # seconds
     # Gravitropic setpoint angles, radians off straight down, and the angular
     # relaxation toward them per second. The axis's setpoint is zero by
     # definition; these are the single most shape-giving numbers in the mode
@@ -847,7 +869,7 @@ class RhizotronParams:
     # spaghetti had.
     thigmo_gain: float = 1.0
     hydro_gain: float = 0.55
-    avoid_gain: float = 0.5
+    avoid_gain: float = 0.75
     tip_turn: float = 0.9        # radians per second of flank steering
     tip_jitter: float = 0.25     # radians per root-second of wander
     sense_dist: float = 4.0      # cells ahead
@@ -870,9 +892,9 @@ class RhizotronParams:
     # even an axis spends its life in a quarter of an hour -- then rests as a
     # seed and returns as the next plant (§15.4's succession). Growth being
     # determinate at every order is what paces the whole community.
-    fine_life: float = 18.0
-    lateral_life: float = 240.0
-    axis_life: float = 900.0
+    fine_life: float = 35.0
+    lateral_life: float = 480.0
+    axis_life: float = 1500.0
 
     # Root shading (§15.2): the transfer from structure density to coverage,
     # and pallor-by-age. `root_edge` is the transfer's softness -- 0.5 is the
@@ -898,8 +920,12 @@ class RhizotronParams:
     # ten, the woody axes effectively never. This is the turnover that keeps
     # the visible plant a *process* rather than an accumulating painting, and
     # what bounds the mid-window density over an endless descent.
-    senescence_rate: float = 0.007   # per second, at full fineness and age
-    senescence_delay: float = 45.0   # seconds of grace before it starts
+    # Retuned once there was a plant to watch: the first values stripped the
+    # field back to bare trunks in minutes -- turnover should read as
+    # breathing, not as dissolving. Half-life of pure fuzz is ~5 min after grace,
+    # of a mixed lateral path ~20, and the woody axes still effectively never.
+    senescence_rate: float = 0.0022  # per second, at full fineness and age
+    senescence_delay: float = 120.0  # seconds of grace before it starts
     # Succession: a spent axis rests, then may wake as a new plant at a
     # hashed seed site -- eagerly where the soil is wet (rain brings
     # germination pulses, which is real), and at a small unconditional floor
@@ -912,12 +938,12 @@ class RhizotronParams:
     # tip toward this fraction of the view, correcting the rate by up to the
     # bounds below. Slow and deadbanded like every controller here -- the
     # window drifts after the plant, it does not chase it.
-    front_target: float = 0.68
+    front_target: float = 0.62
     front_deadband: float = 0.08     # fraction of the view
     front_gain: float = 3.0          # rate multiplier per unit of error
     front_tau: float = 20.0          # seconds; how fast the correction moves
     descent_mult_min: float = 0.2
-    descent_mult_max: float = 5.0
+    descent_mult_max: float = 6.0
 
     # --- The look (§15.2) --------------------------------------------------
     # Lightness span of the soil above the background anchor, in Oklab L. The
@@ -1117,16 +1143,21 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("reaction.dv", 0.080, 0.130, 1.0),
         ("flow.psi_noise_scale", 2.0, 5.0, 1.0),
         # Under the rhizotron, Scale chooses a flora (§15.6): left is fine and
-        # fibrous -- tight branch spacing, hairline widths, small stones, thin
-        # strata -- and right is coarse and taprooted. The most
-        # character-changing knob in the mode.
+        # fibrous -- tight branch spacing, hairline widths -- and right is
+        # coarse and taprooted. The most character-changing knob in the mode.
+        #
+        # The *geology* -- stone size, stratum thickness -- is deliberately
+        # not here, and was for one release: those parameters choose the hash
+        # lattices the procedural soil is generated from, so a live knob
+        # driving them regenerates the ground mid-drag -- the soil visibly
+        # jerking to a different world, which is what dragging the slider
+        # did. They are structural in all but storage, and they
+        # take effect the way structural values do: on the next field.
         ("rhizotron.spacing_axis", 8.0, 18.0, 1.0),
         ("rhizotron.spacing_lateral", 5.5, 12.5, 1.0),
         ("rhizotron.splat_axis", 1.0, 1.6, 1.0),
         ("rhizotron.splat_lateral", 0.55, 0.85, 1.0),
         ("rhizotron.splat_fine", 0.32, 0.48, 1.0),
-        ("rhizotron.stone_cells", 7.0, 17.0, 1.0),
-        ("rhizotron.strata_thickness", 0.28, 0.62, 1.0),
     ],
     "tempo": [
         ("sim_hz", 12.0, 26.0, 1.0),
@@ -1149,10 +1180,13 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("agents.trail_advect", 0.5, 0.5, 1.0),
         # The rhizotron's pace (§15.6): elongation by order, the percolation,
         # and the base descent the front controller corrects around. The
-        # elongation tops stay inside the §15.7(2) certificate's ceilings.
-        ("rhizotron.elong_axis", 4.0, 8.4, 1.0),
-        ("rhizotron.elong_lateral", 2.5, 4.9, 1.0),
-        ("rhizotron.elong_fine", 1.4, 2.7, 1.0),
+        # elongation tops stay inside the §15.7(2) certificate's ceilings --
+        # and far under the first build's, which outran the fastest descent
+        # the window is allowed and piled the whole community onto the bottom
+        # edge.
+        ("rhizotron.elong_axis", 1.7, 3.26, 1.0),
+        ("rhizotron.elong_lateral", 1.2, 2.31, 1.0),
+        ("rhizotron.elong_fine", 0.8, 1.47, 1.0),
         ("rhizotron.percolation_rate", 0.55, 1.33, 1.0),
         ("rhizotron.descent_rate", 0.55, 1.55, 1.0),
     ],
@@ -1301,13 +1335,14 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("reaction.dv", 0.080, 0.110, 1.0),  # dv/du held at 0.50, as §4.7 requires
         ("flow.psi_noise_scale", 2.0, 4.3, 1.0),
         # Regulation's rhizotron flora, verbatim -- see the intensity note.
+        # (The rhizotron resolves through the regulation table regardless
+        # now, so these exist only to satisfy the structural invariant that
+        # both tables drive the same paths.)
         ("rhizotron.spacing_axis", 8.0, 18.0, 1.0),
         ("rhizotron.spacing_lateral", 5.5, 12.5, 1.0),
         ("rhizotron.splat_axis", 1.0, 1.6, 1.0),
         ("rhizotron.splat_lateral", 0.55, 0.85, 1.0),
         ("rhizotron.splat_fine", 0.32, 0.48, 1.0),
-        ("rhizotron.stone_cells", 7.0, 17.0, 1.0),
-        ("rhizotron.strata_thickness", 0.28, 0.62, 1.0),
     ],
     "tempo": [
         # 30 Hz at the top: one sim tick per displayed frame at the 30 FPS
@@ -1342,9 +1377,9 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         # filaments is precisely the *difference* between the two rates.
         ("agents.trail_advect", 0.5, 0.80, 1.0),
         # Regulation's rhizotron pace, verbatim -- see the intensity note.
-        ("rhizotron.elong_axis", 4.0, 8.4, 1.0),
-        ("rhizotron.elong_lateral", 2.5, 4.9, 1.0),
-        ("rhizotron.elong_fine", 1.4, 2.7, 1.0),
+        ("rhizotron.elong_axis", 1.7, 3.26, 1.0),
+        ("rhizotron.elong_lateral", 1.2, 2.31, 1.0),
+        ("rhizotron.elong_fine", 0.8, 1.47, 1.0),
         ("rhizotron.percolation_rate", 0.55, 1.33, 1.0),
         ("rhizotron.descent_rate", 0.55, 1.55, 1.0),
     ],
@@ -1633,7 +1668,18 @@ class Config:
     def resolve(self) -> Params:
         params = Params()
 
-        for macro_name, curves in MODE_CURVES[normalise_mode(self.mode)].items():
+        # The rhizotron has one tuning (DESIGN.md §15): the root world's
+        # whole character is the calm half of the
+        # brief, and a second table nobody has judged would be a divergence
+        # waiting to mislead. The mode key keeps its value -- switching
+        # backends away again restores whichever tuning the fungal field was
+        # in -- but under this backend the macros resolve through regulation,
+        # always.
+        mode = self.mode
+        if normalise_backend(self.backend) == "rhizotron":
+            mode = "regulation"
+
+        for macro_name, curves in MODE_CURVES[normalise_mode(mode)].items():
             value = getattr(self.macros, macro_name)
             value = min(1.0, max(0.0, float(value)))
             for path, lo, hi, gamma in curves:
@@ -1819,6 +1865,8 @@ def validate(params: Params) -> Params:
     rhiz.elong_axis = min(max(float(rhiz.elong_axis), 0.0), 24.0)
     rhiz.elong_lateral = min(max(float(rhiz.elong_lateral), 0.0), 24.0)
     rhiz.elong_fine = min(max(float(rhiz.elong_fine), 0.0), 24.0)
+    rhiz.elong_slow_floor = min(max(float(rhiz.elong_slow_floor), 0.02), 1.0)
+    rhiz.elong_slow_tau = min(max(float(rhiz.elong_slow_tau), 5.0), 36000.0)
     rhiz.root_edge = min(max(float(rhiz.root_edge), 0.02), 0.5)
     rhiz.root_knee = min(max(float(rhiz.root_knee), 0.02), 4.0)
     rhiz.root_age_scale = min(max(float(rhiz.root_age_scale), 1.0), 7200.0)

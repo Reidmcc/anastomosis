@@ -1,6 +1,10 @@
 > Part of the [Anastomosis design](../DESIGN.md). Section numbers (§n) cited here, in other docs, and in code comments resolve via the index in `DESIGN.md`.
 
-## 15. Rhizotron — a plant-root backend (proposal)
+## 15. Rhizotron — a plant-root backend
+
+> This section began as a proposal and is now a build record: §15.1–§15.10 are
+> the design as proposed, and the "what step *n* actually did" records under
+> §15.11 are what shipped, deviations included.
 
 Everything above grows one organism's picture: a mycelial network, luminous
 material floating in a dark isotropic medium, seeking itself and fusing. This
@@ -489,17 +493,28 @@ retirement:
    non-repetition assertions against multi-hour runs, and the comb measure
    of §15.7(5) into the morphology suite.~~ **Built**, with two honest
    narrowings; see the record below.
-5. **The rest of the rhizosphere.** Nutrients and foraging, the full event
+5. ~~**The rest of the rhizosphere.** Nutrients and foraging, the full event
    set, panes with haze and parallax, root hairs, the mycorrhizal accent —
    and the first presets, which are §13-style judgements for eyes once
    there is something to judge. Candidates: `meadow` (fine, fibrous, busy),
-   `taproot` (sparse, deep, austere), `loam` (the balanced default).
-   **Built, except the presets** — the macro wiring, hardpan and biopores,
-   hairs and the shimmer, and then the nutrient economy; see the two
-   records below for what landed, what moved, and why the presets still
-   wait.
-6. **Later, separately:** an activation retune of the rhizotron against
-   §14's checklist, and only if the mode earns it.
+   `taproot` (sparse, deep, austere), `loam` (the balanced default).~~
+   **Built** — the macro wiring, hardpan and biopores, hairs and the
+   shimmer, then the nutrient economy, and the three presets under exactly
+   those names (`presets.RHIZOTRON_PRESETS`), world-tagged so the panel
+   offers them only under this backend and `--preset meadow` brings the
+   rhizotron with it. Two records below; the panes stay deferred, and
+   §15.12 says why that is looking less like a gap than a decision.
+6. ~~**Later, separately:** an activation retune of the rhizotron against
+   §14's checklist, and only if the mode earns it.~~ **Won't do**, unless the
+   judgement is revisited: **the rhizotron has one tuning.** Root growth is
+   inherently the calm half of the brief, a second table nobody has judged
+   would be a divergence waiting to mislead, and the mode axis was costing
+   more than it paid — so `Config.resolve` pins this backend's macros to the
+   regulation table whatever the mode key says (the key survives untouched
+   for the fungal field a user switches back to), the control panel greys
+   the Mode selector out and says why, and the activation table's rhizotron
+   entries exist only to satisfy the structural invariant that both tables
+   drive the same paths. `test_the_rhizotron_has_one_tuning` holds it.
 
 ### What step 1 actually did
 
@@ -781,7 +796,8 @@ spend.
 memory are the second half of this step — they are one economy and should
 land together, with the carbon homeostat question re-opened when they do
 (step 4's record). Presets wait on them: a `meadow` tuned before the
-economy exists would be re-judged after it. And the pane question
+economy exists would be re-judged after it — which is what happened, and
+they landed once it did. And the pane question
 (§15.12) leans further toward *flat*: everything added since the proposal
 — the crisp architecture, the strata, the descent — reads as one pane of
 glass, and haze-separated copies of it would be three fictions stacked;

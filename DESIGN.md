@@ -125,9 +125,10 @@ and the tests — resolves via the table below, and means the file listed agains
   build step actually did — including the gamut leak the mode-slam test
   found in §7's stage.
 
-- **§15 — [docs/root-mode.md](docs/root-mode.md)** *(building: steps 1–3 of
-  §15.11 — soil, descent, moisture, the crispness certificate, and the first
-  plant — are built; succession and the long-duration core are not yet)*
+- **§15 — [docs/root-mode.md](docs/root-mode.md)** *(built: steps 1–5 of
+  §15.11 — soil, descent, moisture, the crispness certificate, the plant,
+  turnover and succession, the macro wiring and the nutrient economy. Step 6,
+  an activation retune, is closed as won't-do: the rhizotron has one tuning.)*
   A third backend on a second metaphor: the plant root. A rhizotron pane —
   stratified Munsell-coloured soil, pale roots steered by tropisms, moisture
   percolating after rain, and a window that sinks with the growing front over

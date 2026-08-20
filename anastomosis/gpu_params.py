@@ -282,6 +282,11 @@ RHIZ_FIELDS: list[Field] = [
     ("elong_axis", "f32"),      # cells per tick, this order's elongation
     ("elong_lateral", "f32"),
     ("elong_fine", "f32"),
+    # Growth decelerates with age toward a floor: factor
+    # floor + (1-floor) * exp(-age * elong_slow), with elong_slow the
+    # per-tick decay. What lets the window keep pace with the front.
+    ("elong_floor", "f32"),
+    ("elong_slow", "f32"),
     ("gsa_lateral", "f32"),     # radians off vertical
     ("gsa_fine", "f32"),
     ("gsa_gain_axis", "f32"),   # angular relaxation toward the setpoint, /tick

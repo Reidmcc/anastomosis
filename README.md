@@ -180,10 +180,16 @@ families drift and hand over the way regimes already do, rather than the
 whole image shifting at once. **Palette** still says where on the circle
 the whole arrangement sits.
 
-The preset list follows the mode: `prism` (colour first), `cascade`
-(motion first, events every few minutes) and `spark` (fine, dense, brisk)
-are activation's, and choosing one — including with `--preset` — brings
-the activation tuning with it.
+The preset list follows the mode — and the world. `prism` (colour first),
+`cascade` (motion first, events every few minutes) and `spark` (fine,
+dense, brisk) are activation's; `loam` (the balanced default), `meadow`
+(fine, fibrous, eager) and `taproot` (sparse, deep, austere) are the
+rhizotron's. Choosing one — including with `--preset` — brings its tuning
+and its world with it: `--preset meadow` opens the rhizotron.
+
+The rhizotron itself has **one** tuning: under it the knobs always move
+through the regulation table, the Mode selector greys out and says so,
+and switching back to a fungal view finds the mode where you left it.
 
 The filament network rides the flow in both modes; at higher **Tempo**
 under activation it rides it *harder* than the colour it carries, and that

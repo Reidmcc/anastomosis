@@ -106,8 +106,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let light = mix(family_light(f0), family_light(f1), ft);
     var chip = mix(dark, light, soil.light);
 
-    // Stones sit in the matrix as their own material.
-    let stone_chip = mix(STONE_DARK, STONE_LIGHT, 0.5 + 0.5 * soil.grain);
+    // Stones sit in the matrix as their own material -- but half-buried in
+    // it, not resting on top: the chip is pulled a third of the way toward
+    // the surrounding soil and its chroma dulled, because full-strength
+    // olive-grey discs against warm earth read as a field of pale dots --
+    // and a field of dots is §4.7's geometry whatever it is made of.
+    var stone_chip = mix(STONE_DARK, STONE_LIGHT, 0.5 + 0.5 * soil.grain);
+    stone_chip = vec3<f32>(stone_chip.x, stone_chip.yz * 0.55);
+    stone_chip = mix(stone_chip, chip, 0.35);
     chip = mix(chip, stone_chip, clamp(soil.stone, 0.0, 1.0));
 
     // --- Into the dark-earth envelope ---------------------------------------

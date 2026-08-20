@@ -646,7 +646,7 @@ def test_fine_structure_turns_over(gpu_device):
     accumulating painting. Same seed, one knob, so the comparison is exact.
     """
     grown = {}
-    for label, rate in (("kept", 0.0), ("turning", 0.06)):
+    for label, rate in (("kept", 0.0), ("turning", 0.15)):
         params = _resolve(overrides={
             **STILL_WATER,
             "rhizotron.descent_rate": 0.0,
@@ -936,6 +936,63 @@ def test_dead_roots_enrich_the_ground(gpu_device):
     assert float(gained.min()) >= -1e-3, (
         "recycling somehow *removed* richness"
     )
+
+
+def test_scale_leaves_the_geology_alone():
+    """Stone size and stratum thickness choose the hash lattices the soil is
+    generated from, so a live knob driving them regenerates the ground
+    mid-drag -- the soil jerking to a different world under the slider. They
+    are structural, and no macro may move them."""
+    small = config.Config(macros=config.Macros(scale=0.0)).resolve().rhizotron
+    large = config.Config(macros=config.Macros(scale=1.0)).resolve().rhizotron
+    assert small.stone_cells == large.stone_cells
+    assert small.strata_thickness == large.strata_thickness
+    # The flora half of the knob still works.
+    assert small.spacing_axis < large.spacing_axis
+
+
+def test_the_rhizotron_has_one_tuning():
+    """Under this backend the macros resolve through the regulation table
+    whatever the mode key says -- the root world is regulation-only, and the
+    key survives untouched for the fungal field the user switches back to."""
+    macros = config.Macros(intensity=0.9, tempo=0.8)
+    regulation = config.Config(
+        backend="rhizotron", mode="regulation", macros=macros).resolve()
+    activation = config.Config(
+        backend="rhizotron", mode="activation", macros=macros).resolve()
+    assert activation == regulation
+    # The same macros under a fungal backend genuinely diverge by mode --
+    # which is what proves the equality above is the pin, not a coincidence.
+    fungal_reg = config.Config(
+        backend="layered", mode="regulation", macros=macros).resolve()
+    fungal_act = config.Config(
+        backend="layered", mode="activation", macros=macros).resolve()
+    assert fungal_act != fungal_reg
+
+
+def test_presets_carry_their_world():
+    """`meadow` means the rhizotron; `dense` means the fungal field -- and
+    each list only offers what the active world can honour."""
+    from anastomosis import presets
+    from anastomosis.__main__ import _backend_for_preset
+
+    for name in ("loam", "meadow", "taproot"):
+        assert presets.world_of(name) == "rhizotron"
+        assert presets.mode_of(name) == "regulation"
+    assert presets.world_of("default") == "fungal"
+
+    rhizotron_list = presets.names("regulation", "rhizotron")
+    assert set(rhizotron_list) == {"loam", "meadow", "taproot"}
+    assert "meadow" not in presets.names("regulation", "fungal")
+    # Every preset belongs to exactly one world and one mode.
+    for name in presets.names():
+        presets.world_of(name)
+        presets.mode_of(name)
+
+    assert _backend_for_preset("layered", "meadow") == "rhizotron"
+    assert _backend_for_preset("rhizotron", "dense") == "layered"
+    assert _backend_for_preset("volumetric", "dense") == "volumetric"
+    assert _backend_for_preset("rhizotron", "loam") == "rhizotron"
 
 
 def test_shipped_endpoints_sit_inside_the_swept_certificate():

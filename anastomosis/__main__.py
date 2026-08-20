@@ -155,6 +155,25 @@ def arm_exit_guard(seconds: float = EXIT_GRACE_SECONDS) -> threading.Thread:
     return thread
 
 
+def _backend_for_preset(current: str, preset: str) -> str:
+    """The backend a preset's world needs, disturbing the choice least.
+
+    A rhizotron preset means the rhizotron. A fungal preset from a config
+    left on the rhizotron means *a* fungal backend, and the default layered
+    one is the only sensible guess; a config already on a fungal backend
+    keeps it, because `dense` is `dense` under either depth view.
+    """
+    from . import config as config_module
+    from . import presets as presets_module
+
+    world = presets_module.world_of(preset)
+    if world == "rhizotron":
+        return "rhizotron"
+    if current == "rhizotron":
+        return config_module.DEFAULT_BACKEND
+    return current
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -180,8 +199,11 @@ def main(argv: list[str] | None = None) -> int:
             cfg.macros = presets_module.get(args.preset)
             cfg.preset_name = args.preset
             # A preset is macro positions *plus* the curve table they were
-            # tuned against; asking for one means asking for its mode.
+            # tuned against *plus* the world that renders them; asking for
+            # one means asking for its mode and, when the current backend is
+            # the wrong world entirely, for a backend that world runs on.
             cfg.mode = presets_module.mode_of(args.preset)
+            cfg.backend = _backend_for_preset(cfg.backend, args.preset)
         if args.backend:
             cfg.backend = args.backend
         if args.volume_detail:
@@ -199,8 +221,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         cfg.preset_name = args.preset
         # The preset's macros only mean what they meant in the mode they were
-        # tuned in, so the preset brings its mode with it.
+        # tuned in, so the preset brings its mode with it -- and its world:
+        # `--preset meadow` means the rhizotron, whatever backend the file
+        # was left on.
         cfg.mode = presets_module.mode_of(args.preset)
+        cfg.backend = _backend_for_preset(cfg.backend, args.preset)
         config_module.save(cfg, config_path)
 
     from .app import AppOptions, Application

@@ -515,6 +515,8 @@ class RhizotronEngine(Backend):
             "elong_axis": rhiz.elong_axis * dt,
             "elong_lateral": rhiz.elong_lateral * dt,
             "elong_fine": rhiz.elong_fine * dt,
+            "elong_floor": rhiz.elong_slow_floor,
+            "elong_slow": dt / max(rhiz.elong_slow_tau, 1e-3),
             "gsa_lateral": rhiz.gsa_lateral,
             "gsa_fine": rhiz.gsa_fine,
             "gsa_gain_axis": rate(rhiz.gsa_gain_axis),

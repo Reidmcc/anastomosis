@@ -27,9 +27,10 @@
 
 const DEPOSIT_SCALE: f32 = 1048576.0;
 
-// The deposit level that fully re-youngs a texel's age in one tick. Deposits
-// per tick are ~2e-2 at the default rates, so a growing tip holds its texels
-// near age zero while a texel it has left ages away smoothly.
+// The floor on the mass the deposit share is measured against, so a deposit
+// onto near-bare ground still counts as (almost) the whole of it: a fresh
+// path is fully young and fully its own order, while established mass
+// dilutes later arrivals in proportion.
 const AGE_RESET_REF: f32 = 0.02;
 
 const DENSITY_CAP: f32 = 4.0;
@@ -103,10 +104,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     density = min(density + deposited, DENSITY_CAP);
 
-    // Age: a second older, then re-younged in proportion to what just landed
-    // -- a smooth blend, so time never steps.
-    let youth = clamp(deposited / AGE_RESET_REF, 0.0, 1.0);
-    age = min(age + rp.dt_seconds, AGE_CAP) * (1.0 - youth);
+    // Age and fineness update by the deposit's *share of the texel's mass*,
+    // not by its absolute size. The first build weighted them by the deposit
+    // against a fixed reference, and the consequence is only visible in a
+    // grown plant: one fine root crossing a woody axis re-younged and
+    // re-labelled the axis's texels as fine, and senescence then ate holes
+    // in the trunk -- the central roots breaking up while their plant lived. A
+    // hairline crossing a trunk is a fraction of a percent of its mass, and
+    // now moves its identity by exactly that much.
+    let share = clamp(deposited / max(density, AGE_RESET_REF), 0.0, 1.0);
+    age = min(age + rp.dt_seconds, AGE_CAP) * (1.0 - share);
 
     // Senescence (§15.11 step 4): fine material fades once it is old, at a
     // rate scaling with its fineness -- fuzz in minutes, mixed lateral paths
@@ -121,10 +128,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let kept = density
         * (1.0 - rp.senesce_rate * fineness * sqrt(fineness) * ripeness);
 
-    // Fineness follows what deposits: order 0 pulls toward 0, fines toward 1.
+    // Fineness follows what deposits, by the same mass share: order 0 pulls
+    // toward 0, fines toward 1, and a trunk stays a trunk under crossings.
     if (deposited > 1e-6) {
         let order_here = clamp(deposited_order / deposited, 0.0, 1.0);
-        fineness = mix(fineness, order_here, youth);
+        fineness = mix(fineness, order_here, share);
     }
 
     // --- The nutrient economy (§15.11 step 5) -------------------------------

@@ -310,7 +310,8 @@ class ControlPanel(QtWidgets.QWidget):
         box = QtWidgets.QGroupBox("Preset")
         row = QtWidgets.QHBoxLayout(box)
         self.preset_combo = QtWidgets.QComboBox()
-        self.preset_combo.addItems(presets_module.names(self._mode()))
+        self.preset_combo.addItems(presets_module.names(
+            self._mode(), presets_module.world_for_backend(self.app.backend)))
         self.preset_combo.activated.connect(self._on_preset)
         row.addWidget(self.preset_combo, 1)
         return box
@@ -635,6 +636,7 @@ class ControlPanel(QtWidgets.QWidget):
         index = self.mode_combo.findData(self._mode())
         if index >= 0:
             self.mode_combo.setCurrentIndex(index)
+        self._sync_mode_enabled()
         self._sync_presets()
         index = self.backend_combo.findData(self.app.backend)
         if index >= 0:
@@ -647,16 +649,22 @@ class ControlPanel(QtWidgets.QWidget):
         self._sync_thickness()
 
     def _sync_presets(self) -> None:
-        """The preset list is the active mode's.
+        """The preset list is the active mode's, in the active world.
 
         A preset is macro positions *plus* the curve table they were tuned
-        against (see `presets.PRESET_MODES`), so offering `dense` while the
-        activation table is driving would offer a picture nobody has judged
-        under a name that promises one somebody has. A mode with no presets
-        yet says so instead of pretending.
+        against (see `presets.PRESET_MODES`) *plus* the world that renders
+        them (`presets.PRESET_WORLDS`), so offering `dense` while the
+        activation table is driving -- or `meadow` while a fungal backend is
+        -- would offer a picture nobody has judged under a name that promises
+        one somebody has. A list with nothing in it says so instead of
+        pretending.
         """
-        mode = self._mode()
-        names = presets_module.names(mode)
+        world = presets_module.world_for_backend(self.app.backend)
+        # The rhizotron has one tuning, so its list is the regulation one
+        # whatever the mode selector was left at (config.Config.resolve does
+        # the same).
+        mode = "regulation" if world == "rhizotron" else self._mode()
+        names = presets_module.names(mode, world)
         was, self._updating = self._updating, True
         self.preset_combo.clear()
         self.preset_combo.addItems(names)
@@ -665,11 +673,30 @@ class ControlPanel(QtWidgets.QWidget):
             self.preset_combo.setCurrentIndex(index)
         self.preset_combo.setEnabled(bool(names))
         self.preset_combo.setToolTip(
-            "Named settings, tuned in this mode."
+            "Named settings, tuned for this view."
             if names else
             f"No {mode} presets yet -- the sliders below still work."
         )
         self._updating = was
+
+    def _sync_mode_enabled(self) -> None:
+        """The Mode selector belongs to the fungal field.
+
+        The rhizotron has one tuning (DESIGN.md §15): under it the macros
+        always resolve through the regulation table, so the selector would be
+        a control that changes nothing. Greyed out and saying why, rather
+        than hidden -- the same treatment the slab's controls get under the
+        layered view.
+        """
+        rhizotron = self.app.backend == "rhizotron"
+        self.mode_combo.setEnabled(not rhizotron)
+        if rhizotron:
+            self.mode_combo.setToolTip(
+                "The rhizotron has one tuning. Mode returns when you switch "
+                "back to a fungal view."
+            )
+        else:
+            self.mode_combo.setToolTip("")
 
     # -- the slab's thickness ----------------------------------------------
 
