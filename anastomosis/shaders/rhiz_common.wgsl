@@ -282,6 +282,25 @@ fn soil_at(rp: RhizParams, ux: f32, rel_row: f32) -> Soil {
     return Soil(strat, stone, grain, cond, light, impedance);
 }
 
+// The nutrient richness fresh soil arrives with (§15.11 step 5): a broad
+// stratum-scale variation around the baseline, plus rare buried caches --
+// something died here, and the roots that find it will say so. Pure function
+// of (seed, world row) like everything else the generator makes; what
+// happens to it afterwards -- uptake, recycling, the whisper of diffusion --
+// is the structure pass's, because from arrival on it is *state*.
+fn nutrient_seed(rp: RhizParams, ux: f32, rel_row: f32) -> f32 {
+    let origin = vec2<u32>(rp.origin_hi, rp.origin_lo);
+    let broad = soil_noise(ux, 3u, origin, rel_row,
+                           rp.strata_shift, rp.seed ^ 0x0507u);
+    let cache = pebbles(
+        rp, ux, rel_row, max(rp.stone_cells_x / 3u, 2u), rp.stone_shift + 2u,
+        clamp(rp.nutrient_cache, 0.0, 1.0) * 0.45, rp.seed ^ 0x0C4Eu);
+    return clamp(
+        rp.nutrient_baseline * (1.0 + 0.4 * broad)
+            + rp.nutrient_cache * 1.6 * cache,
+        0.002, 2.0);
+}
+
 // The lateral profile of an event, on the wrapping x axis.
 fn event_lateral(ux: f32, ex: f32, radius: f32) -> f32 {
     var dx = abs(ux - ex);

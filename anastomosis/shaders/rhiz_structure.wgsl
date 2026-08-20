@@ -35,6 +35,36 @@ const AGE_RESET_REF: f32 = 0.02;
 const DENSITY_CAP: f32 = 4.0;
 const AGE_CAP: f32 = 4000.0;
 
+// The source state of the texel landing at (x, y) after this tick's scroll:
+// (density, age, fineness, nutrient). A row from below the old texture
+// starts bare of roots but arrives with the generator's richness -- and so
+// does any texel whose nutrient reads non-positive, which is both the fresh
+// seeding (the host writes zeros rather than mirroring the hash in numpy)
+// and a column saved before the economy existed. Living depletion never
+// reaches zero exactly; the floor in `nutrient_seed` sees to that.
+fn state_at(x: i32, y: i32) -> vec4<f32> {
+    // Above the texture (a diffusion probe from the top row) reads the top
+    // row itself -- no-flux; below it is fresh soil from the generator.
+    let sy = max(y + i32(rp.scroll_rows), 0);
+    let sx = ((x % i32(rp.dims_x)) + i32(rp.dims_x)) % i32(rp.dims_x);
+    let ux = (f32(sx) + 0.5) / f32(rp.dims_x);
+    if (sy >= i32(rp.dims_y)) {
+        return vec4<f32>(
+            0.0, 0.0, 0.0, nutrient_seed(rp, ux, f32(y) + 0.5));
+    }
+    let v = textureLoad(src_tex, vec2<i32>(sx, sy), 0);
+    var n = finite_or(v.w, 0.0);
+    if (n <= 0.0) {
+        n = nutrient_seed(rp, ux, f32(y) + 0.5);
+    }
+    return vec4<f32>(
+        clamp(finite_or(v.x, 0.0), 0.0, DENSITY_CAP),
+        clamp(finite_or(v.y, 0.0), 0.0, AGE_CAP),
+        clamp(finite_or(v.z, 0.0), 0.0, 1.0),
+        clamp(n, 0.0, 2.0),
+    );
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= rp.dims_x || gid.y >= rp.dims_y) {
@@ -43,17 +73,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = i32(gid.x);
     let y = i32(gid.y);
 
-    // Source state, shifted; a row from below the old texture starts bare.
-    var density = 0.0;
-    var age = 0.0;
-    var fineness = 0.0;
+    let state = state_at(x, y);
+    var density = state.x;
+    var age = state.y;
+    var fineness = state.z;
+    var nutrient = state.w;
     let sy = y + i32(rp.scroll_rows);
-    if (sy < i32(rp.dims_y)) {
-        let v = textureLoad(src_tex, vec2<i32>(x, sy), 0);
-        density = clamp(finite_or(v.x, 0.0), 0.0, DENSITY_CAP);
-        age = clamp(finite_or(v.y, 0.0), 0.0, AGE_CAP);
-        fineness = clamp(finite_or(v.z, 0.0), 0.0, 1.0);
-    }
 
     // Drain the accumulator. The tips deposited in the pre-shift frame, so
     // the texel that owns those quanta now is the shifted one -- the same
@@ -93,7 +118,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // steady state, not just the growth burst.
     let ripeness = 1.0 - exp(
         -max(age - rp.senesce_delay, 0.0) / max(rp.senesce_delay, 1.0));
-    density = density
+    let kept = density
         * (1.0 - rp.senesce_rate * fineness * sqrt(fineness) * ripeness);
 
     // Fineness follows what deposits: order 0 pulls toward 0, fines toward 1.
@@ -102,7 +127,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         fineness = mix(fineness, order_here, youth);
     }
 
+    // --- The nutrient economy (§15.11 step 5) -------------------------------
+    // Growth eats: what a tip laid down here cost the texel a multiple of
+    // itself in richness. Death feeds: the mass senescence just removed
+    // returns as richness, which is the recycling memory -- ground where a
+    // plant died is ground the next plant forages into. And a whisper of
+    // diffusion lets a cache feed its surroundings rather than only its own
+    // texels; the neighbours are read shifted through `state_at`, so the
+    // exchange is frame-consistent under any scroll.
+    nutrient = nutrient - rp.nutrient_uptake * deposited
+        + rp.nutrient_recycle * (density - kept);
+    let n_left = state_at(x - 1, y).w;
+    let n_right = state_at(x + 1, y).w;
+    let n_up = state_at(x, y - 1).w;
+    let n_down = state_at(x, y + 1).w;
+    nutrient = nutrient + rp.nutrient_spread
+        * (0.25 * (n_left + n_right + n_up + n_down) - nutrient);
+    nutrient = clamp(finite_or(nutrient, 0.002), 0.002, 2.0);
+    density = kept;
+
     textureStore(
         dst_tex, vec2<i32>(x, y),
-        vec4<f32>(density, age, fineness, 0.0));
+        vec4<f32>(density, age, fineness, nutrient));
 }

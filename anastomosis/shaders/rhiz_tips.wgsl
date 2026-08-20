@@ -145,12 +145,14 @@ fn probe(pos: vec2<f32>) -> f32 {
     let fdims = vec2<f32>(f32(rp.dims_x), f32(rp.dims_y));
     let uv = vec2<f32>(fract(pos.x / fdims.x), clamp(pos.y / fdims.y, 0.0, 1.0));
     let wet = textureSampleLevel(moisture_tex, samp, uv, 0.0).x;
-    let structure = min(
-        textureSampleLevel(structure_tex, samp, uv, 0.0).x, 1.0);
+    let field = textureSampleLevel(structure_tex, samp, uv, 0.0);
     let soil = soil_at(rp, uv.x, pos.y - f32(rp.scroll_rows));
+    // The tropism sum, chemotropism included: richness pulls (the nutrient
+    // channel rides the same sample the avoidance already takes).
     return rp.hydro_gain * wet
+        + rp.chemo_gain * clamp(field.w, 0.0, 1.2)
         - rp.thigmo_gain * soil.imped
-        - rp.avoid_gain * structure;
+        - rp.avoid_gain * min(field.x, 1.0);
 }
 
 @compute @workgroup_size(64, 1, 1)
@@ -272,23 +274,46 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var heading = tip.heading + turn + rp.tip_jitter * rnd_signed(&seed);
 
+    // What the tip is driving into, on its post-steering heading. Needed
+    // before gravity, because gravity must know about it: a strong
+    // gravitropism that re-points a blocked axis straight back into the
+    // obstacle every tick is a deadlock -- the flank steering can never
+    // accumulate enough angle to get around, and the tip stalls forever
+    // (found by the foraging test: two of three axes pinned at their seed
+    // rows). So the pull *releases* in proportion to the blockage -- a
+    // stalled tip searches sideways, which is what a real root apex does at
+    // hardpan -- and re-asserts as soon as the way is clear.
+    let steered = vec2<f32>(cos(heading), sin(heading));
+    let probe_ahead = tip.pos + steered * elong_for(order);
+    let blocked = soil_at(
+        rp, fract(probe_ahead.x / fdims.x),
+        probe_ahead.y - f32(rp.scroll_rows)).imped;
+    var slow = 1.0 - smoothstep(0.30, 0.75, blocked);
+
     // Gravitropism: an angular relaxation toward the order's setpoint. Not a
     // steering vote like the probes -- gravity is not sensed at a distance,
-    // it simply always pulls.
+    // it simply always pulls (except into a wall, above).
     let setpoint = DOWN + side_of(tip.flags) * gsa_for(order);
-    heading = heading + gsa_gain_for(order) * wrap_angle(setpoint - heading);
+    heading = heading + gsa_gain_for(order) * (0.15 + 0.85 * slow)
+        * wrap_angle(setpoint - heading);
 
     // --- Movement ----------------------------------------------------------
     // Stones are not walls but resistance: the tip slows into them (and the
     // probes are already steering it around), so deflection is emergent
     // rather than a bounce. The bottom margin is where growth waits for the
-    // window (§15.4; the front controller arrives with step 4).
+    // window (§15.4).
     let dir = vec2<f32>(cos(heading), sin(heading));
     let next = tip.pos + dir * elong_for(order);
     let stone_ahead = soil_at(
         rp, fract(next.x / fdims.x), next.y - f32(rp.scroll_rows)).imped;
-    var slow = 1.0 - smoothstep(0.30, 0.75, stone_ahead);
+    // Floored, not zeroed: a tip that lands *inside* rock -- a seed hashed
+    // onto a pebble, say -- would otherwise be trapped whatever it does,
+    // since every direction is blocked and steering cannot help. The creep
+    // is far below anything visible (twenty-odd seconds to force a pebble)
+    // and it is the difference between a root delayed and a slot dead.
+    slow = max(1.0 - smoothstep(0.30, 0.75, stone_ahead), 0.05);
     if (next.y > fdims.y - 2.5) {
+        // The bottom margin is a true wait: the window will come.
         slow = 0.0;
     }
     let travelled = elong_for(order) * slow;
@@ -342,7 +367,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var flags = tip.flags;
     var since_branch = tip.since_branch + travelled;
     let spacing = select(rp.spacing_lateral, rp.spacing_axis, order == 0u);
-    if (order < 2u && since_branch > spacing && rnd(&seed) < rp.branch_prob) {
+    // Foraging (§15.3): local richness modulates the branching -- the
+    // documented proliferation response, and what turns a buried cache into
+    // a burst of fuzz when a root finds it. Depleted ground grows sparse.
+    let richness = clamp(textureSampleLevel(
+        structure_tex, samp,
+        vec2<f32>(fract(pos.x / fdims.x), clamp(pos.y / fdims.y, 0.0, 1.0)),
+        0.0).w, 0.0, 1.5);
+    let forage = clamp(rp.forage_gain * 0.5, 0.0, 1.0);
+    let eagerness = clamp(
+        rp.branch_prob * mix(1.0, richness, forage), 0.0, 1.0);
+    if (order < 2u && since_branch > spacing && rnd(&seed) < eagerness) {
         flags = with_children(flags, children_of(flags) + 1u);
         since_branch = 0.0;
     }

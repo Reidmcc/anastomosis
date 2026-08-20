@@ -494,9 +494,10 @@ retirement:
    and the first presets, which are §13-style judgements for eyes once
    there is something to judge. Candidates: `meadow` (fine, fibrous, busy),
    `taproot` (sparse, deep, austere), `loam` (the balanced default).
-   **First half built** — the macro wiring, hardpan and biopores, hairs and
-   the shimmer; see the record below for what landed, what moved, and what
-   still waits.
+   **Built, except the presets** — the macro wiring, hardpan and biopores,
+   hairs and the shimmer, and then the nutrient economy; see the two
+   records below for what landed, what moved, and why the presets still
+   wait.
 6. **Later, separately:** an activation retune of the rhizotron against
    §14's checklist, and only if the mode earns it.
 
@@ -790,6 +791,53 @@ honesty. The germination *button* (§15.5's manual kind) also waits: event
 kinds are a shared vocabulary across backends, and adding a kind the
 fungal modes would fire as a no-op wants more thought than a button is
 worth.
+
+### What the second half of step 5 actually did
+
+**The nutrient economy lives in the structure texture's spare channel**,
+which is smaller than it sounds and the reason it is cheap: the same pass
+that shifts and ages the root map now initialises richness on arriving
+rows (stratum-scale variation around the baseline plus rare buried caches,
+by the same bombing-pattern hash the stones use), spends it where deposits
+land — growth eats — returns it where senescence removes mass — death
+feeds, which is the recycling memory the proposal promised: ground where a
+plant died is ground the next plant forages into — and spreads it by a
+whisper of diffusion so a cache feeds its surroundings. The tips read the
+channel off the sample the self-avoidance already takes, so chemotropism
+joins the tropism sum at no cost, and local richness modulates branching:
+proliferation into a rich patch, the documented foraging response, with
+depleted ground growing sparse. Initialisation is lazy — a non-positive
+channel re-seeds from the generator — which quietly migrates both a fresh
+seeding (the host writes zeros rather than mirroring the hash in numpy)
+and any column saved before the economy existed.
+
+**The foraging test found a deadlock the sweep and the soak never could.**
+Painted rich and poor half-fields grew *backwards* — nearly everything in
+the poor half — and the trail led somewhere better than a sign error: two
+of the three axes had never left their seed rows. Strong gravitropism
+re-points a blocked axis straight back into whatever blocks it, every
+tick, so the flank steering can never accumulate the angle to get around:
+a deadlock, made likely by step 5a's broad hardpan bands and possible all
+along by a seed hashed onto a pebble, where every direction is blocked
+and no steering helps at all. Two mechanisms fix it, both smooth and both
+botanically honest: the gravitropic pull *releases* in proportion to the
+blockage — a stalled apex searches sideways, which is what real roots do
+at hardpan — and re-asserts once the way is clear; and the slowdown is
+floored at a creep rather than zeroed, twenty-odd seconds to force a
+pebble, the difference between a root delayed and a slot dead. (The
+bottom margin keeps its true stall: the window will come.) With clear
+ground isolating the chemotropism, the test then read the signal exactly
+where the mechanism leaves its record — the axes' frozen child counters:
+the rich half's axes threw six laterals in transit against the poor
+half's one.
+
+The economy also answers step 4's open controller question, for now: with
+uptake capping local proliferation and recycling re-seeding it, the
+community's bounds are economic as well as structural, and the multi-life
+succession tests hold without any PI controller to lean on. If a §4.2
+homeostat ever earns its place here it will be to regulate the *economy* —
+richness mean and turnover rate — not the population, and nothing about
+this step forecloses it.
 
 ### 15.12 Open questions
 

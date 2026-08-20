@@ -457,7 +457,9 @@ BARE_STEERING = {
     "rhizotron.descent_rate": 0.0,
     "rhizotron.descent_wander": 0.0,
     "rhizotron.stone_amount": 0.0,
+    "rhizotron.hardpan_amount": 0.0,
     "rhizotron.hydro_gain": 0.0,
+    "rhizotron.chemo_gain": 0.0,
     "rhizotron.avoid_gain": 0.0,
     "rhizotron.thigmo_gain": 0.0,
     "rhizotron.tip_jitter": 0.0,
@@ -847,6 +849,92 @@ def test_hardpan_structures_the_water(gpu_device):
     assert spread["panned"] > spread["open"] * 1.1, (
         f"hardpan did not organise the water "
         f"(row spread {spread['panned']:.4f} vs {spread['open']:.4f})"
+    )
+
+
+def _write_structure(engine, data: np.ndarray) -> None:
+    for texture in engine.structure.textures:
+        checkpoint._write_texture(engine.device, texture, data)
+
+
+def test_roots_forage_into_richness(gpu_device):
+    """§15.3's foraging: a rich half-field draws measurably more growth than
+    a poor one. The richness is painted by hand and pinned (no uptake, no
+    spread), so the asymmetry in what grows is the tropism's doing."""
+    params = _resolve(overrides={
+        **STILL_WATER,
+        "rhizotron.descent_rate": 0.0,
+        "rhizotron.descent_wander": 0.0,
+        "rhizotron.nutrient_uptake": 0.0,
+        "rhizotron.nutrient_spread": 0.0,
+        "rhizotron.chemo_gain": 2.5,
+        "rhizotron.forage_gain": 2.0,
+        "rhizotron.hydro_gain": 0.0,
+        # Clear ground: this isolates the chemotropism, and a seed hashed
+        # onto a stone would spend the test forcing its way out instead.
+        "rhizotron.stone_amount": 0.0,
+        "rhizotron.hardpan_amount": 0.0,
+    })
+    engine = _engine(gpu_device, params, seed=41)
+    g = engine.geometry
+    field = np.zeros((g.height, g.width, 4), dtype=np.float16)
+    field[:, : g.width // 2, 3] = 0.05
+    field[:, g.width // 2:, 3] = 1.5
+    _write_structure(engine, field)
+
+    for _ in range(500):
+        engine.tick(params, [])
+
+    # The axes' child counters are the record of the foraging: branching is
+    # richness-modulated, the axes plunge straight through their own halves,
+    # and once they reach the bottom margin the counters freeze -- so what
+    # they hold is exactly how eagerly each half's ground was foraged during
+    # the transit.
+    tips = _tips(engine)
+    count = params.rhizotron.axes_per_plant
+    axes_x = tips["x"][:count]
+    children = (tips["flags"][:count] >> 8).astype(np.int64)
+    poor = int(children[axes_x < g.width / 2].sum())
+    rich = int(children[axes_x >= g.width / 2].sum())
+    assert rich >= 2 + 2 * poor, (
+        f"the rich half's axes threw {rich} laterals against the poor "
+        f"half's {poor}; foraging should at least have doubled them"
+    )
+
+
+def test_dead_roots_enrich_the_ground(gpu_device):
+    """The recycling memory: with the foraging feedback switched off the two
+    runs grow *identically*, so the richness they leave behind differs by
+    exactly what senescence returned -- ground where a plant died is richer
+    ground, and nothing else moved."""
+    fields = {}
+    for label, recycle in (("kept", 0.0), ("returned", 1.5)):
+        params = _resolve(overrides={
+            **STILL_WATER,
+            "rhizotron.descent_rate": 0.0,
+            "rhizotron.descent_wander": 0.0,
+            "rhizotron.senescence_rate": 0.06,
+            "rhizotron.senescence_delay": 5.0,
+            "rhizotron.nutrient_recycle": recycle,
+            # Decoupled: richness must not steer this pair, or the growth
+            # (and so the uptake) would differ between the runs.
+            "rhizotron.chemo_gain": 0.0,
+            "rhizotron.forage_gain": 0.0,
+        })
+        engine = _engine(gpu_device, params, seed=43)
+        for _ in range(600):
+            engine.tick(params, [])
+        fields[label] = _structure(engine).astype(np.float32)
+    assert np.array_equal(fields["kept"][..., 0], fields["returned"][..., 0]), (
+        "decoupled runs should grow identically; the economy leaked into "
+        "the growth"
+    )
+    gained = fields["returned"][..., 3] - fields["kept"][..., 3]
+    assert float(gained.max()) > 0.01, (
+        "senescence returned nothing anywhere"
+    )
+    assert float(gained.min()) >= -1e-3, (
+        "recycling somehow *removed* richness"
     )
 
 

@@ -763,6 +763,24 @@ class RhizotronParams:
     hardpan_amount: float = 0.55
     biopore_amount: float = 0.5
 
+    # --- The nutrient economy (§15.11 step 5, second half) -----------------
+    # Nutrients live in the structure texture's spare channel: initialised
+    # from the arriving soil's stratum richness plus rare buried caches
+    # ("something died here" -- the §15.5 fiction), consumed where roots
+    # actually grow, returned where fine roots senesce, and spread by a
+    # whisper of diffusion. This is the recycling memory the proposal
+    # promised: old growth enriches the ground future roots forage into.
+    nutrient_baseline: float = 0.5
+    nutrient_cache: float = 0.6     # how rich and common the buried caches are
+    nutrient_uptake: float = 2.2    # consumed per unit of deposit laid
+    nutrient_recycle: float = 0.55  # fraction of senesced mass returned
+    nutrient_spread: float = 0.02   # per second; a whisper, not a smoothing
+    # Foraging: the chemotropic pull toward richness, and how strongly local
+    # richness modulates branching -- proliferation in a rich patch is the
+    # documented root response (§15.3), and depleted ground halves it.
+    chemo_gain: float = 0.6
+    forage_gain: float = 1.0
+
     # --- Moisture (§15.3) --------------------------------------------------
     moisture_baseline: float = 0.22
     # Downward percolation: flux gain per second, and the nonlinearity in the
@@ -1765,6 +1783,13 @@ def validate(params: Params) -> Params:
     rhiz.stone_cells = min(max(float(rhiz.stone_cells), 2.0), 256.0)
     rhiz.hardpan_amount = min(max(float(rhiz.hardpan_amount), 0.0), 1.0)
     rhiz.biopore_amount = min(max(float(rhiz.biopore_amount), 0.0), 1.0)
+    rhiz.nutrient_baseline = min(max(float(rhiz.nutrient_baseline), 0.0), 2.0)
+    rhiz.nutrient_cache = min(max(float(rhiz.nutrient_cache), 0.0), 2.0)
+    rhiz.nutrient_uptake = min(max(float(rhiz.nutrient_uptake), 0.0), 50.0)
+    rhiz.nutrient_recycle = min(max(float(rhiz.nutrient_recycle), 0.0), 2.0)
+    rhiz.nutrient_spread = min(max(float(rhiz.nutrient_spread), 0.0), 2.0)
+    rhiz.chemo_gain = min(max(float(rhiz.chemo_gain), 0.0), 10.0)
+    rhiz.forage_gain = min(max(float(rhiz.forage_gain), 0.0), 4.0)
     rhiz.root_hair = min(max(float(rhiz.root_hair), 0.0), 1.0)
     rhiz.mycorrhiza = min(max(float(rhiz.mycorrhiza), 0.0), 1.0)
     # Percolation is explicit: the per-tick flux is additionally clamped to a
