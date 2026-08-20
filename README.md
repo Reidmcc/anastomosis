@@ -352,6 +352,44 @@ look *smoother* than simulating at 30, and lets the budget governor throttle the
 tick rate invisibly if frames run long. Resolution is never changed at runtime,
 because that would be plainly visible.
 
+## If it freezes
+
+A frozen window used to leave nothing behind: the process stayed up, the last
+log line was ordinary telemetry from before it went wrong, and there was
+nothing to go on. There is now a watchdog on a thread of its own that notices
+the frame loop has stopped and writes a report while it is still stuck.
+
+Reports land in `~/.local/state/anastomosis/diagnostics/`:
+
+```
+stall-20260820-141133.txt   one freeze, sampled every 30s while it lasts
+crash.log                   hard crashes, and manual dumps (below)
+```
+
+A stall report says which phase of the frame the loop went into and never came
+out of — `tick`, `acquire`, `render`, `telemetry`, `checkpoint`, or `idle` for
+a loop that simply stopped being asked to paint — carries a stack for every
+thread in the process, and repeats both every 30 seconds while the freeze
+lasts. Two samples with the same stacks and unmoving CPU counters mean
+genuinely wedged; moving ones mean merely slow. It logs an ERROR line at the
+same time, and a WARNING if the loop later recovers.
+
+Being asked to paint is not guaranteed — a minimised or occluded window
+legitimately stops — so a loop between frames is given 45 seconds before it
+counts as stalled, against 10 seconds inside a frame. Adjust with
+`--stall-timeout SECONDS`, or pass `0` to switch the watchdog off.
+
+If it ever freezes so completely that even the watchdog cannot run, which is
+what happens if a driver call wedges while holding Python's interpreter lock,
+there is still a way in from outside:
+
+```bash
+kill -USR1 $(pgrep -f anastomosis)   # appends every thread's stack to crash.log
+```
+
+That is a C-level handler, so it works when nothing else does, and the program
+carries on running afterwards.
+
 ## Development
 
 ```bash
@@ -415,6 +453,7 @@ anastomosis/
   gpu_params.py   GPU struct layout (generates the WGSL, drives the packing)
   events.py       Poisson-arrival slow events
   checkpoint.py   periodic save and restore of the simulation state
+  diagnostics.py  stall watchdog and crash handler
   bluenoise.py    void-and-cluster dither mask
   shaders/        30 top-level WGSL modules, plus two shared includes
   ui/             Qt control panel
