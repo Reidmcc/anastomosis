@@ -125,6 +125,15 @@ and the tests — resolves via the table below, and means the file listed agains
   build step actually did — including the gamut leak the mode-slam test
   found in §7's stage.
 
+- **§15 — [docs/root-mode.md](docs/root-mode.md)** *(proposal — not yet built)*
+  A third backend on a second metaphor: the plant root. A rhizotron pane —
+  stratified Munsell-coloured soil, pale roots steered by tropisms, moisture
+  percolating after rain, and a window that sinks with the growing front over
+  a ring-buffered, never-repeating soil column. Why it is a backend rather
+  than a mode, the three inversions that make it visually unmistakable for
+  the fungal field (ramification, gravity, matrix), succession as the
+  never-settles mechanism, its safety analysis, and its build order.
+
 ## Where to look first
 
 - Changing **agent behaviour** (`agents.wgsl`, `vol_agents.wgsl`): §2, §4.7,
