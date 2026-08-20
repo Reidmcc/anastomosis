@@ -146,8 +146,9 @@ def test_switching_the_mode_reaches_the_app_and_refilters_the_presets(monkeypatc
     panel.mode_combo.setCurrentIndex(panel.mode_combo.findData("activation"))
     panel._on_mode()
     assert app.config.mode == "activation"
-    # The preset list is the new mode's. Today that is no presets at all
-    # (they arrive with §14.8 step 4), and the combo says so rather than
+    # The preset list is the new mode's -- asserted against whatever that
+    # mode actually has rather than against a count, so it holds both before
+    # and after a mode gains presets. A mode with none says so rather than
     # offering regulation presets through the wrong table.
     names = presets.names("activation")
     assert panel.preset_combo.count() == len(names)
@@ -164,9 +165,10 @@ def test_switching_the_mode_reaches_the_app_and_refilters_the_presets(monkeypatc
 def test_the_readouts_quote_the_active_modes_curve(monkeypatch):
     """A slider readout must describe the table that is actually driving.
 
-    The shipped activation table is still a copy of the regulation one, so
-    the divergence is injected: with the activation event-rate curve pinned
-    to a different value, the same slider position must read differently the
+    The divergence is injected rather than taken from the shipped tables, so
+    that the assertion is about the readout following the mode at all rather
+    than about today's endpoints: with the activation event-rate curve pinned
+    to a known value, the same slider position must read differently the
     moment the mode changes.
     """
     tweaked = {

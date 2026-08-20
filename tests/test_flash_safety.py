@@ -135,10 +135,10 @@ def test_a_mode_switch_cannot_defeat_the_bound(gpu_device, offscreen_target):
     modes -- strictly more movement than any real switch, which keeps the
     macros where they are.
 
-    The shipped activation table is still a copy of the regulation one
-    (§14.8 step 1), so today the modes contribute the same values and the
-    macro extremes do the work; when step 3 retunes the activation endpoints,
-    their divergence rides in here with no change to the test.
+    Written when the two tables were identical and the macro extremes did all
+    the work (§14.8 step 1); step 3's retuned activation endpoints now
+    contribute their own divergence, and rode into these assertions with no
+    change to the test, which is the property the phrasing was chosen for.
     """
     from dataclasses import fields
 

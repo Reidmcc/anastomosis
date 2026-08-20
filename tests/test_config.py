@@ -75,10 +75,10 @@ def test_curve_value_rejects_a_path_its_macro_does_not_drive():
 def test_the_mode_picks_the_curve_table(monkeypatch):
     """`resolve` reads the active mode's table and no other.
 
-    The shipped activation table is still a copy of the regulation one
-    (DESIGN.md §14.8 step 1), so the mechanism has to be shown with a
-    deliberately divergent table rather than the real values -- otherwise this
-    test would pass with the mode wired to nothing at all.
+    Shown with a deliberately divergent table rather than with the shipped
+    values, so that what is asserted is the *wiring* rather than today's
+    endpoints: this must keep failing if the mode is wired to nothing, however
+    far the two tables happen to have diverged (DESIGN.md §14.8 step 3).
     """
     tweaked = {
         macro: list(entries)

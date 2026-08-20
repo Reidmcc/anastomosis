@@ -843,9 +843,10 @@ class Macros:
 #
 # This is the *regulation* table -- the tuning the application shipped with,
 # and the one every value in it was measured against. The activation mode
-# (DESIGN.md §14) gets its own copy in :data:`MODE_CURVES` below; this name
-# stays because everything historical about these values ("the shipped
-# curve", the legacy event-rate inversion) means this table specifically.
+# (DESIGN.md §14) has its own, :data:`ACTIVATION_CURVES` below, reached
+# through :data:`MODE_CURVES`; this name stays because everything historical
+# about these values ("the shipped curve", the legacy event-rate inversion)
+# means this table specifically.
 MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
     "intensity": [
         ("agents.density", 0.10, 0.44, 1.0),
