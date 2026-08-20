@@ -418,3 +418,56 @@ def test_shutdown_stops_the_poll(app):
     app._poll_window()
 
     assert app.canvas.forced == 0, "a poll drew a frame after the world was saved"
+
+
+# ---------------------------------------------------------------------------
+# The API this reaches for
+# ---------------------------------------------------------------------------
+
+
+def test_the_canvas_internals_the_recovery_reaches_for_still_exist():
+    """The recovery pokes at ``rendercanvas`` internals; say so out loud.
+
+    Correcting a stale size and re-asserting visibility means writing where the
+    backend's own event handlers write, because that is the only place those
+    facts live. That is a deliberate reach past the public API, and the price
+    of it is this test: an upgrade that renames any of it should fail here,
+    loudly, rather than leave a recovery that silently never recovers.
+    """
+    from rendercanvas.base import BaseRenderCanvas
+    from rendercanvas.core.scheduler import Scheduler
+    from rendercanvas.core.size import SizeInfo
+
+    assert callable(getattr(BaseRenderCanvas, "force_draw", None)), (
+        "the only way to draw without the scheduler is gone"
+    )
+    assert callable(getattr(BaseRenderCanvas, "_set_visible", None)), (
+        "the hook that un-pauses a canvas is gone"
+    )
+    assert callable(getattr(Scheduler, "set_enabled", None)), (
+        "the scheduler no longer has the enabled state _set_visible drives"
+    )
+    assert callable(getattr(SizeInfo, "set_physical_size", None)), (
+        "the canvas' cached size is no longer written through SizeInfo"
+    )
+
+
+def test_the_qt_canvas_keeps_its_state_on_the_inner_widget():
+    """Which is why both are pushed into ``_subwidget`` and not the wrapper.
+
+    The top-level Qt canvas subclasses the same base as the widget inside it,
+    so ``canvas._set_visible(True)`` is not a mistake that raises -- it drives a
+    scheduler the wrapper does not have, and does nothing at all.
+    """
+    pytest.importorskip(
+        "PySide6.QtWidgets", reason="the Qt backend needs PySide6"
+    )
+    from rendercanvas.base import WrapperRenderCanvas
+    from rendercanvas.qt import QRenderCanvas, QRenderWidget
+
+    assert issubclass(QRenderCanvas, WrapperRenderCanvas)
+    assert "_subwidget" in QRenderCanvas.__init__.__code__.co_names
+    for name in ("isVisible", "isMinimized", "devicePixelRatioF", "width"):
+        assert callable(getattr(QRenderCanvas, name, None)) or callable(
+            getattr(QRenderWidget, name, None)
+        ), f"the Qt canvas can no longer be asked {name}"
