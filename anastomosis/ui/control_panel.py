@@ -76,6 +76,25 @@ PARALLAX_TIP = (
 EVENT_RATE_MACRO = "event_rate"
 EVENT_RATE_PATH = "events.rate_per_hour"
 
+# The two modes (DESIGN.md §14): one instrument, two tunings. Unlike the depth
+# backend below this is not structural -- switching keeps the field on screen
+# and ramps it to the new character -- which is why the selector asks no
+# question before acting where the backend one does.
+MODE_LABELS: list[tuple[str, str, str]] = [
+    (
+        "regulation",
+        "Regulation",
+        "Calm and slow -- the original tuning, for settling. The default.",
+    ),
+    (
+        "activation",
+        "Activation",
+        "The same instrument tuned for sensory seeking: more motion, more "
+        "colour, more happening. The same flash-safety bound holds in both "
+        "modes; nothing here can flash.",
+    ),
+]
+
 # The two depth backends (DESIGN.md §5), with the difference stated in terms of
 # what the user will see rather than of how it is drawn.
 BACKEND_LABELS: list[tuple[str, str, str]] = [
@@ -237,6 +256,7 @@ class ControlPanel(QtWidgets.QWidget):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(10)
 
+        layout.addWidget(self._build_mode())
         layout.addWidget(self._build_presets())
         layout.addWidget(self._build_backend())
         layout.addWidget(self._build_macros())
@@ -258,11 +278,31 @@ class ControlPanel(QtWidgets.QWidget):
 
     # -- construction -------------------------------------------------------
 
+    def _build_mode(self) -> QtWidgets.QWidget:
+        """Which tuning the knobs move through. DESIGN.md §14.
+
+        First in the panel because the preset list under it is the active
+        mode's, and because it is the other "which application is this"
+        control besides Depth. It differs from Depth in the way that matters:
+        nothing structural moves, so there is no confirmation dialog -- the
+        switch is ramped, reversible, and keeps the field on screen.
+        """
+        box = QtWidgets.QGroupBox("Mode")
+        row = QtWidgets.QHBoxLayout(box)
+        self.mode_combo = QtWidgets.QComboBox()
+        for name, label, tip in MODE_LABELS:
+            self.mode_combo.addItem(label, name)
+            self.mode_combo.setItemData(
+                self.mode_combo.count() - 1, tip, QtCore.Qt.ToolTipRole)
+        self.mode_combo.activated.connect(self._on_mode)
+        row.addWidget(self.mode_combo, 1)
+        return box
+
     def _build_presets(self) -> QtWidgets.QWidget:
         box = QtWidgets.QGroupBox("Preset")
         row = QtWidgets.QHBoxLayout(box)
         self.preset_combo = QtWidgets.QComboBox()
-        self.preset_combo.addItems(presets_module.names())
+        self.preset_combo.addItems(presets_module.names(self._mode()))
         self.preset_combo.activated.connect(self._on_preset)
         row.addWidget(self.preset_combo, 1)
         return box
@@ -535,6 +575,10 @@ class ControlPanel(QtWidgets.QWidget):
 
     # -- state --------------------------------------------------------------
 
+    def _mode(self) -> str:
+        """The mode the application is in, normalised."""
+        return config_module.normalise_mode(self.app.config.mode)
+
     def _format_macro(self, name: str, value: float) -> str:
         """What the label beside a slider says at this position.
 
@@ -543,10 +587,15 @@ class ControlPanel(QtWidgets.QWidget):
         mid-ramp and would show the number crawling towards the one the hand
         just set, which reads as lag in the control rather than as the smooth
         transition it actually is.
+
+        Asked of the active mode's curve, for the same honesty: the same
+        position resolves differently under different modes, and the readout
+        must describe the one that is driving.
         """
         if name == EVENT_RATE_MACRO:
             return describe_interval(
-                config_module.curve_value(EVENT_RATE_MACRO, EVENT_RATE_PATH, value)
+                config_module.curve_value(
+                    EVENT_RATE_MACRO, EVENT_RATE_PATH, value, mode=self._mode())
             )
         if name == PARALLAX_MACRO:
             return describe_parallax(self._parallax_reach(value))
@@ -560,7 +609,8 @@ class ControlPanel(QtWidgets.QWidget):
         the user something true about why, and one that keeps climbing while
         nothing on screen changes is lying to them.
         """
-        asked = config_module.curve_value(PARALLAX_MACRO, PARALLAX_PATH, value)
+        asked = config_module.curve_value(
+            PARALLAX_MACRO, PARALLAX_PATH, value, mode=self._mode())
         if self.app.backend != "volumetric":
             return asked
         slab = self.app.volume_slab()
@@ -574,9 +624,10 @@ class ControlPanel(QtWidgets.QWidget):
             value = float(getattr(macros, name))
             slider.setValue(int(round(value * SLIDER_STEPS)))
             self.values[name].setText(self._format_macro(name, value))
-        index = self.preset_combo.findText(self.app.config.preset_name)
+        index = self.mode_combo.findData(self._mode())
         if index >= 0:
-            self.preset_combo.setCurrentIndex(index)
+            self.mode_combo.setCurrentIndex(index)
+        self._sync_presets()
         index = self.backend_combo.findData(self.app.backend)
         if index >= 0:
             self.backend_combo.setCurrentIndex(index)
@@ -586,6 +637,31 @@ class ControlPanel(QtWidgets.QWidget):
         self._sync_detail_enabled()
         self._updating = False
         self._sync_thickness()
+
+    def _sync_presets(self) -> None:
+        """The preset list is the active mode's.
+
+        A preset is macro positions *plus* the curve table they were tuned
+        against (see `presets.PRESET_MODES`), so offering `dense` while the
+        activation table is driving would offer a picture nobody has judged
+        under a name that promises one somebody has. A mode with no presets
+        yet says so instead of pretending.
+        """
+        mode = self._mode()
+        names = presets_module.names(mode)
+        was, self._updating = self._updating, True
+        self.preset_combo.clear()
+        self.preset_combo.addItems(names)
+        index = self.preset_combo.findText(self.app.config.preset_name)
+        if index >= 0:
+            self.preset_combo.setCurrentIndex(index)
+        self.preset_combo.setEnabled(bool(names))
+        self.preset_combo.setToolTip(
+            "Named settings, tuned in this mode."
+            if names else
+            f"No {mode} presets yet -- the sliders below still work."
+        )
+        self._updating = was
 
     # -- the slab's thickness ----------------------------------------------
 
@@ -700,6 +776,28 @@ class ControlPanel(QtWidgets.QWidget):
                 f"The field is still running as it was.\n\n{exc}",
             )
         self._sync_thickness()
+
+    def _on_mode(self) -> None:
+        """Switch tunings. No dialog: nothing is lost and nothing is rebuilt.
+
+        The change reaches the image through the same ramp as every slider,
+        so it is a slow transition on the field already on screen -- the exact
+        opposite of the backend switch above it, and the reason this handler
+        has none of that one's ceremony.
+        """
+        if self._updating:
+            return
+        wanted = self.mode_combo.currentData()
+        if not self.app.set_mode(wanted):
+            return
+        # The same slider positions now resolve through a different table, so
+        # the readouts must be re-asked, and the preset list belongs to the
+        # new mode.
+        self._sync_presets()
+        for name, slider in self.sliders.items():
+            self.values[name].setText(
+                self._format_macro(name, slider.value() / SLIDER_STEPS)
+            )
 
     def _on_preset(self) -> None:
         name = self.preset_combo.currentText()

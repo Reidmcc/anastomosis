@@ -1523,6 +1523,16 @@ by ~1.6×10⁻³, a sixth of the entire per-frame budget. Measured, this leaked 
 per-pixel bound to 0.0161 against a 0.010 limit until the tolerance was tightened
 and both gamut-mapping paths were made to clamp.
 
+The same constraint bit a second time, in a corner the tightened tolerance
+still admitted, and the residual rule is stricter than "tiny": **the low side
+takes no tolerance at all**. A chromatic target near black maps far out of
+gamut, the bisection accepted trial points with channels down to −1e-6, and
+the final clamp raised them to zero — which *raises* `L`, by an amount the
+cube root makes unbounded as a channel approaches zero from below. From a
+black history, a maximal limiter step stored `L` = 0.0125 against the 0.010
+budget. Found by §14.8 step 1's mode-slam test; the fix and its measurements
+are recorded there.
+
 ---
 
 ## 8. Frame pacing and GPU budget
@@ -2080,11 +2090,12 @@ and overlap is the point at this end of the knob.
 Each step lands something usable alone, and the first is deliberately
 invisible:
 
-1. **Mode plumbing.** `mode` on `Config`, `MACRO_CURVES` keyed by mode with
+1. ~~**Mode plumbing.** `mode` on `Config`, `MACRO_CURVES` keyed by mode with
    the activation table starting as a copy of regulation's, panel selector,
    preset mode-tagging, ramped switch. Tests: `resolve()` respects mode,
    ceilings clamp identically in both, switch-slamming holds the flash
-   bound. No visual change yet.
+   bound. No visual change yet.~~ **Built** — and the switch-slam test paid
+   for the whole step on its first run; see below.
 2. **The two load-bearing measurements**, offline, before any endpoint is
    trusted: the tempo/WCAG-area sweep (which *sets* the tempo tops), and
    the frame-rate ceiling fix of 14.5(2) (which is due regardless).
@@ -2100,7 +2111,56 @@ invisible:
 
 Steps 1–4 are the mode; 5–6 are its depth.
 
-### 14.9 Open questions for real hardware
+### What step 1 actually did
+
+The plumbing is as prescribed: `MODE_CURVES` keyed by mode with the
+activation table an exact copy of the regulation one, `mode` on `Config`
+beside `backend` but non-structural, `curve_value` taking the mode so the
+panel's readouts quote the table that is actually driving, presets tagged
+with the mode they were tuned in (`presets.PRESET_MODES` — a separate table
+rather than a field on `Macros`, because a mode is not a knob and `Macros`
+is the shape of the eight sliders), and a Mode selector at the top of the
+panel that asks no question before acting, because unlike every other
+selector up there it loses nothing. What the tests assert is the structure —
+both tables driving the same macros and paths, one ceiling table serving
+both modes — rather than the temporary equality of the values, which step 3
+exists to break.
+
+**The switch-slam test found a real hole in the safety stage on its first
+run.** Stepping everything both modes' tables drive between opposite macro
+extremes, un-ramped, flow off so the per-pixel bound is exact, produced a
+lightness step of **0.0111 against the 0.0100 budget** — from a pixel whose
+stored value was exact black and whose neighbour-frame had one channel at
+exactly zero, the signature of a clamp. The mechanism is the §7 constraint
+("gamut mapping must not let out-of-range values into the buffer") in a
+corner the earlier tolerance-tightening missed: from a black history the
+limiter permits a step of (+`max_luma_delta`, ±`max_chroma_delta`,
+±`max_chroma_delta`), which at that lightness is far out of gamut; the
+bisection in `gamut_map_oklab` accepted trials with channels down to −1e-6;
+and the final clamp raised them to zero, which near black raises `L` — the
+cube root's slope is unbounded there, so even a e-6 tolerance is worth
+~1e-3 of `L`. Modelled in numpy: a maximal step off black stores `L` up to
+**0.0125** under the −1e-6 acceptance and exactly **0.0100** with the low
+side exact. The fix is that asymmetry, in `in_gamut`: no tolerance at all
+below zero, tolerance kept above one, where clamping down at 1.0 moves `L`
+by ~3e-7 and refusing it would send every bright pixel through the
+bisection for nothing.
+
+Two things about the test that carried the finding. The regression is
+pinned by a *deterministic* test rather than the slam that found it: the
+mode-slam's leak rode on which trajectory a chaotic field wandered into,
+so the dedicated test manufactures the corner instead — chroma floor
+raised to the chroma ceiling, so every pixel including black ones demands
+full chroma from the first frame; the chroma slew limit at its
+user-settable ceiling of 0.10, because the leak grows with the chroma
+step; the hue anchor flipping by π each frame, so the demand stays a
+*change* in chroma rather than a satisfied one. Under the pre-fix shader
+that fails on ~1000 pixel-frames at 0.0107, not on one lucky pixel, and
+every knob in it is a value a user can legitimately set. And the mode-slam
+test itself stays in the suite unchanged: today the two modes contribute
+identical values and the macro extremes do the work, and when step 3
+retunes the activation endpoints their divergence rides into the same
+assertions with no change to the test.
 
 The same caveat as §13, sharpened: every endpoint above is an argument, not
 a judgement. Specifically open: whether activation keeps the dark ground

@@ -135,6 +135,23 @@ changes while it happens.
 A new field, whether from a reset or a first run, comes up through the same
 slew limiter as everything else, so it grows in rather than cutting.
 
+## Two tunings
+
+At the top of the control panel, **Mode** chooses which tuning the eight
+knobs move through: **Regulation** — calm and slow, the original, built for
+settling — or **Activation**, the same instrument tuned for sensory seeking:
+more motion, more colour, more happening. Switching is nothing like the
+Depth choice below it: no reset, no dialog — the field on screen keeps
+everything it has grown and changes character over a few seconds, and
+switching back is just as smooth. The flash-safety bound is identical in
+both modes; neither can flash — see [Safety](#safety).
+
+The activation tuning itself is still being built (`DESIGN.md` §14): its
+curve table is currently an exact copy of regulation's, so switching does
+not change what you see yet, and it has no presets of its own. The
+selector, the config key (`mode = "activation"`) and the plumbing are in
+place so the tuning can land as measurements finish.
+
 ## Two ways of drawing depth
 
 There are two backends, and the **Depth** selector at the top of the control

@@ -180,8 +180,21 @@ fn oklab_to_oklch(lab: vec3<f32>) -> vec3<f32> {
 // clamped on a *later* frame -- enlarging that frame's step after the limiter
 // has already bounded it. Near black, a 5e-4 absolute change in one channel
 // moves Oklab L by ~1.6e-3, which is a sixth of the entire per-frame budget.
+//
+// The low side takes no tolerance at all, and the asymmetry is load-bearing.
+// A point accepted here is fed to the final clamp in gamut_map_oklab, and
+// raising a negative channel to zero *raises* L -- by an amount the cube root
+// makes unbounded as the channel approaches zero from below. Measured: from a
+// black history, a maximal limiter step (L +0.01, chroma at the ceiling)
+// resolves through a -1e-6 acceptance to a stored L of 0.0125 -- a quarter
+// past the entire per-frame budget. With the low side exact, the accepted
+// point is genuinely non-negative, the clamp's low half is a true no-op, and
+// the same step stores 0.0100. The high side keeps its tolerance: clamping a
+// channel down at 1.0 moves L by ~3e-7 (the cube root's slope is 1/3 there),
+// which is noise, and refusing the tolerance would send every bright pixel
+// through the bisection for nothing.
 fn in_gamut(c: vec3<f32>) -> bool {
-    return c.r >= -1e-6 && c.g >= -1e-6 && c.b >= -1e-6
+    return c.r >= 0.0 && c.g >= 0.0 && c.b >= 0.0
         && c.r <= 1.0 + 1e-6 && c.g <= 1.0 + 1e-6 && c.b <= 1.0 + 1e-6;
 }
 

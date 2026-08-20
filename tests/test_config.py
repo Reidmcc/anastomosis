@@ -11,53 +11,171 @@ from dataclasses import fields
 from anastomosis import config, presets
 
 
-def test_macros_span_their_declared_range():
+@pytest.mark.parametrize("mode", config.MODES)
+def test_macros_span_their_declared_range(mode):
     """Each macro must actually move every primitive it claims to drive."""
-    for macro_name, curves in config.MACRO_CURVES.items():
-        low = config.Config(macros=config.Macros(**{macro_name: 0.0})).resolve()
-        high = config.Config(macros=config.Macros(**{macro_name: 1.0})).resolve()
+    for macro_name, curves in config.MODE_CURVES[mode].items():
+        low = config.Config(
+            macros=config.Macros(**{macro_name: 0.0}), mode=mode).resolve()
+        high = config.Config(
+            macros=config.Macros(**{macro_name: 1.0}), mode=mode).resolve()
         for path, lo, hi, _gamma in curves:
             if lo == hi:
                 continue
             got_low = config.get_path(low, path)
             got_high = config.get_path(high, path)
             assert got_low != got_high, (
-                f"macro {macro_name!r} does not move {path}"
+                f"macro {macro_name!r} does not move {path} in {mode} mode"
             )
 
 
-def test_every_macro_drives_something():
+@pytest.mark.parametrize("mode", config.MODES)
+def test_every_macro_drives_something(mode):
     """A knob on the panel that reaches no primitive is a knob that lies."""
     from dataclasses import fields
 
     for f in fields(config.Macros):
-        assert f.name in config.MACRO_CURVES, (
-            f"macro {f.name!r} has no curve, so moving it would do nothing"
+        assert f.name in config.MODE_CURVES[mode], (
+            f"macro {f.name!r} has no {mode} curve, so moving it would do "
+            "nothing in that mode"
         )
 
 
-def test_curve_value_agrees_with_resolve():
+@pytest.mark.parametrize("mode", config.MODES)
+def test_curve_value_agrees_with_resolve(mode):
     """The panel reads slider positions through this; it must not drift.
 
     `curve_value` exists so the control panel can say what a position means
     without copying the curve's constants, which is only worth anything if it
-    stays the same function `resolve` applies.
+    stays the same function `resolve` applies -- per mode, since the readout
+    quotes the table the mode is actually driving through.
     """
-    for macro_name, curves in config.MACRO_CURVES.items():
+    for macro_name, curves in config.MODE_CURVES[mode].items():
         for path, _lo, _hi, _gamma in curves:
             for step in range(0, 11):
                 value = step / 10.0
                 resolved = config.Config(
-                    macros=config.Macros(**{macro_name: value})
+                    macros=config.Macros(**{macro_name: value}), mode=mode
                 ).resolve()
-                assert config.curve_value(macro_name, path, value) == pytest.approx(
+                assert config.curve_value(
+                    macro_name, path, value, mode=mode
+                ) == pytest.approx(
                     config.get_path(resolved, path)
-                ), f"{macro_name} -> {path} at {value}"
+                ), f"{macro_name} -> {path} at {value} in {mode} mode"
 
 
 def test_curve_value_rejects_a_path_its_macro_does_not_drive():
     with pytest.raises(KeyError):
         config.curve_value("event_rate", "render.l_max", 0.5)
+
+
+# --- modes -----------------------------------------------------------------
+
+
+def test_the_mode_picks_the_curve_table(monkeypatch):
+    """`resolve` reads the active mode's table and no other.
+
+    The shipped activation table is still a copy of the regulation one
+    (DESIGN.md §14.8 step 1), so the mechanism has to be shown with a
+    deliberately divergent table rather than the real values -- otherwise this
+    test would pass with the mode wired to nothing at all.
+    """
+    tweaked = {
+        macro: list(entries)
+        for macro, entries in config.MODE_CURVES["activation"].items()
+    }
+    tweaked["palette"] = [("render.hue_spread", 2.0, 3.0, 1.0)]
+    monkeypatch.setitem(config.MODE_CURVES, "activation", tweaked)
+
+    macros = config.Macros(palette=0.5)
+    regulation = config.Config(macros=macros, mode="regulation").resolve()
+    activation = config.Config(macros=macros, mode="activation").resolve()
+
+    assert config.get_path(activation, "render.hue_spread") == pytest.approx(2.5)
+    # And the regulation table is untouched by the divergence.
+    assert config.get_path(regulation, "render.hue_spread") == pytest.approx(
+        config.curve_value("palette", "render.hue_spread", 0.5, mode="regulation")
+    )
+
+
+def test_the_modes_share_their_structure():
+    """Both tables drive the same macros, and the same paths under each.
+
+    The activation endpoints are free to move -- that is the whole point of
+    the second table (DESIGN.md §14.3) -- but its *shape* is not: a macro that
+    drove a primitive in one mode and not the other would mean a slider going
+    dead, or gaining a hidden effect, when the mode changes.
+    """
+    regulation = config.MODE_CURVES["regulation"]
+    activation = config.MODE_CURVES["activation"]
+    assert set(regulation) == set(activation)
+    for macro in regulation:
+        assert [p for p, *_ in regulation[macro]] == [
+            p for p, *_ in activation[macro]
+        ], f"macro {macro!r} drives different paths in the two modes"
+
+
+def test_the_regulation_table_is_the_shipped_one():
+    """`MACRO_CURVES` and the regulation entry must stay the same object.
+
+    Everything historical -- the legacy event-rate inversion, every measured
+    value in DESIGN.md -- means that table specifically, and a copy would let
+    the two drift apart silently.
+    """
+    assert config.MODE_CURVES["regulation"] is config.MACRO_CURVES
+
+
+def test_the_safety_ceilings_are_mode_blind():
+    """One ceiling table serves both modes -- DESIGN.md §14.7.
+
+    Trivially true today, because `validate` never looks at the mode; this
+    holds the door shut on a future where activation is given its own, looser
+    validation path.
+    """
+    for path, (lo, hi) in config.SAFETY_CEILINGS.items():
+        above = [
+            config.get_path(
+                config.Config(mode=mode, overrides={path: hi * 10 + 1}).resolve(),
+                path,
+            )
+            for mode in config.MODES
+        ]
+        below = [
+            config.get_path(
+                config.Config(
+                    mode=mode, overrides={path: lo - abs(lo) - 1000}
+                ).resolve(),
+                path,
+            )
+            for mode in config.MODES
+        ]
+        assert above[0] == above[1] == pytest.approx(hi), path
+        assert below[0] == below[1] == pytest.approx(lo), path
+
+
+def test_an_unknown_mode_is_normalised_rather_than_trusted(caplog):
+    """A typo in the config is a warning and the default, never a crash."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        assert config.normalise_mode("acivation") == config.DEFAULT_MODE
+    assert any("unknown mode" in r.message for r in caplog.records)
+    # And the accepted names pass through untouched, whitespace and case aside.
+    for mode in config.MODES:
+        assert config.normalise_mode(mode.upper() + " ") == mode
+
+
+def test_the_mode_survives_a_toml_roundtrip(tmp_path):
+    path = tmp_path / "config.toml"
+    config.save(config.Config(mode="activation"), path)
+    assert config.load(path).mode == "activation"
+
+
+def test_a_file_predating_the_mode_is_a_regulation_file(tmp_path):
+    """Every config written before §14 was written for the regulation mode."""
+    path = tmp_path / "config.toml"
+    path.write_text("[macros]\nintensity = 0.5\n")
+    assert config.load(path).mode == "regulation"
 
 
 # --- event rate ------------------------------------------------------------
@@ -322,7 +440,8 @@ def test_save_is_atomic(tmp_path):
 
 @pytest.mark.parametrize("name", presets.names())
 def test_presets_resolve_and_stay_safe(name):
-    params = config.Config(macros=presets.get(name)).resolve()
+    params = config.Config(
+        macros=presets.get(name), mode=presets.mode_of(name)).resolve()
     for path, (lo, hi) in config.SAFETY_CEILINGS.items():
         value = config.get_path(params, path)
         assert lo <= value <= hi, f"preset {name} put {path} out of range"
@@ -331,7 +450,8 @@ def test_presets_resolve_and_stay_safe(name):
 @pytest.mark.parametrize("name", presets.names())
 def test_presets_are_in_the_dark_register(name):
     """All presets must keep a dark ground; that was an explicit requirement."""
-    params = config.Config(macros=presets.get(name)).resolve()
+    params = config.Config(
+        macros=presets.get(name), mode=presets.mode_of(name)).resolve()
     assert params.render.background_luma < 0.09, (
         f"preset {name} has a background lightness of "
         f"{params.render.background_luma:.3f}, which is not a dark ground"
@@ -343,6 +463,30 @@ def test_preset_get_returns_a_copy():
     a = presets.get("quiet")
     a.intensity = 0.99
     assert presets.get("quiet").intensity != 0.99
+
+
+@pytest.mark.parametrize("name", presets.names())
+def test_every_preset_carries_a_mode(name):
+    """A preset is macro positions plus the table they were tuned against.
+
+    `mode_of` raises on an untagged or mistagged preset, so calling it for
+    every name is the whole assertion: adding a preset without saying which
+    mode judged it must fail here rather than resolve through the wrong table.
+    """
+    assert presets.mode_of(name) in config.MODES
+
+
+def test_the_preset_lists_partition_by_mode():
+    """Filtering by mode loses nothing and mixes nothing.
+
+    Written structurally rather than against today's counts, because the
+    counts are meant to change: activation has no presets until §14.8 step 4,
+    and this must keep holding when it gains them.
+    """
+    per_mode = [presets.names(mode) for mode in config.MODES]
+    flattened = [name for names in per_mode for name in names]
+    assert sorted(flattened) == sorted(presets.names())
+    assert len(flattened) == len(set(flattened)), "a preset appears in two modes"
 
 
 def test_hue_anchor_covers_the_circle():

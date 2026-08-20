@@ -27,6 +27,8 @@ only holds for sensible settings is not a safety property.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -123,6 +125,65 @@ def test_limiter_holds_under_adversarial_parameters(gpu_device, offscreen_target
     )
 
 
+def test_a_mode_switch_cannot_defeat_the_bound(gpu_device, offscreen_target):
+    """Slamming between the two modes' tables must not defeat the bound.
+
+    The application ramps a mode switch like every other change (DESIGN.md
+    §14.5), but the shader-level guarantee must not depend on that. Stepped
+    here, un-ramped, every frame: each frame takes *everything* either mode's
+    curve table drives, resolved at opposite macro extremes under opposite
+    modes -- strictly more movement than any real switch, which keeps the
+    macros where they are.
+
+    The shipped activation table is still a copy of the regulation one
+    (§14.8 step 1), so today the modes contribute the same values and the
+    macro extremes do the work; when step 3 retunes the activation endpoints,
+    their divergence rides in here with no change to the test.
+    """
+    from dataclasses import fields
+
+    params = config.Config().resolve()
+    params.render.layers = 1
+    params.flow.psi_gain = 0.0
+    params.flow.field_gain = 0.0
+
+    ends = [
+        config.Config(
+            macros=config.Macros(**{f.name: value for f in fields(config.Macros)}),
+            mode=mode,
+        ).resolve()
+        for mode, value in (("regulation", 0.0), ("activation", 1.0))
+    ]
+    paths = {
+        path
+        for table in config.MODE_CURVES.values()
+        for entries in table.values()
+        for path, *_ in entries
+    }
+    paths.add("render.hue_anchor")  # the palette macro's non-lerp effect
+
+    def mutate(index, p):
+        source = ends[index % 2]
+        for path in paths:
+            config.set_path(p, path, config.get_path(source, path))
+        # Zero flow keeps reprojection the identity, so the per-pixel bound
+        # stays exact -- the same isolation as the adversarial test above.
+        p.flow.psi_gain = 0.0
+        p.flow.field_gain = 0.0
+
+    engine = _make_engine(gpu_device, params)
+    target, fmt = offscreen_target(WIDTH, HEIGHT)
+    frames = _capture(engine, params, target, fmt, 40, mutate=mutate)
+
+    deltas = np.abs(np.diff(frames, axis=0))
+    limit = params.safety.max_luma_delta + F16_TOLERANCE
+    worst = float(deltas.max())
+    assert worst <= limit, (
+        f"stepping between the modes' resolutions produced a lightness step "
+        f"of {worst:.5f}, above the limit {limit:.5f}"
+    )
+
+
 def test_wcag_flash_criterion(gpu_device, offscreen_target):
     """Under normal operation, no frame may flash a large area at once."""
     params = config.Config().resolve()
@@ -184,6 +245,58 @@ def test_startup_fades_in_rather_than_appearing(gpu_device, offscreen_target):
     # And it should be monotonically brightening, not oscillating.
     means = frames.mean(axis=(1, 2))
     assert np.all(np.diff(means) >= -F16_TOLERANCE), "startup fade is not monotonic"
+
+
+def test_the_bound_holds_from_black_under_chromatic_demand(gpu_device, offscreen_target):
+    """A maximal step off a black history must not leak through gamut mapping.
+
+    The regression the mode-switch test surfaced (found while building
+    DESIGN.md §14.8 step 1): from a black history the limiter permits a step of
+    (+max_luma_delta, +-max_chroma_delta, +-max_chroma_delta), which at that
+    lightness is far out of gamut. The bisection in `gamut_map_oklab` accepted
+    trial points with channels down to -1e-6, and the final clamp then raised
+    them to zero -- which near black *raises* L by ~1e-3 per channel, because
+    the cube root's slope is unbounded at zero. Measured before the `in_gamut`
+    fix: stored L up to 0.0125 against a 0.010 budget.
+
+    Startup is the honest way to manufacture a black history; the demand is
+    manufactured rather than hoped for, because whether the *simulation*
+    happens to put strong chroma on a dark pixel is a matter of which
+    trajectory a chaotic field wandered into. Every knob here is reachable by
+    a user: the chroma floor raised to the chroma ceiling makes every pixel,
+    black ones included, ask for full chroma from the first frame; the chroma
+    slew limit sits at its user-settable ceiling because the leak grows with
+    the chroma step; and the hue anchor flipping by pi each frame keeps the
+    demand a *change* in chroma rather than a satisfied one. Under the
+    pre-fix tolerance this fails on ~1000 pixel-frames at 0.0107, not on one
+    lucky pixel.
+    """
+    params = config.Config().resolve()
+    params.render.layers = 1
+    # Zero flow makes reprojection the identity, so the per-pixel bound is
+    # exact -- the same isolation as test_limiter_bound_holds_exactly.
+    params.flow.psi_gain = 0.0
+    params.flow.field_gain = 0.0
+    params.render.chroma_floor = 0.22
+    params.render.c_max = 0.22
+    params.safety.max_chroma_delta = config.SAFETY_CEILINGS[
+        "safety.max_chroma_delta"][1]
+
+    def mutate(index, p):
+        p.render.hue_anchor = 0.0 if index % 2 == 0 else math.pi
+
+    engine = _make_engine(gpu_device, params)
+    target, fmt = offscreen_target(WIDTH, HEIGHT)
+    frames = _capture(engine, params, target, fmt, 12, mutate=mutate)
+
+    deltas = np.abs(np.diff(frames, axis=0))
+    first = float(frames[0].max())
+    worst = float(max(first, deltas.max()))
+    limit = params.safety.max_luma_delta + F16_TOLERANCE
+    assert worst <= limit, (
+        f"a chromatic climb out of black produced a lightness step of "
+        f"{worst:.5f}, above the limit {limit:.5f}"
+    )
 
 
 @pytest.mark.parametrize("bad_value", [0.5, 10.0, -1.0])

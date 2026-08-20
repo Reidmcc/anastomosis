@@ -5,8 +5,10 @@ Two tiers, per DESIGN.md §9:
 * **Macros** — eight knobs in 0..1, the normal interface.
 * **Primitives** — the ~50 values the shaders actually read.
 
-Macros drive primitives through the curve table in :data:`MACRO_CURVES`. The
-config file may also pin individual primitives, which override the macro result.
+Macros drive primitives through a curve table -- one per *mode*, in
+:data:`MODE_CURVES` (DESIGN.md §14): the same eight knobs mean the same things
+in both modes, and only the endpoints they reach differ. The config file may
+also pin individual primitives, which override the macro result.
 
 Every value that could affect flash safety is clamped to a hard ceiling here
 (:data:`SAFETY_CEILINGS`) before it can reach the GPU. That clamp is the last
@@ -632,6 +634,12 @@ class Macros:
 
 # path, low value, high value, gamma. The macro is raised to ``gamma`` before
 # lerping, so gamma > 1 gives finer control at the low end.
+#
+# This is the *regulation* table -- the tuning the application shipped with,
+# and the one every value in it was measured against. The activation mode
+# (DESIGN.md §14) gets its own copy in :data:`MODE_CURVES` below; this name
+# stays because everything historical about these values ("the shipped
+# curve", the legacy event-rate inversion) means this table specifically.
 MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
     "intensity": [
         ("agents.density", 0.10, 0.44, 1.0),
@@ -735,6 +743,55 @@ def _palette_hue_anchor(v: float) -> float:
 
 
 # --------------------------------------------------------------------------
+# Modes -- DESIGN.md §14
+# --------------------------------------------------------------------------
+
+# Two tunings of one instrument. Regulation is everything the application has
+# always been; activation is the same eight macros over endpoints retuned for
+# sensory seeking -- more motion, more colour, more happening. The mode decides
+# which curve table `resolve` reads and nothing else: the safety ceilings are
+# one table serving both, every value a mode moves is one the ramp smooths, and
+# no geometry follows it -- which is why, unlike `backend`, switching mode is a
+# live transition on the running field rather than a reset.
+MODES = ("regulation", "activation")
+DEFAULT_MODE = "regulation"
+
+# The activation table starts as an exact copy of the regulation one, on
+# purpose: DESIGN.md §14.8 step 1 is the plumbing alone, visually inert, so
+# that the mechanism is tested before any endpoint moves. Step 3 retunes the
+# copy's endpoints from the measurements of step 2; until then the two modes
+# resolve identically. What must survive that retuning is the *structure* --
+# both tables driving the same macros and the same paths, so no slider goes
+# dead or gains a hidden effect when the mode changes -- and the tests assert
+# exactly that rather than the temporary equality of the values.
+MODE_CURVES: dict[str, dict[str, list[tuple[str, float, float, float]]]] = {
+    "regulation": MACRO_CURVES,
+    "activation": {
+        macro: list(entries) for macro, entries in MACRO_CURVES.items()
+    },
+}
+
+
+def normalise_mode(name: object) -> str:
+    """The mode a name asks for, or the default with a warning.
+
+    Untrusted like every other value off disk, and handled the way
+    :func:`normalise_backend` handles its argument: an unrecognised mode is a
+    typo, and regulation -- the application's whole character until §14 -- is
+    the safe thing to open with.
+    """
+    text = str(name or "").strip().lower()
+    if text in MODES:
+        return text
+    if text:
+        log.warning(
+            "unknown mode %r; using %r (known: %s)",
+            name, DEFAULT_MODE, ", ".join(MODES),
+        )
+    return DEFAULT_MODE
+
+
+# --------------------------------------------------------------------------
 # Hard safety ceilings -- see DESIGN.md §7
 # --------------------------------------------------------------------------
 
@@ -830,7 +887,7 @@ def _lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
 
-def curve_value(macro: str, path: str, value: float) -> float:
+def curve_value(macro: str, path: str, value: float, mode: str = DEFAULT_MODE) -> float:
     """The value ``path`` takes when the macro driving it sits at ``value``.
 
     One curve, evaluated on its own rather than by building a whole
@@ -839,12 +896,17 @@ def curve_value(macro: str, path: str, value: float) -> float:
     live parameters cannot answer that, because they are ramping and would show
     the value catching up rather than the one just asked for.
 
+    ``mode`` picks the curve table, because the same slider position means
+    different values under different modes (DESIGN.md §14) and a readout that
+    quoted the regulation curve while the activation one was driving would be
+    lying in exactly the way this function exists to prevent.
+
     The macro curve only. An explicit override of the same path beats the macro
     in :meth:`Config.resolve` and is not visible here, which is the honest
     answer for a slider readout: the slider is not what is deciding then.
     """
     value = min(1.0, max(0.0, float(value)))
-    for entry_path, lo, hi, gamma in MACRO_CURVES.get(macro, ()):
+    for entry_path, lo, hi, gamma in MODE_CURVES[normalise_mode(mode)].get(macro, ()):
         if entry_path == path:
             return _lerp(lo, hi, value**gamma if gamma != 1.0 else value)
     raise KeyError(f"macro {macro!r} does not drive {path!r}")
@@ -916,6 +978,15 @@ class Config:
     backend is running. Unlike a backend switch there is only one volumetric
     field, so changing the size does not set the old one aside for later: the
     saved field keeps the size it was grown at until it is reset.
+
+    ``mode`` chooses which curve table the macros resolve through
+    (:data:`MODE_CURVES`, DESIGN.md §14). It sits beside ``backend`` because it
+    is the other "which application is this" choice, but it has the opposite
+    character: it is *not* structural. It moves no geometry, allocates nothing,
+    and every value it changes is one :class:`ParamRamp` smooths -- so
+    switching mode is a live, ramped transition on the running field, exactly
+    like a preset switch, and a field checkpointed in one mode resumes cleanly
+    into the other.
     """
 
     macros: Macros = field(default_factory=Macros)
@@ -923,11 +994,12 @@ class Config:
     preset_name: str = "default"
     backend: str = DEFAULT_BACKEND
     volume_detail: str = DEFAULT_VOLUME_DETAIL
+    mode: str = DEFAULT_MODE
 
     def resolve(self) -> Params:
         params = Params()
 
-        for macro_name, curves in MACRO_CURVES.items():
+        for macro_name, curves in MODE_CURVES[normalise_mode(self.mode)].items():
             value = getattr(self.macros, macro_name)
             value = min(1.0, max(0.0, float(value)))
             for path, lo, hi, gamma in curves:
@@ -1176,6 +1248,11 @@ _HEADER = """\
 # costs the same at all three. Structural like `backend`, so a saved field
 # keeps the size it grew at until the simulation is reset.
 #
+# `mode` is which tuning the eight knobs move through: "regulation" (calm,
+# the original) or "activation" (more motion and colour, for sensory seeking
+# rather than settling). Not structural: switching it is a smooth transition
+# on the field you already have. The flash-safety bound is identical in both.
+#
 # [macros] are the normal interface -- eight knobs, all 0..1.
 # [overrides] pins individual primitive parameters by dotted path, e.g.
 #   "render.filament_luma" = 0.42
@@ -1259,6 +1336,10 @@ def load(path: str | Path) -> Config:
         backend=normalise_backend(data.get("backend", DEFAULT_BACKEND)),
         volume_detail=normalise_volume_detail(
             data.get("volume_detail", DEFAULT_VOLUME_DETAIL)),
+        # A file predating the mode says nothing about it, and needs no
+        # migration note the way the split-out macros did: every such file was
+        # written for the regulation mode, which is what the default is.
+        mode=normalise_mode(data.get("mode", DEFAULT_MODE)),
     )
 
 
@@ -1276,6 +1357,7 @@ def save(config: Config, path: str | Path) -> None:
     doc.add("preset_name", config.preset_name)
     doc.add("backend", normalise_backend(config.backend))
     doc.add("volume_detail", normalise_volume_detail(config.volume_detail))
+    doc.add("mode", normalise_mode(config.mode))
 
     macros = tomlkit.table()
     for f in fields(config.macros):

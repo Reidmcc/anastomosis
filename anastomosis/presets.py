@@ -17,11 +17,20 @@ about the viewpoint's travel was a description of nothing happening. These are
 new values, set by what each preset is *for* -- `deep` swings furthest, `quiet`
 and `ember` least, since a preset for a dark room at 2 a.m. is not the one that
 should be moving the most.
+
+Every preset also carries a *mode* (DESIGN.md §14): a preset is a bundle of
+macro positions, and a macro position only means something through the curve
+table of the mode it was tuned in -- `dense` at `intensity=0.78` describes a
+regulation field, and the same numbers through the activation table would
+describe a different picture nobody has judged. The seven originals are all
+regulation presets; activation gets its own set when its curves exist (§14.8
+step 4), which is why :func:`names` can filter by mode and the panel shows the
+active mode's list.
 """
 
 from __future__ import annotations
 
-from .config import Macros
+from .config import MODES, Macros
 
 PRESETS: dict[str, Macros] = {
     # The shipped default: dark ground, moderate luminous filaments.
@@ -78,6 +87,12 @@ PRESETS: dict[str, Macros] = {
 
 DEFAULT_PRESET = "default"
 
+# Which mode each preset was tuned in. A separate table rather than a field on
+# `Macros`, because a mode is not a knob: `Macros` is the shape of the eight
+# sliders and travels through ramping and TOML as exactly that. Every preset
+# must appear here; `mode_of` treats absence as an error rather than guessing.
+PRESET_MODES: dict[str, str] = {name: "regulation" for name in PRESETS}
+
 
 def get(name: str) -> Macros:
     from dataclasses import replace
@@ -87,5 +102,21 @@ def get(name: str) -> Macros:
     return replace(PRESETS[name])
 
 
-def names() -> list[str]:
-    return list(PRESETS)
+def mode_of(name: str) -> str:
+    """The mode a preset was tuned in, and therefore belongs to."""
+    if name not in PRESET_MODES:
+        raise KeyError(f"preset {name!r} has no mode; add it to PRESET_MODES")
+    mode = PRESET_MODES[name]
+    if mode not in MODES:
+        raise KeyError(f"preset {name!r} names unknown mode {mode!r}")
+    return mode
+
+
+def names(mode: str | None = None) -> list[str]:
+    """Preset names, optionally only those tuned for ``mode``.
+
+    Unfiltered by default, which is what every pre-mode caller meant.
+    """
+    if mode is None:
+        return list(PRESETS)
+    return [name for name in PRESETS if mode_of(name) == mode]

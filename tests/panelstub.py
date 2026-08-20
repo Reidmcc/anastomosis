@@ -50,6 +50,13 @@ class PanelApp:
     def apply_macros(self, macros) -> None:
         self.config.macros = macros
 
+    def set_mode(self, name: str) -> bool:
+        wanted = config_module.normalise_mode(name)
+        if wanted == config_module.normalise_mode(self.config.mode):
+            return False
+        self.config.mode = wanted
+        return True
+
     def save_config(self) -> None:
         pass
 
