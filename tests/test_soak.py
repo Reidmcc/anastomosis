@@ -757,6 +757,17 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     rather than a growing gap -- is a §13 question for a viewer, not a ratio a
     seed can anchor.
 
+    Both pins have to reach the shared warm-up as well as the two arms, and
+    that is what the one parameter builder below is for. A fork grown on
+    shipped defaults and arms run on the pins is not a small mismatch: the disc
+    then comes off an advected warm-up onto 0.13 of trail rather than the 0.57
+    above, the held-still network re-concentrates under both arms for the whole
+    measurement window, and the severance reads 1.08 -- no severance at all,
+    from a rift whose channels are at full amplitude in the climate throughout.
+    That is what this test measured for as long as the checkpoint fork and the
+    advection pin, which arrived from separate branches, disagreed about the
+    warm-up.
+
     The sensing cap is pinned off for the same reason as the advection.
     Every threshold here -- the severance band, and especially the
     reaction-untouched floor of 0.75 -- was measured in the knot regime. With
@@ -767,6 +778,18 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     channel quietly pinned by the event system. That distinction only stays
     testable where the reaction's trail dependence is the background level
     the floor was calibrated against.
+
+    What that pin is not hiding is a mechanism the cap took away. Re-measured
+    with the warm-up corrected, the capped regime severs *harder*, not softer:
+    trail inside the disc reaches 0.03 of the control's against the 0.80 this
+    test asserts. Saturation equalises only what sits at or above the cap,
+    which is hubs -- the cap is about twice a trafficked filament's own level,
+    and a strand the raised decay has thinned reads well below it -- so the
+    starvation feedback §4.7 describes runs in the range it always did. What
+    the capped regime cannot supply is the *precondition*: with a network
+    threading and crossing the whole field, the control's own disc wanders
+    between 0.007 and 0.23 across the marks of a single run, so no seed can
+    promise ground under this one.
     """
     device, _ = gpu_device
     size, radius = 128, 0.24
@@ -776,23 +799,28 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     distance = np.hypot((xs + 0.5) / size - 0.5, (ys + 0.5) / size - 0.5)
     inside = distance < radius * 0.5
 
+    # One builder for both the warm-up and the arms, so the pins the docstring
+    # argues for cannot end up on one and not the other -- which is precisely
+    # how this test went quiet once before.
+    def rift_params() -> config.Params:
+        params = config.Config().resolve()
+        params.render.layers = 1
+        params.agents.trail_advect = 0.0  # see the docstring
+        params.agents.sense_cap = 0.0     # likewise
+        return params
+
     # The two arms are identical for the first `warm` ticks -- same seed, and
     # no event rows reach the engine before then -- so that stretch is run once
     # and forked through the checkpoint machinery, which test_checkpoint.py
     # holds to bit-identical continuation.
-    warm_params = config.Config().resolve()
-    warm_params.render.layers = 1
-    warm_params.agents.sense_cap = 0.0  # see the docstring
+    warm_params = rift_params()
     warmed = engine_module.Engine(device, size, size, warm_params, seed=13)
     for _ in range(warm):
         warmed.tick(warm_params, [])
     snapshot = checkpoint.capture(warmed)
 
     def run(with_event: bool) -> dict[str, tuple[float, float]]:
-        params = config.Config().resolve()
-        params.render.layers = 1
-        params.agents.trail_advect = 0.0  # see the docstring
-        params.agents.sense_cap = 0.0    # likewise
+        params = rift_params()
         engine = engine_module.Engine(device, size, size, params, seed=13)
         assert checkpoint.restore(engine, snapshot), (
             "the warmed field does not fit the engine it was captured from"
