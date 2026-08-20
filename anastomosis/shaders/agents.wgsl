@@ -61,8 +61,24 @@ struct Agent {
 // ~3e7, well inside u32.
 const DEPOSIT_SCALE: f32 = 1048576.0;
 
+// Sensing saturation. What an agent *senses* is capped, though what the field
+// stores is not: unbounded sensing is winner-take-all -- a hub at ten times
+// filament level out-attracts every strand in sensor range, forever -- and
+// the measured consequence was a layer that never formed a network at all,
+// only round stationary knots (DESIGN.md 4.7, "the network that was never
+// there"). Capped, a healthy filament is exactly as attractive as any hub.
+// The dispersal is free: inside a saturated plateau the three sensors tie,
+// the tie reads as "keep going", and agents drive straight out of a knot
+// instead of orbiting it. Everything downstream of a sensor -- the steering
+// comparison, the fusion `excess`, the founding site's bareness contest --
+// sees the capped value; the bareness contest compares values far below any
+// sane cap, so it is unaffected in practice. Zero disables.
 fn sample_trail(uv: vec2<f32>) -> f32 {
-    return textureSampleLevel(trail_tex, samp, wrap_uv(uv), 0.0).r;
+    let value = textureSampleLevel(trail_tex, samp, wrap_uv(uv), 0.0).r;
+    if (params.sense_cap > 0.0) {
+        return min(value, params.sense_cap);
+    }
+    return value;
 }
 
 fn splat(pos: vec2<f32>, dims: vec2<u32>, amount: f32) {
@@ -168,7 +184,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // already is. Returning it through decay instead -- the obvious centring --
     // reinforces established structure and freezes the field; see trail.wgsl.
     let deposit_amt = max(0.0, params.deposit + params.range_deposit * cb.x + stats.corr_deposit)
-        * (1.0 + clamp(stats.prune_return, 0.0, 2.0));
+        * (1.0 + clamp(stats.prune_return, 0.0, 2.0)
+           + clamp(stats.cap_return, 0.0, 3.0));
 
     // Sense: three points ahead, bilinear so there is no texel-grid bias.
     let heading = agent.heading;

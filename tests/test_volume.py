@@ -82,34 +82,6 @@ def _run(engine, params, ticks: int, scheduler=None) -> None:
         engine.tick(params, rows)
 
 
-def test_trail_advection_moves_the_slab_structure_and_only_when_asked(gpu_device):
-    """The slab's twin of the layered engine's trail-advection test.
-
-    Same logic: engines on one seed are deterministic, so two gain-zero runs
-    must match bit for bit (proving the comparison can see anything at all),
-    and a nonzero gain must then change the trail -- the pass dispatched --
-    while keeping it finite.
-    """
-    def trail_after(gain: float, ticks: int = 30) -> np.ndarray:
-        params = _params()
-        params.agents.trail_advect = gain
-        engine = _engine(gpu_device, params, seed=31)
-        _run(engine, params, ticks)
-        slab = engine.slab
-        return _read_volume(
-            engine.device, slab.trail.textures[slab.trail.index])
-
-    still = trail_after(0.0)
-    also_still = trail_after(0.0)
-    moved = trail_after(0.5)
-
-    assert np.array_equal(still, also_still)
-    assert np.isfinite(moved).all()
-    assert not np.array_equal(still[..., 0], moved[..., 0]), (
-        "a nonzero trail_advect left the slab's trail untouched"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Geometry
 # ---------------------------------------------------------------------------
@@ -240,7 +212,7 @@ def test_both_backends_share_one_output_chain():
     # mapping are defined once, on the base, and not overridden by either.
     for name in (
         "_output_stage", "_present", "render", "_physics_values",
-        "_common_render_values", "_advance_du_walk",
+        "_common_render_values", "_advance_ell_walk",
     ):
         assert name not in vars(engine_module.Engine), name
         assert name not in vars(volume_module.VolumeEngine), name
@@ -1290,10 +1262,17 @@ def test_the_exposure_governor_reaches_its_target_through_the_march(
 
     The governor's time constant is measured in seconds by design, so this
     needs several hundred frames to be a statement about the settled level
-    rather than about the fade-in.
+    rather than about the fade-in -- and the climb got longer when the shading
+    rebalance of DESIGN.md 4.7 step 5 reduced how much of the image arrives
+    already bright. Brightening is the deliberately slow direction, so the
+    attack rate is raised here to keep the frame count affordable on a software
+    adapter. That is the same move the feature-size loop's own tests make with
+    their time constants: what is under test is where the governor settles,
+    which the rate does not change, not how long it takes to get there.
     """
     params = _params(width=96, depth=24, climate_width=12, climate_height=8,
                      climate_depth=4, steps=24)
+    params.safety.exposure_attack = 0.015
     engine = _engine(gpu_device, params, seed=8, size=(160, 96))
     view, fmt = offscreen_target(160, 96)
 
@@ -1307,6 +1286,13 @@ def test_the_exposure_governor_reaches_its_target_through_the_march(
     assert abs(settled - target) < 0.03 * max(target, 1e-6) + 0.02, (
         f"mean image lightness settled at {settled:.4f} against a target of "
         f"{target:.4f}")
-    assert 0.05 < stats["exposure"] < 12.0, (
+    # The multiplier the slab needs is much larger than the stack's, and larger
+    # again since the shading rebalance: a filament network fills far less of a
+    # volume than of a plane, so gating the reaction on the network costs the
+    # march more than it costs the compositor (DESIGN.md 4.7 step 5, and 13,
+    # which lists this among the slab-specific numbers wanting a viewer). What
+    # this bound is protecting is the case where that stops being a correction
+    # and becomes a saturation, leaving the image permanently dim.
+    assert 0.05 < stats["exposure"] < 14.0, (
         f"the governor is at {stats['exposure']:.2f}, near one of its bounds; "
         "the march is handing it an image it can only just correct")

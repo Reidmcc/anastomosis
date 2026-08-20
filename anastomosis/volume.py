@@ -552,7 +552,6 @@ class VolumeEngine(Backend):
         self.p_climate = self._compute("vol_climate.wgsl")
         self.p_agents = self._compute("vol_agents.wgsl")
         self.p_trail = self._compute("vol_trail.wgsl")
-        self.p_trail_advect = self._compute("vol_trail_advect.wgsl")
         self.p_vol_blur = self._compute("vol_blur.wgsl")
         self.p_reaction = self._compute("vol_reaction.wgsl")
         self.p_potential = self._compute("vol_potential.wgsl")
@@ -579,7 +578,7 @@ class VolumeEngine(Backend):
         Physarum needs to lay a network down at all.
         """
         geometry = self.geometry
-        values = self._physics_values(params, 1.0, 1.0)
+        values = self._physics_values(params, 1.0, 1.0, params.volume.density)
         values.update(
             dims_x=geometry.width, dims_y=geometry.height, dims_z=geometry.depth,
             clim_w=geometry.climate_width, clim_h=geometry.climate_height,
@@ -675,7 +674,27 @@ class VolumeEngine(Backend):
         slab.climate_b.flip()
         slab.climate_c.flip()
 
-        # 3. Agents deposit into the fixed-point accumulator.
+        # 3. Assemble the flow's vector potential and take its curl. Before
+        # the trail rather than after the reaction, because the trail advects
+        # through the velocity (DESIGN.md 4.7 step 6) and both `potential` and
+        # `velocity` must stay derived fields -- written every tick before
+        # anything reads them -- or they would have to be checkpointed. The
+        # structure-following component consequently reads the previous tick's
+        # reaction, one diffusion step behind, which nothing can see.
+        cpass.set_pipeline(self.p_potential)
+        cpass.set_bind_group(0, self._bind(self.p_potential, [
+            pbind, slab.psi.cur, slab.reaction.cur, slab.climate_b.cur,
+            slab.potential_view, sampler,
+        ]))
+        cpass.dispatch_workgroups(*groups)
+
+        cpass.set_pipeline(self.p_flow)
+        cpass.set_bind_group(0, self._bind(self.p_flow, [
+            pbind, slab.potential_view, slab.velocity_view,
+        ]))
+        cpass.dispatch_workgroups(*groups)
+
+        # 4. Agents deposit into the fixed-point accumulator.
         cpass.set_pipeline(self.p_agents)
         cpass.set_bind_group(0, self._bind(self.p_agents, [
             pbind, self._buffer_binding(slab.agents_buf), slab.trail.cur,
@@ -685,12 +704,14 @@ class VolumeEngine(Backend):
         ]))
         cpass.dispatch_workgroups(math.ceil(geometry.agent_count / 64), 1, 1)
 
-        # 4. Trail decay + deposit, then separable diffusion on three axes.
+        # 5. Trail advection, decay and deposit, then separable diffusion on
+        #    three axes.
         cpass.set_pipeline(self.p_trail)
         cpass.set_bind_group(0, self._bind(self.p_trail, [
             pbind, slab.trail.cur, slab.trail.nxt,
             self._buffer_binding(slab.deposit_buf),
             slab.climate_b.cur, slab.climate_c.cur, sampler, stats_bind,
+            slab.velocity_view,
         ]))
         cpass.dispatch_workgroups(*groups)
         slab.trail.flip()
@@ -728,7 +749,7 @@ class VolumeEngine(Backend):
         )
         cpass = encoder.begin_compute_pass()
 
-        # 5. Reaction-diffusion substeps.
+        # 6. Reaction-diffusion substeps.
         cpass.set_pipeline(self.p_reaction)
         for _ in range(max(1, params.reaction.substeps)):
             cpass.set_bind_group(0, self._bind(self.p_reaction, [
@@ -739,33 +760,7 @@ class VolumeEngine(Backend):
             cpass.dispatch_workgroups(*groups)
             slab.reaction.flip()
 
-        # 6. Assemble the flow's vector potential, then take its curl.
-        cpass.set_pipeline(self.p_potential)
-        cpass.set_bind_group(0, self._bind(self.p_potential, [
-            pbind, slab.psi.cur, slab.reaction.cur, slab.climate_b.cur,
-            slab.potential_view, sampler,
-        ]))
-        cpass.dispatch_workgroups(*groups)
-
-        cpass.set_pipeline(self.p_flow)
-        cpass.set_bind_group(0, self._bind(self.p_flow, [
-            pbind, slab.potential_view, slab.velocity_view,
-        ]))
-        cpass.dispatch_workgroups(*groups)
-
-        # 6.5. Advect the trail itself -- §4.7 step 6, activation only. Same
-        # placement and reasoning as the layered engine's: after the velocity
-        # exists, skipped at gain zero.
-        if params.agents.trail_advect > 0.0:
-            cpass.set_pipeline(self.p_trail_advect)
-            cpass.set_bind_group(0, self._bind(self.p_trail_advect, [
-                pbind, slab.trail.cur, slab.trail.nxt,
-                slab.velocity_view, sampler,
-            ]))
-            cpass.dispatch_workgroups(*groups)
-            slab.trail.flip()
-
-        # 7. Advect pigment.
+        # 7. Advect pigment, through the velocity written in step 3.
         cpass.set_pipeline(self.p_advect)
         cpass.set_bind_group(0, self._bind(self.p_advect, [
             pbind, slab.pigment.cur, slab.pigment.nxt,

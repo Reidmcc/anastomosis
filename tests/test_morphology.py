@@ -8,20 +8,27 @@ which is a common trypophobia trigger. For a regulation aid that is a
 functional defect, not a matter of taste, so it gets asserted rather than
 eyeballed.
 
-Two properties are checked, and they are different claims:
+Three properties are checked, and they are different claims:
 
 * **Sizes are not uniform across the field.** This is the accessibility one.
   Uniformity is the trigger, so a churning field of identically-sized holes
   would not fix anything.
 * **The arrangement does not hold still.** This is the monotony one: features
   must merge and split over a long run, not merely jitter.
+* **The shading stage is not sharpening the geometry back up.** This one is not
+  about the simulation at all. A field of soft, varied bumps still reaches the
+  eye as a lattice of hard round holes if the last stage before colour clips
+  every one of them against its ceiling, which is what the shipped pigment
+  weights did.
 
 Plus the constraint that makes the lever usable at all: it must not move the
 quantities the homeostat defends, because anything that moves mass reaches the
 image as a slow global luminance swing through the exposure governor.
 
 These run the numpy reference rather than the GPU. The shader is held to the
-same arithmetic by ``test_reaction_matches_numpy_with_a_varying_du``.
+same arithmetic by ``test_reaction_matches_numpy_with_a_varying_du``, and the
+loop that now drives `du` is asserted against a running engine in
+``test_soak.py``.
 """
 
 from __future__ import annotations
@@ -164,14 +171,18 @@ def test_a_drifting_climate_makes_the_arrangement_churn():
     first = M.climate_scale_field(size, factor=20, seed=1)
     second = M.climate_scale_field(size, factor=20, seed=2)
 
+    # Both arms warm up identically -- same seed, and the drift only starts
+    # after the warmup -- so the warmup is run once and forked.
+    u0, v0 = M.seed_field(size, seed=1)
+    for _ in range(warmup):
+        for _ in range(2):
+            u0, v0 = M.gray_scott_step(
+                u0, v0, reaction.feed, reaction.kill,
+                du=reaction.du, dv=reaction.dv)
+
     results = {}
     for mode in ("fixed", "drift"):
-        u, v = M.seed_field(size, seed=1)
-        for _ in range(warmup):
-            for _ in range(2):
-                u, v = M.gray_scott_step(
-                    u, v, reaction.feed, reaction.kill,
-                    du=reaction.du, dv=reaction.dv)
+        u, v = u0.copy(), v0.copy()
 
         features: list[int] = []
         holes: list[int] = []
@@ -217,4 +228,113 @@ def test_a_drifting_climate_makes_the_arrangement_churn():
         f"hole count is monotone over the run "
         f"({results['drift']['holes'].tolist()}); cells are only ever being "
         f"created or only ever destroyed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# What the shading stage does with all of this
+# ---------------------------------------------------------------------------
+
+
+def test_the_shading_ceiling_falls_between_the_reaction_and_the_network():
+    """The other half of the trypophobia complaint, and it is not in the physics.
+
+    ``advect.wgsl`` builds the density it shades from the reaction and the
+    trail, clamped to 1, and where that ceiling falls decides what the picture
+    is made of. Two failure modes have been measured on the way here. At the
+    original weights a single reaction spot cleared the ceiling on its own, so
+    every feature rendered as a flat-topped disc with a hard rim. And after the
+    rebalance, the *hubs* -- the trail field's round agent-congregation knots,
+    at five times the filament level -- became the thing that clipped: a third
+    of the bright-blob texels sat on the ceiling.
+
+    The trail term therefore goes through a soft knee,
+    ``knee * tanh(trail / knee)``: near-linear at filament level, bounded at
+    ``knee`` above it. Four statements pin the shape from every side.
+    """
+    resolved = config.Config().resolve()
+    reaction, pigment = resolved.reaction, resolved.pigment
+    _, v, _ = M.equilibrate(du=reaction.du, dv=reaction.dv, ticks=2500)
+
+    peak = float(np.quantile(v, 0.999))
+    assert peak * pigment.density_from_v < 1.0, (
+        f"a reaction spot alone reaches {peak * pigment.density_from_v:.2f} of "
+        f"the shading ceiling (peak V {peak:.3f} x {pigment.density_from_v}); "
+        f"spots clip to flat discs before any filament is involved"
+    )
+
+    knee = pigment.trail_knee
+    assert knee > 0.0, "the knee is disabled; hubs render as clipped discs again"
+
+    def shaded(trail: float) -> float:
+        return pigment.density_from_trail * knee * float(np.tanh(trail / knee))
+
+    # No amount of trail can clip on its own: the term is bounded by design.
+    assert pigment.density_from_trail * knee < 0.8, (
+        f"the trail term's asymptote is "
+        f"{pigment.density_from_trail * knee:.2f}; a hub still fills the "
+        f"ceiling before the reaction has contributed anything"
+    )
+    # ...and a typical hub -- saturated trail plus the reaction it carries --
+    # stays under the ceiling too, which is the statement the eye cares about.
+    hub_gate = (1 - pigment.v_needs_trail) + pigment.v_needs_trail * (
+        M.TRAIL_QUANTILES[0.99] / (1 + M.TRAIL_QUANTILES[0.99])
+    )
+    hub_total = (pigment.density_from_v * M.V_HUB_P50 * hub_gate
+                 + shaded(M.TRAIL_MAX))
+    assert hub_total < 1.0, (
+        f"a typical hub shades at {hub_total:.2f}; it still clips to a disc"
+    )
+
+    # Near-linear where the filaments live, or the knee dims the network it
+    # exists to protect...
+    fil = M.TRAIL_QUANTILES[0.9]
+    assert shaded(fil) > 0.85 * pigment.density_from_trail * fil, (
+        f"the knee takes filament brightness to "
+        f"{shaded(fil) / (pigment.density_from_trail * fil):.2f} of linear"
+    )
+    # ...and genuinely compressive where the hubs live, or it is not doing
+    # anything.
+    hub = M.TRAIL_QUANTILES[0.99]
+    assert shaded(hub) < 0.65 * pigment.density_from_trail * hub, (
+        f"the knee leaves a hub at "
+        f"{shaded(hub) / (pigment.density_from_trail * hub):.2f} of linear; "
+        f"hubs still render at full weight"
+    )
+
+
+def test_the_reaction_is_shown_where_the_network_put_it():
+    """The gate favours the network, gently, and both halves of that are checked.
+
+    The reaction does two different things (see PigmentParams.v_needs_trail):
+    on a filament it is the internal texture the trail-feed coupling exists to
+    produce, and away from one it is free Gray-Scott in its spot regime. The
+    gate keeps the first.
+
+    The upper bound is the one worth arguing for. Gating harder keeps improving
+    the obvious measure -- the rendered image goes from 25 separate bright
+    regions at this setting to 11 at 0.40 -- but it does it by hiding the
+    reaction, and the reaction is what carries the *variation* in feature size
+    that the rest of DESIGN.md 4.7 works to produce. Measured, the spread of
+    local feature size in the rendered image falls back through the
+    unrebalanced control somewhere past here. Uniformity is the trigger, so
+    trading it away for a lower blob count is trading the wrong way.
+    """
+    pigment = config.Config().resolve().pigment
+    trail = np.array([0.0, 0.05, 0.2, 0.5, 1.0, 2.0, 5.0])
+    gate = (1.0 - pigment.v_needs_trail) + pigment.v_needs_trail * (
+        trail / (1.0 + trail)
+    )
+
+    assert np.all(np.diff(gate) > 0), "the gate is not monotone in trail"
+    assert gate[0] > 0.5, (
+        f"bare ground is gated to {gate[0]:.2f}; the reaction reaching a little "
+        f"way off the filaments is most of what makes the network look grown "
+        f"rather than drawn"
+    )
+    span = float(gate[-1] / gate[0])
+    assert 1.1 < span < 1.6, (
+        f"the gate spans x{span:.2f} between bare ground and a trunk; below "
+        f"1.1 it is not distinguishing them at all, and above 1.6 it starts "
+        f"hiding the feature-size variation it is supposed to be showing off"
     )

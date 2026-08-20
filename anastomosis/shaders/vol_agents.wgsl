@@ -58,8 +58,15 @@ struct Agent {
 // traffic than a cell does, not more, so the headroom argument only improves.
 const DEPOSIT_SCALE: f32 = 1048576.0;
 
+// Sensing saturation, exactly as in agents.wgsl and for the same reason:
+// unbounded sensed trail is winner-take-all and collapses the layer into
+// knots. See the 2D shader for the full argument. Zero disables.
 fn sample_trail(uvw: vec3<f32>) -> f32 {
-    return textureSampleLevel(trail_tex, samp, wrap_uvw(uvw), 0.0).r;
+    let value = textureSampleLevel(trail_tex, samp, wrap_uvw(uvw), 0.0).r;
+    if (params.sense_cap > 0.0) {
+        return min(value, params.sense_cap);
+    }
+    return value;
 }
 
 // Trilinear splat across the eight surrounding voxels. A hard single-voxel
@@ -172,7 +179,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // pruning redistributes rather than drains: the mass reappears wherever
     // agents currently are instead of wherever mass already is.
     let deposit_amt = max(0.0, params.deposit + params.range_deposit * cb.x + stats.corr_deposit)
-        * (1.0 + clamp(stats.prune_return, 0.0, 2.0));
+        * (1.0 + clamp(stats.prune_return, 0.0, 2.0)
+           + clamp(stats.cap_return, 0.0, 3.0));
 
     // --- Sense ------------------------------------------------------------
     // One sensor ahead and four on a cone around it, rolled by a random phase

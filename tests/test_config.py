@@ -402,24 +402,35 @@ def test_only_activation_shortens_the_event_envelope():
     assert act_slow.events.max_concurrent == act_fast.events.max_concurrent == 6
 
 
-def test_only_activation_lets_the_structure_ride_the_flow():
-    """§4.7 step 6 ships behind the activation tempo curve and nowhere else.
+def test_activation_shears_the_structure_harder_without_disabling_it():
+    """Activation carries the trail faster; regulation keeps the shipped rate.
 
-    Regulation's gain is pinned at zero at every tempo -- and zero is
-    load-bearing, not merely small: the engines skip the advection pass
-    entirely at zero, which is what keeps regulation bit-identical to a
-    build that predates the mechanism.
+    Trail advection (§4.7 step 6) landed on main at 0.5 while this branch was
+    in flight, as the fix that dissolves the trail hubs -- so the regulation
+    curve's job here is to hold it *at its default*, not to switch it off. An
+    earlier draft of this branch pinned it to zero, which would have disabled
+    a shipped fix for a real visual defect in the mode that is the
+    application's default; this test is what would now catch that.
+
+    Below 1.0 at the top on purpose: the shear that stretches filaments is the
+    difference between the trail's rate and the pigment's, so parity would
+    quietly remove the effect it is asking for.
     """
+    default = config.AgentParams().trail_advect
+    assert default > 0.0, "main ships trail advection on; this test assumes it"
+
     for tempo in (0.0, 0.5, 1.0):
         reg = config.Config(
             macros=config.Macros(tempo=tempo), mode="regulation").resolve()
-        assert reg.agents.trail_advect == 0.0
+        assert reg.agents.trail_advect == pytest.approx(default)
+
     act_slow = config.Config(
         macros=config.Macros(tempo=0.0), mode="activation").resolve()
     act_fast = config.Config(
         macros=config.Macros(tempo=1.0), mode="activation").resolve()
-    assert act_slow.agents.trail_advect == 0.0
-    assert act_fast.agents.trail_advect == pytest.approx(0.30)
+    assert act_slow.agents.trail_advect == pytest.approx(default)
+    assert act_fast.agents.trail_advect > default
+    assert act_fast.agents.trail_advect < 1.0
 
 
 def test_presets_keep_the_arrival_rate_they_had():
@@ -482,6 +493,21 @@ def test_diffusion_band_is_bounded_for_stability():
     assert params.reaction.du_min <= params.reaction.du_max, (
         "the du band was left inverted, so clamp_du would collapse it"
     )
+
+
+def test_sensing_cap_ratio_is_bounded_or_off():
+    """The cap is a ratio to the equilibrium mean trail; its own sanity here.
+
+    Zero or negative must mean cleanly disabled, like `deposit_cap`. A huge
+    ratio is indistinguishable from disabled but would still pack a live
+    clamp, so it is bounded. The absolute value and its liveness floor -- a
+    cap near the starve threshold reads the whole population as starving --
+    are applied where the value is packed, in `Backend._physics_values`.
+    """
+    off = config.Config(overrides={"agents.sense_cap": -3.0}).resolve().agents
+    assert off.sense_cap == 0.0
+    huge = config.Config(overrides={"agents.sense_cap": 1e9}).resolve().agents
+    assert huge.sense_cap <= 100.0
 
 
 def test_structural_values_stay_integers():

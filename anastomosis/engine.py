@@ -475,7 +475,6 @@ class Engine(Backend):
         self.p_climate = self._compute("climate.wgsl")
         self.p_agents = self._compute("agents.wgsl")
         self.p_trail = self._compute("trail.wgsl")
-        self.p_trail_advect = self._compute("trail_advect.wgsl")
         self.p_reaction = self._compute("reaction.wgsl")
         self.p_flow = self._compute("flow.wgsl")
         self.p_advect = self._compute("advect.wgsl")
@@ -499,7 +498,8 @@ class Engine(Backend):
         allocated once, when the field was created.
         """
         spec = layer.spec
-        values = self._physics_values(params, spec.feature_scale, spec.tempo_scale)
+        values = self._physics_values(
+            params, spec.feature_scale, spec.tempo_scale, params.agents.density)
         values.update(
             dims_x=spec.width, dims_y=spec.height, dims_z=1,
             clim_w=spec.climate_dims[0], clim_h=spec.climate_dims[1], clim_d=1,
@@ -594,7 +594,21 @@ class Engine(Backend):
             layer.climate_b.flip()
             layer.climate_c.flip()
 
-            # 3. Agents deposit into the fixed-point accumulator.
+            # 3. Velocity field. Before the trail rather than after the
+            # reaction, because the trail now advects through it (DESIGN.md
+            # 4.7 step 6) and `velocity` must stay a derived field -- written
+            # every tick before anything reads it -- or it would have to be
+            # checkpointed. The structure-following component consequently
+            # reads the previous tick's reaction, which at these tempos is the
+            # same field to within one diffusion step.
+            cpass.set_pipeline(self.p_flow)
+            cpass.set_bind_group(0, self._bind(self.p_flow, [
+                pbind, layer.psi.cur, layer.reaction.cur, layer.climate_b.cur,
+                layer.velocity_view, sampler,
+            ]))
+            cpass.dispatch_workgroups(gx, gy)
+
+            # 4. Agents deposit into the fixed-point accumulator.
             cpass.set_pipeline(self.p_agents)
             cpass.set_bind_group(0, self._bind(self.p_agents, [
                 pbind, agents_bind, layer.trail.cur, deposit_bind,
@@ -603,11 +617,12 @@ class Engine(Backend):
             ]))
             cpass.dispatch_workgroups(math.ceil(spec.agent_count / 64), 1, 1)
 
-            # 4. Trail decay + deposit, then separable diffusion.
+            # 5. Trail advection, decay and deposit, then separable diffusion.
             cpass.set_pipeline(self.p_trail)
             cpass.set_bind_group(0, self._bind(self.p_trail, [
                 pbind, layer.trail.cur, layer.trail.nxt, deposit_bind,
                 layer.climate_b.cur, layer.climate_c.cur, sampler, stats_bind,
+                layer.velocity_view,
             ]))
             cpass.dispatch_workgroups(gx, gy)
             layer.trail.flip()
@@ -641,7 +656,7 @@ class Engine(Backend):
             pbind = self._buffer_binding(layer.params_buf)
             gx, gy = self._groups(spec.width, spec.height)
 
-            # 5. Reaction-diffusion substeps.
+            # 6. Reaction-diffusion substeps.
             cpass.set_pipeline(self.p_reaction)
             for _ in range(max(1, params.reaction.substeps)):
                 cpass.set_bind_group(0, self._bind(self.p_reaction, [
@@ -652,29 +667,7 @@ class Engine(Backend):
                 cpass.dispatch_workgroups(gx, gy)
                 layer.reaction.flip()
 
-            # 6. Velocity field.
-            cpass.set_pipeline(self.p_flow)
-            cpass.set_bind_group(0, self._bind(self.p_flow, [
-                pbind, layer.psi.cur, layer.reaction.cur, layer.climate_b.cur,
-                layer.velocity_view, sampler,
-            ]))
-            cpass.dispatch_workgroups(gx, gy)
-
-            # 6.5. Advect the trail itself -- §4.7 step 6, activation only.
-            # After the velocity is written and before the pigment reads it:
-            # a same-tick read keeps velocity a derived quantity, so the
-            # checkpoint stays honest (§4.6). Skipped at gain zero, so the
-            # regulation mode pays nothing and stays bit-identical.
-            if params.agents.trail_advect > 0.0:
-                cpass.set_pipeline(self.p_trail_advect)
-                cpass.set_bind_group(0, self._bind(self.p_trail_advect, [
-                    pbind, layer.trail.cur, layer.trail.nxt,
-                    layer.velocity_view, sampler,
-                ]))
-                cpass.dispatch_workgroups(gx, gy)
-                layer.trail.flip()
-
-            # 7. Advect pigment.
+            # 7. Advect pigment, through the velocity written in step 3.
             cpass.set_pipeline(self.p_advect)
             cpass.set_bind_group(0, self._bind(self.p_advect, [
                 pbind, layer.pigment.cur, layer.pigment.nxt,

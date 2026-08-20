@@ -1,12 +1,15 @@
-// Trail decay plus deposit application, and flux-based pruning, in the slab.
+// Trail advection, decay, deposit application with a capacity, and
+// flux-based pruning, in the slab.
 //
 // The 3D counterpart of trail.wgsl and identical in every mechanism; see there
-// for why pruning is one-sided, why the mass it removes is returned through
-// the agent deposit rather than through decay, and what each channel carries:
+// for why pruning is one-sided, why what pruning and the deposit capacity
+// remove is returned through the agent deposit rather than through decay, why
+// the advection carries all four channels together, and what each carries:
 //
 //   .r  trail
 //   .g  exponential moving average of arriving traffic
 //   .b  the extra decay the pruning term applies, relative to the base rate
+//   .a  exponential moving average of what the deposit capacity withheld
 //
 // `atomicExchange` both reads and clears the deposit accumulator, so a single
 // pass consumes this tick's deposits and leaves the buffer ready for the next
@@ -25,6 +28,7 @@
 @group(0) @binding(5) var clim_c: texture_3d<f32>;
 @group(0) @binding(6) var samp: sampler;
 @group(0) @binding(7) var<storage, read> stats: Stats;
+@group(0) @binding(8) var velocity_tex: texture_3d<f32>;
 
 const DEPOSIT_SCALE: f32 = 1048576.0;
 
@@ -48,9 +52,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         0.5,
     );
 
-    let prior = textureLoad(trail_in, p, 0).rg;
+    var prior = textureLoad(trail_in, p, 0);
+    if (params.trail_advect > 0.0) {
+        let velocity = textureLoad(velocity_tex, p, 0).xyz;
+        let src = wrap_uvw(
+            uvw - velocity * params.advect_dt * params.trail_advect
+                / vec3<f32>(dims));
+        prior = finite_or4(textureSampleLevel(trail_in, samp, src, 0.0), 0.0);
+    }
     let previous = finite_or(prior.r, 0.0);
     let income = mix(finite_or(prior.g, 0.0), deposited, params.income_rate);
+
+    var applied = deposited;
+    var withheld_now = 0.0;
+    if (params.deposit_cap > 0.0) {
+        applied = deposited / (1.0 + previous / params.deposit_cap);
+        withheld_now = deposited - applied;
+    }
+    let withheld = mix(finite_or(prior.a, 0.0), withheld_now, params.income_rate);
 
     // What decay will take this tick, against what traffic is bringing in. A
     // strand carrying enough agents to replace what it loses runs no deficit;
@@ -62,10 +81,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let prune_relative = prune_gain * deficit;
     let decay_eff = clamp(decay * (1.0 + prune_relative), 0.001, 0.5);
 
-    var value = previous * (1.0 - decay_eff) + deposited;
+    var value = previous * (1.0 - decay_eff) + applied;
     value = clamp(finite_or(value, 0.0), 0.0, 8.0);
 
     textureStore(
         trail_out, p,
-        vec4<f32>(value, clamp(income, 0.0, 8.0), clamp(prune_relative, 0.0, 8.0), 1.0));
+        vec4<f32>(value, clamp(income, 0.0, 8.0), clamp(prune_relative, 0.0, 8.0),
+                  clamp(withheld, 0.0, 8.0)));
 }

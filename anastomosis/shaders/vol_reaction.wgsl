@@ -108,10 +108,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         + stats.corr_kill;
     let kill = clamp(kill_raw, min(band_lo, band_hi), max(band_lo, band_hi));
 
-    // Local feature size, geometric so it composes exactly with the global
-    // walk in `params.du`. Must stay in step with config.clamp_du.
+    // Local feature size, geometric so it composes exactly with the two terms
+    // it rides on. Must stay in step with config.clamp_du.
+    //
+    // `stats.corr_du` is the feature-size controller's global correction and
+    // `params.du` the base the scale macro sets; the climate texel is the
+    // per-region deviation on top. All three are geometric, so they compose
+    // exactly rather than interacting -- and `dv` riding on the result holds
+    // the dv/du ratio through every one of them, which is what keeps the whole
+    // mechanism clear of mass and so of the exposure governor.
+    let du_global = params.du * exp(stats.corr_du);
     let du_local = clamp(
-        params.du * exp(params.range_du * cc.x),
+        du_global * exp(params.range_du * cc.x),
         params.du_min, params.du_max);
     let dv_local = params.dv * (du_local / max(params.du, 1e-6));
 

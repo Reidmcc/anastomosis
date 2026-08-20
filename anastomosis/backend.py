@@ -192,9 +192,9 @@ class Backend:
         self.seed = seed if seed is not None else int(time.time_ns() & 0xFFFFFFFF)
         self._bind_cache: dict[tuple, wgpu.GPUBindGroup] = {}
         self._layout_cache: dict[int, wgpu.GPUBindGroupLayout] = {}
-        # Global mean of the reaction's diffusion rate, as a unit-variance OU
-        # state. See `_advance_du_walk`.
-        self._du_walk = 0.0
+        # The setpoint of the feature-size loop, as a unit-variance OU state.
+        # See `_advance_ell_walk`.
+        self._ell_walk = 0.0
         self._walk_rng = np.random.default_rng(self.seed ^ 0xD1FF)
         self.hue_phase = 0.0
         # Where the viewpoint is: a unit-variance walk, and the bounded offset
@@ -494,7 +494,7 @@ class Backend:
     # -- parameter packing --------------------------------------------------
 
     def _physics_values(
-        self, params: Params, feature: float, tempo: float
+        self, params: Params, feature: float, tempo: float, agent_density: float
     ) -> dict:
         """Every physical parameter the shaders read, at one feature/tempo scale.
 
@@ -502,28 +502,47 @@ class Backend:
         decide what the simulation *is* -- how agents sense and steer, where the
         reaction sits on the Gray-Scott map, how far the climate deviates -- and
         a macro has to mean the same thing whichever way the result is put on
-        screen. The two callers add only their own dimensions and identity.
+        screen. The two callers add only their own dimensions and identity --
+        and their agent density, which is the one physical number they do not
+        share (`agents.density` per cell against `volume.density` per voxel)
+        and which the sensing cap's absolute value is anchored to.
         """
         a, r, f = params.agents, params.reaction, params.flow
         c, ho, pg = params.climate, params.homeostat, params.pigment
+
+        # The sensing cap, made absolute. `sense_cap` is a multiple of the
+        # equilibrium mean trail, which is exactly deposit-per-texel-per-tick
+        # over decay; anchoring here is what lets one ratio hold across the
+        # intensity macro and across both backends (see AgentParams). The
+        # floor is a liveness bound: `recent` is an EMA of sensed -- and
+        # therefore capped -- values, so a cap near `starve_threshold` reads
+        # the whole population as starving and it respawns forever.
+        sense_cap = 0.0
+        if a.sense_cap > 0.0:
+            equilibrium = agent_density * a.deposit / max(a.trail_decay, 1e-6)
+            sense_cap = max(
+                a.sense_cap * equilibrium, max(0.02, 4.0 * a.starve_threshold))
 
         # Homeostat slew per tick from its time constant in seconds.
         homeo_rate = 1.0 - math.exp(
             -1.0 / max(ho.tau_seconds * max(params.sim_hz, 1e-3), 1.0)
         )
 
-        # The diffusion pair carries the global mean feature size; the climate
-        # field carries the per-region deviation around it (DESIGN.md §4.7),
-        # the same split feed and kill already use. Both are geometric, so the
-        # shader's per-texel deviation composes with this exactly rather than
-        # interacting with it. dv rides on du so the dv/du ratio is held: it is
-        # scaling the pair together, and only together, that moves feature size
-        # without moving mass -- which is what keeps this lever clear of the
-        # homeostat and of the exposure governor.
-        du_mean = min(
-            max(r.du * math.exp(r.du_walk * self._du_walk), r.du_min), r.du_max)
-        dv_mean = r.dv * (du_mean / max(r.du, 1e-6))
+        # The feature-size loop's per-tick rates, from their time constants, the
+        # same way `homeo_rate` above is derived: the tempo macro moves
+        # `sim_hz` by more than 2x, and a loop whose behaviour changed with it
+        # would mean the tempo knob quietly retuned the controller.
+        def _rate(tau_seconds: float) -> float:
+            return 1.0 - math.exp(
+                -1.0 / max(tau_seconds * max(params.sim_hz, 1e-3), 1.0)
+            )
 
+        # `du` goes to the shader as the base the scale macro set, with no
+        # correction of its own: the global mean is the controller's now, and
+        # it applies its own correction from the stats buffer, per texel,
+        # alongside the climate's per-region deviation (DESIGN.md 4.7 step 5).
+        # The only part of the loop that lives here is the setpoint walk, which
+        # is accumulated state and so belongs with the hue phase.
         return {
             "speed": a.speed * tempo,
             "sensor_angle": a.sensor_angle,
@@ -539,9 +558,11 @@ class Backend:
             "fusion_max": a.fusion_max,
             "trail_decay": a.trail_decay,
             "trail_diffuse": a.trail_diffuse * feature,
-            "trail_advect": a.trail_advect,
             "income_rate": a.income_rate,
             "prune_gain": a.prune_gain,
+            "deposit_cap": a.deposit_cap,
+            "sense_cap": sense_cap,
+            "trail_advect": a.trail_advect,
             "starve_threshold": a.starve_threshold,
             "max_age": a.max_age,
             "found_fraction": a.found_fraction,
@@ -552,7 +573,7 @@ class Backend:
             # one.
             "found_radius": a.found_radius * feature,
 
-            "feed": r.feed, "kill": r.kill, "du": du_mean, "dv": dv_mean,
+            "feed": r.feed, "kill": r.kill, "du": r.du, "dv": r.dv,
             "du_min": r.du_min, "du_max": r.du_max,
             "rdt": r.dt, "trail_feed_gain": r.trail_feed_gain,
             "kill_follows_feed": r.kill_follows_feed,
@@ -593,6 +614,8 @@ class Backend:
             "activity_gain": pg.activity_gain,
             "density_from_v": pg.density_from_v,
             "density_from_trail": pg.density_from_trail,
+            "v_needs_trail": pg.v_needs_trail,
+            "trail_knee": pg.trail_knee,
 
             "feature_scale": feature, "tempo_scale": tempo,
 
@@ -601,6 +624,11 @@ class Backend:
             "target_activity": ho.target_activity,
             "deadband": ho.deadband, "gain_p": ho.gain_p, "gain_i": ho.gain_i,
             "integral_limit": ho.integral_limit, "homeo_rate": homeo_rate,
+
+            "ell_offset": r.ell_walk * self._ell_walk,
+            "ell_rate": _rate(r.ell_tau_seconds),
+            "ell_ref_rate": _rate(r.ell_ref_tau_seconds),
+            "ell_corr_limit": r.ell_corr_limit,
         }
 
     # -- accumulated host-side state ----------------------------------------
@@ -610,10 +638,10 @@ class Backend:
             self.hue_phase
             + 2.0 * math.pi * params.render.hue_turns_per_hour * dt / 3600.0
         ) % (2.0 * math.pi)
-        self._advance_du_walk(dt, params.reaction.du_walk_tau)
+        self._advance_ell_walk(dt, params.reaction.ell_walk_tau)
 
-    def _advance_du_walk(self, dt: float, tau: float) -> None:
-        """One step of the Ornstein-Uhlenbeck walk on the global feature size.
+    def _advance_ell_walk(self, dt: float, tau: float) -> None:
+        """One step of the Ornstein-Uhlenbeck walk on the feature-size setpoint.
 
         Kept unit-variance and dimensionless here, so the amplitude lives with
         the parameter it scales rather than being split across two places. The
@@ -621,19 +649,28 @@ class Backend:
         stationary variance exactly one whatever the tick rate is -- changing
         the tempo macro must not change how far the field wanders.
 
-        A walk rather than a constant because a fixed diffusion rate pins the
-        Gray-Scott wavelength, and a pinned wavelength is what made the texture
-        stationary (DESIGN.md §4.7). It is deliberately the *smaller* half of
-        the mechanism: a global drift moves every feature on screen the same
-        way at the same time, which §4.2 warns against, and it does nothing
-        about the uniformity of size that is the actual accessibility problem.
-        The per-region deviation in `climate_c` is what addresses that.
+        This used to be a walk on the diffusion rate itself, and moving it to
+        the setpoint is the difference between asking and getting. A walk on
+        `du` asks for a diffusion rate and takes whatever texture the field
+        chooses to produce; if the reaction is sitting in an attractor that
+        pins its wavelength -- which is exactly the failure DESIGN.md §4.7
+        exists to fix -- the walk moves and the picture does not. The setpoint
+        it now drives is closed on a measurement of the texture, so a field
+        that refuses to change feature size is a growing error rather than a
+        thing nothing notices.
+
+        It remains the *smaller* half of the mechanism. A global drift moves
+        every feature on screen the same way at the same time, which §4.2 warns
+        against, and it does nothing about the uniformity of size that is the
+        actual accessibility problem; the per-region deviation in `climate_c`
+        is what addresses that.
         """
         theta = 1.0 - math.exp(-dt / max(tau, 1e-3))
         sigma = math.sqrt(max(1.0 - (1.0 - theta) ** 2, 0.0))
-        walk = self._du_walk * (1.0 - theta) + float(self._walk_rng.normal()) * sigma
-        # Bounded, so a tail excursion cannot park the whole field at a clamp.
-        self._du_walk = max(-2.0, min(2.0, walk))
+        walk = self._ell_walk * (1.0 - theta) + float(self._walk_rng.normal()) * sigma
+        # Bounded, so a tail excursion cannot ask for a feature size the
+        # controller can only chase into its own clamp.
+        self._ell_walk = max(-2.0, min(2.0, walk))
 
     def _update_parallax(self, params: Params, dt: float, count: int) -> None:
         """Where the viewpoint is, as a random walk rather than a sine.

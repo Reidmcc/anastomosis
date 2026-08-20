@@ -65,26 +65,42 @@ def trail_step(
     decay: float | np.ndarray,
     income_rate: float,
     prune_gain: float | np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    deposit_cap: float = 0.0,
+    withheld: np.ndarray | float = 0.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """One trail update, matching ``trail.wgsl`` including its clamps.
 
-    Returns ``(trail, income, prune_relative)`` -- the three channels the shader
-    writes. ``prune_relative`` is the extra decay the flux-pruning term applied,
-    as a fraction of the base rate; the reduce pass sums it weighted by trail to
-    work out how much mass the agent layer has to hand back.
+    Returns ``(trail, income, prune_relative, withheld)`` -- the four channels
+    the shader writes. ``prune_relative`` is the extra decay the flux-pruning
+    term applied, as a fraction of the base rate; ``withheld`` is the EMA of
+    what the deposit capacity refused. The reduce pass sums the first weighted
+    by trail and the last against the income EMA, to work out how much mass the
+    agent layer has to hand back for each mechanism.
 
     The pruning is deliberately one-sided: ``decay_eff >= decay`` everywhere, so
     no texel is ever given a longer memory than the base rate. See DESIGN.md
     §4.7 for why the obvious mass-neutral alternative -- centring the term so
-    that well-fed strands decay *slower* -- freezes the field.
+    that well-fed strands decay *slower* -- freezes the field. The capacity is
+    the deposit-side counterpart: a deposit landing on trail at ``deposit_cap``
+    is halved, so hubs stop out-competing the filaments (`AgentParams`).
+
+    Advection is not here: it is a resampling, not arithmetic, and the parity
+    for it is a translation test against a known velocity
+    (``test_the_trail_rides_the_velocity_field``).
     """
     expenditure = decay * trail
     income_next = income + (deposited - income) * income_rate
+    if deposit_cap > 0.0:
+        applied = deposited / (1.0 + trail / deposit_cap)
+    else:
+        applied = deposited
+    withheld_next = withheld + ((deposited - applied) - withheld) * income_rate
     deficit = np.clip(1.0 - income_next / (expenditure + 1e-6), 0.0, 1.0)
     prune_relative = prune_gain * deficit
     decay_eff = np.clip(decay * (1.0 + prune_relative), 0.001, 0.5)
-    value = np.clip(trail * (1.0 - decay_eff) + deposited, 0.0, 8.0)
-    return value, np.clip(income_next, 0.0, 8.0), np.clip(prune_relative, 0.0, 8.0)
+    value = np.clip(trail * (1.0 - decay_eff) + applied, 0.0, 8.0)
+    return (value, np.clip(income_next, 0.0, 8.0),
+            np.clip(prune_relative, 0.0, 8.0), np.clip(withheld_next, 0.0, 8.0))
 
 
 def seed_field(
