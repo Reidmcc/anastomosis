@@ -150,6 +150,9 @@ class StallWatchdog:
         self._thread: threading.Thread | None = None
         self._wake = threading.Event()
         self._episode: _Episode | None = None
+        # Why the loop is parked, when something that can see the window has
+        # said it is parked on purpose. See `set_paused`.
+        self._paused: str | None = None
         # Every report this watchdog has written, newest last. For the tests,
         # and for telling the user where to look.
         self.reports: list[Path] = []
@@ -180,6 +183,32 @@ class StallWatchdog:
     @property
     def phase(self) -> str:
         return self._state[0]
+
+    @property
+    def frames(self) -> int:
+        """Frames the loop has begun. The one number that says it is alive."""
+        return self._frames
+
+    @property
+    def paused(self) -> str | None:
+        return self._paused
+
+    def set_paused(self, reason: str | None) -> None:
+        """Say that the loop is parked on purpose, and why. ``None`` to clear.
+
+        The watchdog cannot see the window, and between frames is exactly where
+        a loop sits when nobody is asking it to draw. A minimised window is
+        therefore indistinguishable from a wedged one from in here, which is
+        the false alarm ``IDLE_STALL_SECONDS`` exists to make rare and cannot
+        make impossible -- no timeout is long enough for a window left
+        minimised over lunch, and one long enough would be no watchdog at all.
+
+        So it is told. Whoever can see the window says so, and while they do
+        the patient phases stop counting. Only those: a frame that never
+        returns is a fault whether or not anybody is looking at the window, and
+        that is still reported against the phase it is really in.
+        """
+        self._paused = reason
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -238,6 +267,11 @@ class StallWatchdog:
         limit = self.idle_seconds if phase in PATIENT_PHASES else self.stall_seconds
         episode = self._episode
 
+        if self._paused is not None and phase in PATIENT_PHASES:
+            if episode is not None:
+                self._parked(episode)
+            return
+
         if waited < limit:
             if episode is not None:
                 self._recovered(episode)
@@ -272,6 +306,23 @@ class StallWatchdog:
             waited, phase, episode.path,
         )
         return episode
+
+    def _parked(self, episode: _Episode) -> None:
+        """Close an open episode that turned out not to be a stall.
+
+        Written into the report rather than dropped, because a report that
+        stops mid-episode with no ending reads like a session that died in it.
+        """
+        self._episode = None
+        self._append(
+            episode,
+            f"\n===== not a stall =====\n"
+            f"the loop is parked on purpose: {self._paused}\n",
+        )
+        log.info(
+            "the frame loop is parked on purpose (%s); %s was not a stall",
+            self._paused, episode.path,
+        )
 
     def _recovered(self, episode: _Episode) -> None:
         self._episode = None

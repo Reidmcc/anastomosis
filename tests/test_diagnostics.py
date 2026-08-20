@@ -189,6 +189,70 @@ def test_recovery_closes_the_episode_and_says_so(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Told what it cannot see
+# ---------------------------------------------------------------------------
+
+
+def test_a_loop_parked_on_purpose_is_not_a_stall(tmp_path):
+    """A minimised window is not asked to paint, and never will be by itself.
+
+    No idle timeout can tell that from a freeze -- one long enough to cover a
+    window left minimised over lunch is one that would never report a real
+    freeze either. So whoever can see the window says so, and while they do,
+    sitting between frames stops counting.
+    """
+    clock = _Clock()
+    dog = _watchdog(tmp_path, clock)
+    dog.set_paused("the window is not on screen")
+
+    dog.mark(diagnostics.IDLE)
+    clock.advance(diagnostics.IDLE_STALL_SECONDS * 10)
+    dog.poll()
+
+    assert not dog.reports, "a window nobody is looking at was called a freeze"
+
+
+def test_a_frame_that_never_returns_is_a_stall_even_when_parked(tmp_path):
+    """Only the patient phases are excused: a wedged frame is a fault anyway."""
+    clock = _Clock()
+    dog = _watchdog(tmp_path, clock)
+    dog.set_paused("the window is not on screen")
+
+    dog.mark("render")
+    clock.advance(20.0)
+    dog.poll()
+
+    assert dog.reports, "a frame that never returned went unreported"
+
+
+def test_an_episode_that_turns_out_to_be_a_pause_is_closed(tmp_path):
+    """Otherwise the report ends mid-episode, reading like a session that died."""
+    clock = _Clock()
+    dog = _watchdog(tmp_path, clock)
+
+    dog.mark(diagnostics.IDLE)
+    clock.advance(diagnostics.IDLE_STALL_SECONDS + 1.0)
+    dog.poll()
+    report = dog.reports[0]
+
+    dog.set_paused("the window is not on screen")
+    dog.poll()
+
+    assert "not a stall" in report.read_text()
+    assert dog.paused == "the window is not on screen"
+
+
+def test_the_frame_count_is_readable_from_outside(tmp_path):
+    """The one number that says the loop is alive, and what the poll watches."""
+    dog = _watchdog(tmp_path)
+
+    dog.frame()
+    dog.frame()
+
+    assert dog.frames == 2
+
+
+# ---------------------------------------------------------------------------
 # Robustness -- the report is worth more than any one line in it
 # ---------------------------------------------------------------------------
 

@@ -119,5 +119,51 @@ The design pressure that is easy to miss is **false alarms**. A report written
 every time the window is minimised is a report nobody reads, and one nobody
 reads is worth nothing on the day it matters — so a loop between frames is
 given 45 seconds against 10 inside a frame. Not being asked to paint is
-ordinary; a frame that never returns is not.
+ordinary; a frame that never returns is not. That leash is not enough by
+itself, though, because no timeout is long enough for a window left minimised
+over lunch and short enough to be a watchdog: so the application, which *can*
+see the window, tells the watchdog when the loop is parked on purpose, and only
+the patient phases are excused by it. A frame that never returns is still a
+fault whether or not anybody is looking.
+
+## Not being asked to draw
+
+The loop does not drive itself. `rendercanvas` owns a scheduler that asks for
+each frame, and every phase above happens because it asked. When it stops
+asking, the loop is neither wedged nor slow — it is simply never called again,
+and because the Qt backend re-blits the last bitmap on every expose, the window
+goes on looking like an ordinary window that has stopped.
+
+Two things pause that scheduler, and both are the same shape: it stops when the
+backend reports the window minimised, and it cancels every frame when the
+canvas' cached size is zero. Neither fact is re-derived. Both are written from a
+single window event — a state change, a resize — so an event that never
+arrives, or one that arrives while the native window is being rebuilt (which is
+what a fullscreen transition can do), leaves the canvas holding a belief about
+the window that nothing will ever correct. A freeze of exactly this shape is
+what `app.py`'s window poll exists for, and the stall report that led to it had
+every thread in the process idle.
+
+So the application asks the window instead of waiting to be told. Every two
+seconds, off a timer that shares nothing with the scheduler, it reads what the
+window says about itself — on screen or not, and how big — and pushes that back
+into the canvas *whether or not it has changed*. That is the whole trick: an
+edge-triggered fact becomes a level-triggered one, and a missed event costs one
+poll rather than the session. A size the canvas disagrees with the window about
+is corrected the way the backend's own resize handler would have written it,
+and zero is never written back — a window that really is zero-sized really has
+nothing to draw.
+
+If frames have stopped anyway, and the window is up and has a size, one is
+forced. A forced frame does not go through the scheduler at all: the canvas
+draws and presents on the spot, and telling the scheduler that a frame is done
+is part of that — which is exactly what a scheduler waiting on a frame it was
+never told about is waiting for. One forced frame and it is running again.
+
+When it is not, the session is carried by the poll at a frame every few
+seconds. That is a bad way to run and a much better way to stop: the field
+keeps its state, the panel keeps working, and the user can save and quit rather
+than killing a wedged process. Three forced frames in a row say the scheduler
+is not coming back, and write a report — the loop is alive, so the watchdog
+never would, and the stacks are the only thing that says why it stopped.
 

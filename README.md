@@ -422,7 +422,25 @@ same time, and a WARNING if the loop later recovers.
 Being asked to paint is not guaranteed — a minimised or occluded window
 legitimately stops — so a loop between frames is given 45 seconds before it
 counts as stalled, against 10 seconds inside a frame. Adjust with
-`--stall-timeout SECONDS`, or pass `0` to switch the watchdog off.
+`--stall-timeout SECONDS`, or pass `0` to switch the watchdog off. While the
+window is off screen the gap between frames stops counting entirely, because no
+timeout can tell a window left minimised over lunch from a freeze.
+
+Most of the freezes that get this far are not the loop being stuck at all: the
+window is up, every thread is idle, and the render scheduler has just stopped
+asking for frames — usually after a window event went missing, which a
+fullscreen toggle can cause. A poll of its own now watches for that, re-asserts
+what the window is actually doing a couple of times a second, and forces a
+frame if none has been asked for in three seconds. In the log:
+
+```
+WARNING no frame was asked for in 4.2s with the window up at 1920x1080; forced one (1 in a row)
+```
+
+One of those is a hiccup that was recovered from. A run of them means the
+scheduler is gone and the session is being kept alive a frame at a time — it
+writes a `dump-*.txt` report saying so, and is a good moment to save and
+restart.
 
 If it ever freezes so completely that even the watchdog cannot run, which is
 what happens if a driver call wedges while holding Python's interpreter lock,

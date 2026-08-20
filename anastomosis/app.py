@@ -79,6 +79,24 @@ def backend_classes(name: str) -> tuple[type, type]:
 # the drag from reallocating render targets dozens of times.
 RESIZE_SETTLE = 0.15
 
+# How often to ask the window what it is actually doing, and how long the frame
+# loop may go unasked before a frame is forced.
+#
+# Two seconds because this is a reconciliation, not a heartbeat: nothing here
+# needs to be prompt, it only needs to happen without anybody asking. Three
+# before forcing a frame, so that a checkpoint readback, a shader rebuild or a
+# compositor that has skipped a beat is never mistaken for a loop that has
+# stopped being driven -- those all end well inside a second, and a frame
+# forced on top of one costs a frame.
+WINDOW_POLL_SECONDS = 2.0
+UNASKED_SECONDS = 3.0
+
+# How many forced frames in a row mean the render scheduler is not coming back
+# on its own, and the session is being carried by the poll. Worth a report at
+# that point: the loop is alive, so the watchdog will never write one, and the
+# stacks are the only thing that says why the scheduler stopped.
+KICKS_BEFORE_A_REPORT = 3
+
 # Signals that mean "stop", handled so that a `kill` or a session logout ends
 # the same way closing the window does -- with the field on disk. SIGINT is in
 # the list for symmetry; the render loop installs its own handler for that one
@@ -188,6 +206,17 @@ class Application:
         self._size = (0, 0)
         self._pending_size: tuple[int, int] | None = None
         self._pending_since = 0.0
+
+        # Window reconciliation. ``_window_visible`` is what the window last
+        # said about itself rather than what was last pushed into the canvas,
+        # because the push happens every poll -- see `_reconcile_window`.
+        self._window_poll = None
+        self._window_visible: bool | None = None
+        self._paused_since: float | None = None
+        self._frames_seen = 0
+        self._frames_at = time.perf_counter()
+        self._kicks = 0
+        self._kicked_at: float | None = None
 
     # -- setup --------------------------------------------------------------
 
@@ -342,6 +371,285 @@ class Application:
             return self.fullscreen
         log.info("fullscreen %s", "on" if self.fullscreen else "off")
         return self.fullscreen
+
+    # -- window state -------------------------------------------------------
+
+    def _install_window_poll(self) -> None:
+        """Start the timer that keeps the canvas honest about the window.
+
+        The frame loop does not drive itself. ``rendercanvas`` owns a scheduler
+        that asks for each frame, and everything this application does happens
+        because that scheduler asked; when it stops asking, the loop is not
+        wedged and not slow, it is simply never called again. The window keeps
+        showing the last frame it was given -- under the Qt backend the last
+        bitmap is re-blitted on every expose -- so a session in that state
+        looks completely ordinary and is completely stopped. It stays that way
+        until the process is killed.
+
+        Two things can put it there, and both are the same shape: the scheduler
+        pauses when the backend reports the window minimised, and it cancels
+        every frame when the canvas' cached size is zero. Neither fact is ever
+        re-derived. Both are written from a single window event -- a state
+        change, a resize -- and a window event that does not arrive, or that
+        arrives while the native window is being rebuilt (which is exactly what
+        a fullscreen transition can do), leaves the canvas holding a belief
+        about the window that nothing will ever correct.
+
+        So this asks. Every couple of seconds it reads what the window itself
+        says -- on screen or not, and how big -- and pushes that into the
+        canvas whether or not it has changed, which turns an edge-triggered
+        fact into a level-triggered one: a missed event, or a spurious one,
+        costs one poll instead of the session. If frames have stopped anyway,
+        it forces one, which is the only route back from a scheduler that is
+        waiting for a frame it will never be told about.
+
+        None of it runs in the frame loop, and none of it touches the GPU.
+        """
+        if self.canvas is None:
+            return
+        if self.have_qt:
+            try:
+                from PySide6 import QtCore
+            except Exception as exc:  # pragma: no cover - Qt was just here
+                log.debug("could not start the window poll on Qt: %s", exc)
+            else:
+                timer = QtCore.QTimer()
+                timer.timeout.connect(self._poll_window)
+                timer.start(int(WINDOW_POLL_SECONDS * 1000))
+                # Held on the application: an unparented QTimer that nothing
+                # references is collected, and a collected timer never fires.
+                self._window_poll = timer
+                log.debug("window poll armed every %.0fs", WINDOW_POLL_SECONDS)
+                return
+
+        # Every other backend gets the same poll from the render loop's own
+        # timer. Weaker, because it shares the machinery the scheduler runs on
+        # -- but the part of that machinery which stops is the scheduler's own
+        # coroutine, and a call_later placed beside it keeps running.
+        self._arm_loop_poll()
+
+    def _arm_loop_poll(self) -> None:
+        call_later = getattr(self.loop, "call_later", None)
+        if not callable(call_later):
+            log.debug("this loop cannot schedule the window poll; skipping it")
+            return
+        try:
+            call_later(WINDOW_POLL_SECONDS, self._poll_window)
+        except Exception as exc:
+            log.debug("could not schedule the window poll: %s", exc)
+            return
+        self._window_poll = self.loop
+
+    def _stop_window_poll(self) -> None:
+        poll, self._window_poll = self._window_poll, None
+        stop = getattr(poll, "stop", None)
+        # The loop's own ``stop`` is not this timer's: when the fallback path
+        # is in use the poll is re-armed from `_poll_window`, which stops of
+        # its own accord once the application is down.
+        if poll is self.loop or not callable(stop):
+            return
+        try:
+            stop()
+        except Exception as exc:  # pragma: no cover - Qt teardown ordering
+            log.debug("could not stop the window poll: %s", exc)
+
+    def _poll_window(self) -> None:
+        """One pass, and the re-arm the fallback path needs."""
+        if self._stopped or self._stop_requested or self.canvas is None:
+            return
+        try:
+            self._reconcile_window()
+        except Exception:
+            # Same reasoning as the watchdog's own thread: this is worth one
+            # traceback and not one every two seconds, and a session without
+            # it is still a session.
+            log.exception("the window poll failed; disarming it")
+            self._window_poll = None
+            return
+        if self._window_poll is self.loop:
+            self._arm_loop_poll()
+
+    def _reconcile_window(self) -> None:
+        """Push the window's real state into the canvas, and kick if needed."""
+        visible = self._window_is_up()
+        self._tell_the_canvas(visible)
+        width, height = self._reconcile_size()
+
+        now = time.perf_counter()
+        frames = self.watchdog.frames
+        if frames != self._frames_seen:
+            self._frames_seen = frames
+            self._frames_at = now
+            self._kicks = 0
+            return
+
+        # Nothing has been drawn since the last poll. Whether that is a fault
+        # depends on whether anything *could* have been drawn: a window that is
+        # off screen is not being asked to paint, and that is the one case
+        # where a still frame loop is the right answer rather than a bug.
+        if visible is False or width <= 0 or height <= 0:
+            return
+        if now - self._frames_at < UNASKED_SECONDS:
+            return
+        self._kick_the_loop(now - self._frames_at, width, height)
+
+    def _window_is_up(self) -> bool | None:
+        """Whether the window says it is on screen. ``None`` if it cannot say.
+
+        Probed rather than type-checked, for the same reason the fullscreen
+        strategies are: this has to answer for a Qt window, a glfw one and the
+        canvas doubles the suite hands it, and asking the object is the only
+        question all three can answer.
+        """
+        shown = getattr(self.canvas, "isVisible", None)
+        minimised = getattr(self.canvas, "isMinimized", None)
+        if not callable(shown) or not callable(minimised):
+            return None
+        try:
+            return bool(shown()) and not bool(minimised())
+        except Exception as exc:  # pragma: no cover - a window mid-teardown
+            log.debug("could not read the window's state: %s", exc)
+            return None
+
+    def _tell_the_canvas(self, visible: bool | None) -> None:
+        """Re-assert the window's visibility, every poll, in both directions.
+
+        Pushed unconditionally rather than on a change, which is the whole
+        point of doing it here: if this only spoke up when *its own* view
+        changed, a stray event that paused the canvas a moment later would
+        never be answered. Logged on a change, though -- the state is worth a
+        line in the log, and two lines a second is not.
+        """
+        if visible is None:
+            return
+        if visible != self._window_visible:
+            self._window_visible = visible
+            self._paused_since = None if visible else time.perf_counter()
+            self.watchdog.set_paused(
+                None if visible else "the window is not on screen"
+            )
+            if visible:
+                # A window that has just come back has not been unasked for
+                # the time it spent away -- it could not have been drawn. The
+                # clock starts from the moment it could.
+                self._frames_at = time.perf_counter()
+                self._kicks = 0
+            log.info(
+                "render window %s",
+                "is on screen again; resuming" if visible
+                else "is off screen; pausing until it comes back",
+            )
+
+        subwidget = getattr(self.canvas, "_subwidget", None)
+        setter = getattr(subwidget, "_set_visible", None)
+        if callable(setter):
+            try:
+                setter(visible)
+            except Exception as exc:  # pragma: no cover - backend internals
+                log.debug("could not set the canvas' visibility: %s", exc)
+
+    def _reconcile_size(self) -> tuple[int, int]:
+        """The canvas' physical size, corrected if the window disagrees.
+
+        The canvas caches this and writes it in exactly one place: the
+        backend's resize handler. A resize that never arrives leaves the cache
+        saying something the window stopped being long ago, and a cache saying
+        zero is worse than stale -- a canvas of no size cancels every frame it
+        is asked for, for the rest of the session.
+
+        So the cache is compared against the widget's own geometry, which Qt
+        maintains whether or not the event was delivered, and corrected the way
+        the backend's handler would have. Zero is never written back: a window
+        that really is zero-sized is a window that really has nothing to draw.
+        """
+        try:
+            cached = self.canvas.get_physical_size()
+        except Exception as exc:  # pragma: no cover - a canvas mid-teardown
+            log.debug("could not read the canvas' size: %s", exc)
+            return (0, 0)
+
+        subwidget = getattr(self.canvas, "_subwidget", None)
+        size_info = getattr(subwidget, "_size_info", None)
+        setter = getattr(size_info, "set_physical_size", None)
+        if not callable(setter):
+            return cached
+
+        try:
+            ratio = float(subwidget.devicePixelRatioF())
+            # The rounding the backend's own resize handler applies, offset
+            # and all: matching it is what keeps this from correcting a size
+            # that was right, once per poll, forever.
+            real = (
+                round(float(subwidget.width()) * ratio + 0.01),
+                round(float(subwidget.height()) * ratio + 0.01),
+            )
+        except Exception as exc:  # pragma: no cover - backend internals
+            log.debug("could not read the window's geometry: %s", exc)
+            return cached
+
+        if real == tuple(cached) or real[0] <= 0 or real[1] <= 0:
+            return cached
+        log.warning(
+            "the canvas has the window at %sx%s and the window has itself at "
+            "%dx%d; correcting it", cached[0], cached[1], *real,
+        )
+        setter(real[0], real[1], ratio)
+        return real
+
+    def _kick_the_loop(self, unasked: float, width: int, height: int) -> None:
+        """Force a frame the scheduler did not ask for.
+
+        This is the way back from every shape of the fault, because it does not
+        go through the scheduler at all: the canvas draws and presents on the
+        spot, and telling the scheduler that a frame is done is part of that --
+        which is precisely what a scheduler waiting on a frame it was never
+        told about is waiting for. One forced frame and it is running again.
+
+        When it is not, the session is being carried by this poll, at a frame
+        every few seconds. That is a bad way to run and a much better way to
+        stop: the field keeps its state, the panel keeps working, the user can
+        save and quit in their own time rather than killing a wedged process.
+        """
+        force = getattr(self.canvas, "force_draw", None)
+        if not callable(force):
+            return
+        try:
+            self.canvas.request_draw()
+        except Exception as exc:  # pragma: no cover - a canvas without one
+            log.debug("could not request a draw: %s", exc)
+        try:
+            force()
+        except RuntimeError:
+            # "Cannot force a draw while drawing" -- a frame is in flight after
+            # all, so the loop is slow rather than unasked. That case belongs
+            # to the watchdog, which reports it against the phase it is really
+            # in instead of guessing from out here.
+            return
+        except Exception as exc:
+            log.warning("could not force a frame: %s", exc)
+            return
+
+        # The frame just forced is this poll's own doing, and must not read as
+        # the scheduler having come back on the next pass -- otherwise the
+        # count below can never reach two, and a session being carried by the
+        # poll would look like one recovering from a hiccup every time.
+        self._frames_seen = self.watchdog.frames
+        self._frames_at = self._kicked_at = time.perf_counter()
+        self._kicks += 1
+        log.warning(
+            "no frame was asked for in %.1fs with the window up at %dx%d; "
+            "forced one (%d in a row)", unasked, width, height, self._kicks,
+        )
+        if self._kicks == KICKS_BEFORE_A_REPORT:
+            path = self.watchdog.dump(
+                f"the render scheduler stopped asking for frames; "
+                f"{self._kicks} forced in a row"
+            )
+            log.error(
+                "the render scheduler is not asking for frames and is not "
+                "coming back; this session is being drawn by the window poll. "
+                "%s", f"wrote {path}" if path else "no report was written",
+            )
 
     # -- hot reload ---------------------------------------------------------
 
@@ -964,6 +1272,7 @@ class Application:
         self.watchdog.mark(diagnostics_module.SHUTDOWN)
         self.save_checkpoint(blocking=True)
         self._saver.join()
+        self._stop_window_poll()
         self._stop_hot_reload()
         self._close_panel()
         self._stop_loop()
@@ -1259,6 +1568,8 @@ class Application:
         self._open_control_panel()
 
         self.canvas.request_draw(self.draw_frame)
+        # After the draw function is set, because the poll can force a frame.
+        self._install_window_poll()
         self._install_signal_handlers()
         try:
             self.loop.run()
