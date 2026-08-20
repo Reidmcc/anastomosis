@@ -441,6 +441,9 @@ Reports land in `~/.local/state/anastomosis/diagnostics/`:
 
 ```
 stall-20260820-141133.txt   one freeze, sampled every 30s while it lasts
+dump-20260820-141133.txt    a fault noticed by something other than the watchdog
+anastomosis.log             the log, kept here because a freeze needs the
+                            lines before it and a desktop has no console
 crash.log                   hard crashes, and manual dumps (below)
 ```
 
@@ -448,14 +451,35 @@ A stall report says which phase of the frame the loop went into and never came
 out of — `tick`, `acquire`, `render`, `telemetry`, `checkpoint`, or `idle` for
 a loop that simply stopped being asked to paint — carries a stack for every
 thread in the process, and repeats both every 30 seconds while the freeze
-lasts. Two samples with the same stacks and unmoving CPU counters mean
-genuinely wedged; moving ones mean merely slow. It logs an ERROR line at the
+lasts. Two samples with the same stacks and an unmoving CPU counter mean
+genuinely wedged; a moving one means merely slow. It says what the window was
+doing at the time too — on screen or not, and the size the canvas had against
+the size the window had — which is what separates a loop nobody is asking to
+draw from one that is stuck. It logs an ERROR line at the
 same time, and a WARNING if the loop later recovers.
 
 Being asked to paint is not guaranteed — a minimised or occluded window
 legitimately stops — so a loop between frames is given 45 seconds before it
 counts as stalled, against 10 seconds inside a frame. Adjust with
-`--stall-timeout SECONDS`, or pass `0` to switch the watchdog off.
+`--stall-timeout SECONDS`, or pass `0` to switch the watchdog off. While the
+window is off screen the gap between frames stops counting entirely, because no
+timeout can tell a window left minimised over lunch from a freeze.
+
+Most of the freezes that get this far are not the loop being stuck at all: the
+window is up, every thread is idle, and the render scheduler has just stopped
+asking for frames — usually after a window event went missing, which a
+fullscreen toggle can cause. A poll of its own now watches for that, re-asserts
+what the window is actually doing a couple of times a second, and forces a
+frame if none has been asked for in three seconds. In the log:
+
+```
+WARNING no frame was asked for in 4.2s with the window up at 1920x1080; forced one (1 in a row)
+```
+
+One of those is a hiccup that was recovered from. A run of them means the
+scheduler is gone and the session is being kept alive a frame at a time — it
+writes a `dump-*.txt` report saying so, and is a good moment to save and
+restart.
 
 If it ever freezes so completely that even the watchdog cannot run, which is
 what happens if a driver call wedges while holding Python's interpreter lock,

@@ -112,9 +112,12 @@ and the tests — resolves via the table below, and means the file listed agains
   The ten-step build sequence the project was planned in.
 
 - **§13 — [docs/status.md](docs/status.md)**
-  Implementation status: what is built and verified headless, what is not
-  (device-loss rebuild path), and the judgements that still need a real GPU
-  and a pair of eyes — including the defaults most likely to want moving.
+  Implementation status: what is built and verified headless against a
+  software adapter, what is not (device-loss rebuild path), and which
+  judgements are waiting on the next viewing — including the defaults most
+  likely to want moving. The development environment has no GPU in it; the
+  application itself is watched on one, and that is where the §4.7–§4.9
+  findings came from.
 
 - **§14 — [docs/activation-mode.md](docs/activation-mode.md)**
   The second mode: the same instrument retuned for sensory *seeking* rather

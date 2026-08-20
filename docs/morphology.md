@@ -547,8 +547,8 @@ agent layer could previously only add edges and could only grow onto what it
 already had — and nothing measured says they do harm, across nine seeds per
 arm, with the field neither collapsing nor freezing and the homeostat never
 reaching for a correction. Whether they earn their place perceptually is one
-more question for the first viewing on real hardware (§13), alongside the ones
-already waiting there.
+more question for the next viewing (§13), alongside the ones already waiting
+there.
 
 ### What step 5 actually did
 
@@ -881,6 +881,31 @@ toward "a zone the network thins while crossing", which may well be the
 better look and is a §13 question. The test now asserts the mechanism with
 the trail held still, and says why.
 
+That last sentence was true of the arms and not of the fork. The pin was
+written against the test's pre-fork shape, and the merge that brought it
+together with the optimisation hoisting the 800-tick warm-up out of the two
+arms left the warm-up on shipped defaults. So the disc came off an advected
+field onto 0.13 of trail rather than 0.57, the held-still network
+re-concentrated under both arms for the whole measurement window, and the
+severance read 1.08 — nothing at all, from a rift whose channels sit at full
+amplitude in the climate throughout. One parameter builder now serves the
+warm-up and both arms, and with it the documented numbers come back: 0.588 of
+trail under the disc at the fork, severance 0.80 during the hold, the reaction
+untouched at 1.27, healed to 1.04.
+
+Correcting it also settles what the sensing saturation does to a rift, which is
+the obvious thing to worry about in a cap that makes a healthy filament exactly
+as attractive as a hub: if a half-thinned strand still read at the cap, the
+starvation feedback the severance depends on would be gone. It is not. Measured
+in the capped regime the rift severs *harder* — 0.03 of the control against the
+0.80 above — because the cap sits at about twice a trafficked filament's own
+level, so saturation equalises hubs and nothing else, and a strand the raised
+decay has thinned reads far below it. What the capped regime cannot supply is
+the seed-anchored precondition: with a network threading and crossing the whole
+field, the control's own disc wanders between 0.007 and 0.23 across the marks
+of a single run. The pin is a statement about what can be anchored, not about
+what works.
+
 ---
 
 ### The network that was never there
@@ -968,6 +993,6 @@ regimes asserted against each other.
 
 One honest caveat, in §13's tradition: every number here is from the
 software adapter at test scale, and the claim that matters — that the
-*picture* is now a living network rather than a field of dots — is a
-first-viewing question. The mechanism, the invariants, and the from-scratch
+*picture* is now a living network rather than a field of dots — is a question
+for the next viewing. The mechanism, the invariants, and the from-scratch
 morphology are what the tests can hold.

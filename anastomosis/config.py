@@ -449,8 +449,8 @@ class PigmentParams:
     # against 0.191 before any of this). Uniformity is the trigger, so trading
     # it away for a lower blob count is trading the wrong way.
     #
-    # This is the single default most likely to want moving once someone has
-    # watched the result on real hardware; see DESIGN.md 13.
+    # This is the single default most likely to want moving at the next
+    # viewing on real hardware; see DESIGN.md 13.
     v_needs_trail: float = 0.25
     # Soft knee on the trail's rendered contribution. The hubs sit at trail
     # levels around five times the filaments', so under a linear term they are
