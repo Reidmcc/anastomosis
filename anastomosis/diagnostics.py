@@ -150,6 +150,9 @@ class StallWatchdog:
         self._thread: threading.Thread | None = None
         self._wake = threading.Event()
         self._episode: _Episode | None = None
+        # Why the loop is parked, when something that can see the window has
+        # said it is parked on purpose. See `set_paused`.
+        self._paused: str | None = None
         # Every report this watchdog has written, newest last. For the tests,
         # and for telling the user where to look.
         self.reports: list[Path] = []
@@ -180,6 +183,32 @@ class StallWatchdog:
     @property
     def phase(self) -> str:
         return self._state[0]
+
+    @property
+    def frames(self) -> int:
+        """Frames the loop has begun. The one number that says it is alive."""
+        return self._frames
+
+    @property
+    def paused(self) -> str | None:
+        return self._paused
+
+    def set_paused(self, reason: str | None) -> None:
+        """Say that the loop is parked on purpose, and why. ``None`` to clear.
+
+        The watchdog cannot see the window, and between frames is exactly where
+        a loop sits when nobody is asking it to draw. A minimised window is
+        therefore indistinguishable from a wedged one from in here, which is
+        the false alarm ``IDLE_STALL_SECONDS`` exists to make rare and cannot
+        make impossible -- no timeout is long enough for a window left
+        minimised over lunch, and one long enough would be no watchdog at all.
+
+        So it is told. Whoever can see the window says so, and while they do
+        the patient phases stop counting. Only those: a frame that never
+        returns is a fault whether or not anybody is looking at the window, and
+        that is still reported against the phase it is really in.
+        """
+        self._paused = reason
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -238,13 +267,18 @@ class StallWatchdog:
         limit = self.idle_seconds if phase in PATIENT_PHASES else self.stall_seconds
         episode = self._episode
 
+        if self._paused is not None and phase in PATIENT_PHASES:
+            if episode is not None:
+                self._parked(episode)
+            return
+
         if waited < limit:
             if episode is not None:
                 self._recovered(episode)
             return
 
         if episode is None:
-            episode = self._begin(phase, waited, now)
+            episode = self._begin(phase, waited, limit, now)
         elif (
             episode.samples < MAX_SAMPLES
             and now - episode.sampled_at >= RESAMPLE_SECONDS
@@ -252,7 +286,9 @@ class StallWatchdog:
             self._write(episode, phase, waited, limit, now)
         episode.peak = max(episode.peak, waited)
 
-    def _begin(self, phase: str, waited: float, now: float) -> _Episode:
+    def _begin(
+        self, phase: str, waited: float, limit: float, now: float
+    ) -> _Episode:
         episode = _Episode(
             path=self._report_path("stall"),
             phase=phase,
@@ -265,13 +301,35 @@ class StallWatchdog:
         # that froze *inside* a log call is holding that lock -- writing the
         # report first means a freeze of exactly that shape still produces the
         # file, and only loses the line about it.
-        self._write(episode, phase, waited, self.stall_seconds, now, first=True)
+        #
+        # ``limit`` is the one that actually applied, which for a patient phase
+        # is not ``stall_seconds``: a first sample headed "stalled 45.1s in
+        # phase 'idle' (limit 10s)" reads like a watchdog that fired 35
+        # seconds late.
+        self._write(episode, phase, waited, limit, now, first=True)
         # The log line the user did not get last time.
         log.error(
             "frame loop stalled: %.1fs in phase '%s'; wrote %s",
             waited, phase, episode.path,
         )
         return episode
+
+    def _parked(self, episode: _Episode) -> None:
+        """Close an open episode that turned out not to be a stall.
+
+        Written into the report rather than dropped, because a report that
+        stops mid-episode with no ending reads like a session that died in it.
+        """
+        self._episode = None
+        self._append(
+            episode,
+            f"\n===== not a stall =====\n"
+            f"the loop is parked on purpose: {self._paused}\n",
+        )
+        log.info(
+            "the frame loop is parked on purpose (%s); %s was not a stall",
+            self._paused, episode.path,
+        )
 
     def _recovered(self, episode: _Episode) -> None:
         self._episode = None
@@ -439,12 +497,23 @@ def _preamble() -> str:
 def _process_lines() -> list[str]:
     """Facts about the process that say whether it is working or waiting.
 
-    The CPU counters are the reason this is here. Two samples thirty seconds
-    apart with the same stacks and the same user time is a thread blocked in a
+    The CPU counter is the reason this is here. Two samples thirty seconds
+    apart with the same stacks and the same CPU time is a thread blocked in a
     driver call; the same stacks with the time climbing is one spinning in a
     poll loop, which is a different bug with a different fix.
+
+    So it is read through ``time.process_time``, which every platform has,
+    rather than through ``resource``, which POSIX has and Windows does not.
+    That distinction was not academic: the counter this function exists for
+    was missing from every report written on Windows, and the report that
+    finally needed it was one of them. ``resource`` still contributes the
+    user/system split and the peak footprint where it exists, as extras.
     """
-    lines = [f"pid: {os.getpid()}", f"threads: {threading.active_count()}"]
+    lines = [
+        f"pid: {os.getpid()}",
+        f"threads: {threading.active_count()}",
+        f"cpu: {time.process_time():.1f}s",
+    ]
     try:
         import resource
     except ImportError:  # pragma: no cover - Windows
@@ -454,7 +523,7 @@ def _process_lines() -> list[str]:
     # spelling out rather than reporting a peak a thousand times off.
     scale = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
     lines.append(
-        f"cpu: {usage.ru_utime:.1f}s user, {usage.ru_stime:.1f}s system"
+        f"cpu split: {usage.ru_utime:.1f}s user, {usage.ru_stime:.1f}s system"
     )
     lines.append(f"peak rss: {usage.ru_maxrss / scale:.0f} MiB")
     return lines
