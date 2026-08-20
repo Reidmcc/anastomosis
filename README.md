@@ -33,8 +33,10 @@ Four things it will not do, by construction:
   strongest deposit, and the whole network rides the flow instead of sitting
   still. See `DESIGN.md` §4.7.
 
-`DESIGN.md` explains the architecture and the reasoning. This file is how to run
-it.
+`DESIGN.md` indexes the design documentation: the architecture and the
+reasoning live in `docs/`, one file per section, and `DESIGN.md` maps section
+numbers (§n, as cited in code comments and tests) to the files. This file is how
+to run it.
 
 ## Install
 
