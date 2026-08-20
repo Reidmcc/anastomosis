@@ -1973,7 +1973,9 @@ does is a measurement (run the activation endpoints against the existing
 bands and watch the corrections), and the fix if needed is a small table:
 targets per mode, same controller, same deadband philosophy. Corrections
 still reach only the OU means, so a mode switch cannot make the controller
-step anything.
+step anything. *(Measured in step 2: it does not lean — the candidate
+endpoints sit nearer the targets than the regulation busy corner does, so
+no per-mode targets exist. See the step 2 record in §14.8.)*
 
 ### 14.4 The one genuinely new mechanism: a polychrome palette
 
@@ -2109,9 +2111,11 @@ invisible:
    ceilings clamp identically in both, switch-slamming holds the flash
    bound. No visual change yet.~~ **Built** — and the switch-slam test paid
    for the whole step on its first run; see below.
-2. **The two load-bearing measurements**, offline, before any endpoint is
+2. ~~**The two load-bearing measurements**, offline, before any endpoint is
    trusted: the tempo/WCAG-area sweep (which *sets* the tempo tops), and
-   the frame-rate ceiling fix of 14.5(2) (which is due regardless).
+   the frame-rate ceiling fix of 14.5(2) (which is due regardless).~~
+   **Built** — and both measurements returned answers the plan did not
+   predict; see below.
 3. **The activation curve set** for tempo, palette, intensity, scale and
    event_rate, endpoints from (2); homeostat per-mode targets if the
    measurement says the controller leans (14.3).
@@ -2174,6 +2178,82 @@ test itself stays in the suite unchanged: today the two modes contribute
 identical values and the macro extremes do the work, and when step 3
 retunes the activation endpoints their divergence rides into the same
 assertions with no change to the test.
+
+### What step 2 actually did
+
+The ceiling fix went in as 14.5(2) preferred: the bound is now expressed
+the way the arithmetic runs, as a per-second budget (`MAX_LUMA_PER_SECOND`
+= 0.36/s, i.e. 0.012 × 30) that `validate` divides by the frame-rate cap
+after both individual ceilings have been applied. §7 records the details.
+The two measurements are the substance of the step, and each came back with
+an answer the plan did not predict.
+
+**The WCAG area criterion does not bind the tempo axis — anywhere the sweep
+could reach.** `tests/tempo_sweep.py`, at the busy corner (intensity, glow
+and brightness at 1.0, scale at its finest, two layers, simulation at 30 Hz
+with one render per tick so a rendered frame is a display frame), 300
+frames of warm-up and 90 measured, sweeping a single multiplier on the
+three motion primitives the tempo macro drives — `agents.speed`,
+`flow.psi_gain`, `flow.field_gain` — over their regulation tops:
+
+| mult | area ≥10%/frame (p95) | area ≥5%/frame (p95) | peak per-pixel \|ΔL\|/frame |
+|---|---|---|---|
+| 1.0 | 0.0% | 0.0% | 0.018–0.019 |
+| 2.0 | 0.0% | 0.0% | 0.026–0.027 |
+| 4.0 | 0.0% | 0.0% | 0.035 |
+| 6.0 | 0.0% | 0.0% | 0.036–0.043 |
+
+(Ranges span the two sizes measured, 128×96 and 224×126; medians and
+maxima are identical to the p95s at 0.0%.) The proposed activation tops of
+§14.3 sit between 1.6× and 1.9× on this axis. Not a single pixel-frame
+reached even *half* the 10% flash threshold at *six times* the regulation
+top: the worst per-frame per-pixel change grows from 0.018 to 0.043 across
+the whole sweep. The reason is structural rather than lucky. Per-frame
+material motion at these speeds is sub-pixel, and the pigment field is
+smooth by construction — soft deposits, incompressible advection, upstream
+lowpasses (§2) — so a moving edge spends many frames crossing any one
+pixel, and each frame's share of the crossing is small. The design's
+anti-punctuation machinery, built for stillness, turns out to be what
+licenses speed.
+
+So §14.5(1) inverts back: the sweep was meant to *set* the tempo tops, and
+instead it certifies that the criterion leaves them free — the activation
+tempo endpoints are perceptual choices, to be judged on real hardware, with
+their WCAG headroom now on record. Three caveats keep the conclusion
+honest. A small field overstates the area fraction (features cover more of
+the screen, so their moving edges weigh more) — and the overstated figure
+is zero, so the error runs in the conclusion's favour. Trail advection
+(§4.7 step 6) remains the change most likely to move this metric, which is
+why it ships behind a gain and why the sweep script is committed rather
+than run once and discarded. And the peak figures are honest motion that
+the limiter's reprojection deliberately permits, not leaks — the per-pixel
+bound against motion-compensated history held throughout, as it must.
+
+**The homeostat does not lean on the activation endpoints.** Three
+2400-tick runs at 128×96 (seed 9): regulation defaults, the regulation
+busy corner, and the candidate activation endpoints (`speed` 2.2,
+`psi_gain` 4.0, `field_gain` 2.4, `advect_gain` 0.55, 30 Hz, at the same
+busy corner). Settled over the last 1200 ticks:
+
+| | mean V | activity | corr_kill at 2400 |
+|---|---|---|---|
+| regulation defaults | 0.1160 | 0.001335 | −0.00071 |
+| regulation busy corner | 0.1255 | 0.001118 | −0.00094 |
+| activation candidate | 0.1111 | 0.001242 | −0.00078 |
+
+The candidate sits *nearer* both targets (mass 0.118, activity 0.0012)
+than the regulation busy corner does, every measure is comfortably inside
+its ±30% deadband, and the controller's corrections are smaller under the
+candidate than under the regulation corner — two orders of magnitude below
+the integral limit, still carrying the shared grow-in transient. The
+per-tick dynamics the reaction sees are barely moved by the tempo axis:
+`speed` changes how far an agent walks per tick, but deposit, decay, feed
+and kill are untouched, and the flow gains move pigment, which the
+homeostat does not measure. **Step 3 therefore adds no per-mode homeostat
+targets** — the bands of §4.2 serve both modes, which is one less way the
+two tunings can drift apart. The caveat is horizon: 2400 ticks is minutes,
+and the multi-hour answer belongs to the soak test once step 3 fixes the
+real endpoints.
 
 The same caveat as §13, sharpened: every endpoint above is an argument, not
 a judgement. Specifically open: whether activation keeps the dark ground
