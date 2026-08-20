@@ -191,6 +191,21 @@ def test_diffusion_band_is_bounded_for_stability():
     )
 
 
+def test_sensing_cap_ratio_is_bounded_or_off():
+    """The cap is a ratio to the equilibrium mean trail; its own sanity here.
+
+    Zero or negative must mean cleanly disabled, like `deposit_cap`. A huge
+    ratio is indistinguishable from disabled but would still pack a live
+    clamp, so it is bounded. The absolute value and its liveness floor -- a
+    cap near the starve threshold reads the whole population as starving --
+    are applied where the value is packed, in `Backend._physics_values`.
+    """
+    off = config.Config(overrides={"agents.sense_cap": -3.0}).resolve().agents
+    assert off.sense_cap == 0.0
+    huge = config.Config(overrides={"agents.sense_cap": 1e9}).resolve().agents
+    assert huge.sense_cap <= 100.0
+
+
 def test_structural_values_stay_integers():
     params = config.Config(overrides={
         "render.layers": 99, "reaction.substeps": 0, "flow.psi_scale": 100,

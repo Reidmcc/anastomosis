@@ -578,7 +578,7 @@ class VolumeEngine(Backend):
         Physarum needs to lay a network down at all.
         """
         geometry = self.geometry
-        values = self._physics_values(params, 1.0, 1.0)
+        values = self._physics_values(params, 1.0, 1.0, params.volume.density)
         values.update(
             dims_x=geometry.width, dims_y=geometry.height, dims_z=geometry.depth,
             clim_w=geometry.climate_width, clim_h=geometry.climate_height,

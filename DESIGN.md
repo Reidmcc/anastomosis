@@ -1256,6 +1256,97 @@ the trail held still, and says why.
 
 ---
 
+### The network that was never there
+
+The step-6 mechanisms shipped, were watched, and the dots were still there —
+brighter-ordered, more varied, and still hundreds of persistent light discs.
+The report that settled it came with a falsifying experiment already run:
+gating the reaction's rendered term onto the network (`v_needs_trail = 1.0`)
+made the picture *worse* — nothing but dots — and removing the reaction from
+the density term entirely (`density_from_v = 0`) changed nothing visible.
+Whatever the image was made of, it was the trail.
+
+Dumping the raw fields from a from-scratch run at shipped defaults said the
+rest. **The trail layer holds no network at all.** Filaments appear in the
+first few hundred ticks — confirmed on real hardware as well as on the
+software adapter — and then every agent ends in a round stationary knot;
+from tick ~1000 onward the layer is knots on black, stable indefinitely,
+p99/mean concentration ~16 with a third of its mass in its top 2% of texels.
+The reaction field alongside it is an elongated organic labyrinth — the most
+network-like thing in the system. Every mechanism in this section acted on a
+"network" that did not exist: the capacity and the knee made the knots
+dimmer and the advection made them drift, which is exactly the improvement
+that was reported, and none of it could make them be a network. And this is
+not a regression: the same probe on the pre-step-5 and pre-step-6 builds
+grows the same knot field, same seed, same layout. Founding respawn and
+trail advection were each ruled out by disabling them — knots regardless.
+
+**The cause is that sensing is unbounded, and the capacity bounded the wrong
+half.** `deposit_cap` limits what a hub can *store*; nothing limited what it
+could *attract*. A knot at trail 1.5 out-competes a filament at 0.15 from
+anywhere in sensor range, ten to one, forever — so every strand loses its
+agents to the nearest knot, thins below sensing range, and dissolves, while
+the knot's members orbit it at their minimum turning radius
+(`speed / turn_rate` ≈ 2.8 cells, which is exactly the knot size). The
+returned capacity mass made the attractor no weaker, because attraction was
+never a function of what landed, only of what was sensed.
+
+**The fix is to saturate the sensing.** `sample_trail` clamps what the
+sensors read at `agents.sense_cap` (zero disables), so a healthy filament is
+exactly as attractive as any hub — and the dispersal comes free: inside a
+saturated plateau the three sensors tie, a tie reads as "keep going", and an
+agent drives straight out of a knot instead of orbiting in it. Measured
+against an uncapped control (same seed, 320×180 and 128×128, 4000 ticks):
+the layer grows an **anastomosing network** — strands, junctions, closed
+loops, coarsening and reconnecting through the whole run — with trail mass
+identical to the control (0.095, within 1%), p99/mean down from ~16 to ~4.7,
+and the top-2% mass share from 0.37 to 0.10. The obvious parameter-space
+alternative, a turn rate above the sensor angle plus more jitter, was tried
+and is far worse: sparse lone strands with knots between them.
+
+Three calibration notes. **The cap is a ratio, not a level, and the quiet
+end is why.** The first cut shipped an absolute cap scaled with the deposit
+alone, and at `intensity = 0` it drew something new: *rings* — agents
+orbiting the rim of their own saturated deposit. The intensity macro halves
+the agent density as well as the deposit, so the level a filament can
+sustain falls with the product of the two, and an absolute cap that was 2×
+filament level at the default was ~8× the equilibrium at the quiet end: the
+plateau survived only at knot cores, and the cap turned knots into donuts
+instead of strands. The equilibrium mean trail is exactly
+`density · deposit / trail_decay` (0.091 predicted, 0.095 measured at
+defaults), so `sense_cap` is that multiple — 3.3, i.e. ~0.30 absolute at
+defaults — and each backend packs the absolute value from its own agent
+density in `_physics_values`. Measured at the ends of the intensity macro,
+p99/mean against the uncapped control on the same seed: 5.0 against 13–19 at
+the quiet end (a sparse, wispy network; the deposit-scaled cap's ring state
+sat at ~10), 4.7–5.0 against 14–16 at the dense end. This is also what makes
+the volumetric backend right for free: a voxel sees a third of a cell's
+traffic, and a shared absolute cap would have been inert there. The cap is
+a liveness bound when enabled: `recent` is an EMA of sensed — and therefore
+capped — values, so a cap at or below `starve_threshold` reads the whole
+population as starving and it respawns forever; the packed value is floored
+well clear. And the fusion `excess` now saturates with everything else, so
+commitment near hubs is gentler — junction behaviour among ordinary
+filaments, which live below the cap, is unchanged, and the network in the
+measured runs visibly fuses.
+
+What this reopens is welcome rather than costly: the capacity, the knee, and
+the §4.7 morphology levers were all tuned against a knot field, and hubs now
+barely form to need them. They stay — the capacity still bounds the residual
+concentration the cap's plateau cannot see, and the knee still bounds the
+render — but their measured thresholds live in tests that pin sensing off
+(`sense_cap = 0`), so each mechanism is still checked in the regime it was
+built for. The from-scratch network claim has its own soak test, both
+regimes asserted against each other.
+
+One honest caveat, in §13's tradition: every number here is from the
+software adapter at test scale, and the claim that matters — that the
+*picture* is now a living network rather than a field of dots — is a
+first-viewing question. The mechanism, the invariants, and the from-scratch
+morphology are what the tests can hold.
+
+---
+
 ### 4.8 The wrap seam — an edge in a domain that has none
 
 Reported from a real viewing: line-like vertical and horizontal structures near
@@ -2120,7 +2211,7 @@ Steps 1–6 produce something already usable for its purpose.
 
 Built and verified headless against a software adapter (Mesa lavapipe), so every
 shader compiles and the full tick/render sequence runs in CI without a GPU. The
-suite is 351 tests, split the way their costs are: `.github/workflows/ci.yml`
+suite is 354 tests, split the way their costs are: `.github/workflows/ci.yml`
 runs everything not marked `slow` on every push, across three Python versions
 plus a leg with no PySide6 that holds the README's promise that the panel is
 optional, and runs the `slow` marks -- drift, morphology, regime occupancy,
@@ -2149,19 +2240,24 @@ axis, priced in graphics memory beside the slider.
 
 **Not implemented:**
 
-- **The morphology work in §4.7 is now built through step 6.** Feature size is
+- **The morphology work in §4.7 is now built through step 6, plus the sensing
+  saturation that step 6's postmortem turned out to need.** Feature size is
   polydisperse and migrating (the third climate pair), its global mean is
   closed-loop (step 5's ℓ controller), the trail hubs that turned out to *be*
   the reported dots have a deposit capacity working against them and a shading
   knee stopping what remains from clipping, and the trail rides the velocity
-  field (step 6). Step 4 is in: agents repel from junctions where the climate
-  asks them to, respawns land in founding cohorts on bare ground, and a `rift`
-  event takes a region's network apart and lets it heal. As with step 4, what
-  the tests assert for the trail advection is the mechanism and the
-  invariants; its aggregate effect did not resolve above run-to-run variance
-  at test resolution — see §4.7. Flux pruning (step 3) is still switched off;
-  the founding respawn it was waiting for exists now, but nothing measured
-  says it has earned being switched on.
+  field (step 6). What the agents *sense* now saturates (`agents.sense_cap`),
+  which is the change that makes the layer grow an anastomosing network from
+  scratch instead of the field of stationary knots it had always actually
+  produced — see "The network that was never there" in §4.7. Step 4 is in:
+  agents repel from junctions where the climate asks them to, respawns land
+  in founding cohorts on bare ground, and a `rift` event takes a region's
+  network apart and lets it heal. As with step 4, what the tests assert for
+  the trail advection is the mechanism and the invariants; its aggregate
+  effect did not resolve above run-to-run variance at test resolution — see
+  §4.7. Flux pruning (step 3) is still switched off; the founding respawn it
+  was waiting for exists now, but nothing measured says it has earned being
+  switched on.
 - **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is
   untested, since a software adapter offers no way to provoke a device loss.
 

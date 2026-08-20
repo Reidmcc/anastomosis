@@ -299,6 +299,61 @@ def test_a_repelling_region_deflects_a_head_on_approach(gpu_device):
     )
 
 
+def test_sensing_saturation_stops_a_hub_outcompeting_a_strand(gpu_device):
+    """The knot mechanism, at the texel level -- DESIGN.md 4.7, "the network
+    that was never there".
+
+    Sensed trail used to be unbounded, so a hub at many times filament level
+    out-attracted the strand an agent was riding, from anywhere in sensor
+    range: the agent turns off its strand, joins the knot, and the layer never
+    forms a network at all. With sensing saturated, everything at or above the
+    cap reads the same, the forward tie wins, and the agent keeps its strand.
+
+    The uncapped dispatch is the control: the same world must pull the agent
+    off its strand, or the capped result is not measuring the cap.
+    """
+    device, _ = gpu_device
+    cfg = config.Config().resolve().agents
+    angle, dist = cfg.sensor_angle, cfg.sensor_distance
+
+    # A strand dead ahead at above-cap strength, and a hub on the left sensor
+    # at several times that. The hub's own skirt raises the forward reading
+    # too, which is the honest version of the situation being tested: near a
+    # hub *everything* an agent senses is above the cap, the plateau ties, and
+    # the tie must read as "keep going". Uncapped, the ordering is
+    # unambiguous: left (the hub) over forward over right.
+    strand = 0.45 * _blob((16.0 + dist, 16.0))
+    hub = 3.0 * _blob((
+        16.0 + dist * math.cos(angle),
+        16.0 + dist * math.sin(angle),
+    ))
+    trail = strand + hub
+    agent = _one_agent((16.0, 16.0), 0.0)
+
+    # The absolute cap, exactly as `Backend._physics_values` packs it: the
+    # config value is a multiple of the equilibrium mean trail.
+    cap = cfg.sense_cap * cfg.density * cfg.deposit / cfg.trail_decay
+
+    uncapped, _ = _run_agents(device, trail, agent, _steering_params(cfg))
+    capped, _ = _run_agents(
+        device, trail, agent, _steering_params(cfg, sense_cap=cap))
+
+    assert cfg.sense_cap > 0.0, "the sensing cap shipped disabled"
+    assert 0.1 < cap < 1.0, (
+        f"the shipped ratio packs an absolute cap of {cap:.2f} at defaults, "
+        f"outside the band the knot/network measurements were made in"
+    )
+    assert _turned(agent, uncapped) > 0.05, (
+        f"the control turned {_turned(agent, uncapped):+.4f}; the hub is not "
+        f"out-competing the strand even unsaturated, so this world tests "
+        f"nothing"
+    )
+    assert _turned(agent, capped) == pytest.approx(0.0, abs=1e-6), (
+        f"the agent turned {_turned(agent, capped):+.4f} toward a hub it "
+        f"senses as no stronger than its own strand; sensing is not saturated"
+    )
+
+
 def _respawn_world(cfg, tick, found_fraction, size=SIZE, agents=1024, **over):
     """Every agent starving, so the whole buffer respawns in one dispatch."""
     rng = np.random.default_rng(5)

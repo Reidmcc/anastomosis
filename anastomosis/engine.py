@@ -498,7 +498,8 @@ class Engine(Backend):
         allocated once, when the field was created.
         """
         spec = layer.spec
-        values = self._physics_values(params, spec.feature_scale, spec.tempo_scale)
+        values = self._physics_values(
+            params, spec.feature_scale, spec.tempo_scale, params.agents.density)
         values.update(
             dims_x=spec.width, dims_y=spec.height, dims_z=1,
             clim_w=spec.climate_dims[0], clim_h=spec.climate_dims[1], clim_d=1,

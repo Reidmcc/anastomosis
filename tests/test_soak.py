@@ -743,6 +743,17 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     like *with* the trail moving -- a zone the network thins while crossing,
     rather than a growing gap -- is a §13 question for a viewer, not a ratio a
     seed can anchor.
+
+    The sensing cap is pinned off for the same reason as the advection.
+    Every threshold here -- the severance band, and especially the
+    reaction-untouched floor of 0.75 -- was measured in the knot regime. With
+    the cap on, the layer is a network threading the whole field, so the
+    reaction inside the disc genuinely wanes when its strands are severed
+    (0.69 of the control, through the trail-feed coupling), which is honest
+    ecology but not the thing this floor exists to catch: a feed or kill
+    channel quietly pinned by the event system. That distinction only stays
+    testable where the reaction's trail dependence is the background level
+    the floor was calibrated against.
     """
     device, _ = gpu_device
     size, radius = 128, 0.24
@@ -758,6 +769,7 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     # holds to bit-identical continuation.
     warm_params = config.Config().resolve()
     warm_params.render.layers = 1
+    warm_params.agents.sense_cap = 0.0  # see the docstring
     warmed = engine_module.Engine(device, size, size, warm_params, seed=13)
     for _ in range(warm):
         warmed.tick(warm_params, [])
@@ -767,6 +779,7 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
         params = config.Config().resolve()
         params.render.layers = 1
         params.agents.trail_advect = 0.0  # see the docstring
+        params.agents.sense_cap = 0.0    # likewise
         engine = engine_module.Engine(device, size, size, params, seed=13)
         assert checkpoint.restore(engine, snapshot), (
             "the warmed field does not fit the engine it was captured from"
@@ -899,6 +912,11 @@ def _run_agent_layer(device, ticks, seed, reach=None):
     if reach is not None:
         params.agents.sensor_distance, params.agents.sensor_reach_max = reach[:2]
         params.climate.range_sensor_distance = reach[2]
+        # The condensation this arm re-creates was measured before the sensing
+        # cap existed, and the cap plausibly interferes with it -- a distant
+        # strand reads no stronger than a near one. §4.9's reach bound is a
+        # claim about the uncapped regime, so the failure arm stays in it.
+        params.agents.sense_cap = 0.0
     engine = engine_module.Engine(device, 192, 128, params, seed=seed)
     scheduler = events.EventScheduler(seed=3)
     for _ in range(ticks):
@@ -1090,6 +1108,14 @@ def _ell_params():
     params.render.layers = 1
     params.reaction.ell_tau_seconds = 20.0      # 400 ticks
     params.reaction.ell_ref_tau_seconds = 600.0  # 12000 ticks
+    # The loop's numbers -- the du band, the deadbands its orthogonality is
+    # asserted against -- were all measured before the sensing cap existed,
+    # and the network the cap grows shifts the reaction's activity baseline a
+    # few percent through the trail couplings. That shift is the agent
+    # layer's, not this loop's, so the loop is tested in the regime it was
+    # measured in, the same way the capacity and condensation tests pin the
+    # mechanisms that postdate them.
+    params.agents.sense_cap = 0.0
     return params
 
 
@@ -1237,6 +1263,78 @@ def test_a_demanded_change_in_feature_size_is_answered(gpu_device):
 
 
 @pytest.mark.slow
+def test_the_agent_layer_grows_a_network_not_a_field_of_knots(gpu_device):
+    """The claim the whole layer exists for -- DESIGN.md 4.7, "the network
+    that was never there".
+
+    Grown from scratch at shipped defaults, the trail layer used to reach a
+    stable field of round stationary knots with no filaments anywhere: sensed
+    trail was unbounded, so any knot out-attracted every strand in sensor
+    range, and the layer's own network was the one thing it could never build.
+    Measured at this size, the knot field concentrates to p99/mean ~13-16 with
+    over a third of its mass in its top 2% of texels; the saturated-sensing
+    network sits near 4.7 and a tenth. The thresholds are set between the two
+    regimes with a wide margin on both sides.
+
+    The uncapped control run pins the comparison: it must be markedly more
+    concentrated than the shipped configuration, and carry the same mass --
+    the cap redirects traffic, it does not add or remove material.
+    """
+    device, _ = gpu_device
+    width, height, ticks = 128, 128, 1200
+
+    def run(sense_cap: float) -> dict:
+        params = config.Config().resolve()
+        params.render.layers = 1
+        params.agents.sense_cap = sense_cap
+        engine = engine_module.Engine(device, width, height, params, seed=23)
+        for _ in range(ticks):
+            engine.tick(params, [])
+        layer = engine.layers[0]
+        raw = device.queue.read_texture(
+            {"texture": layer.trail.textures[layer.trail.index], "mip_level": 0,
+             "origin": (0, 0, 0)},
+            {"offset": 0, "bytes_per_row": width * 8, "rows_per_image": height},
+            (width, height, 1),
+        )
+        trail = np.frombuffer(raw, dtype=np.float16).reshape(
+            height, width, 4)[..., 0].astype(np.float64)
+        flat = np.sort(trail.ravel())
+        mean = float(trail.mean())
+        return {
+            "mass": mean,
+            "p99_over_mean": float(np.percentile(trail, 99) / max(mean, 1e-9)),
+            "top2": float(
+                flat[-int(flat.size * 0.02):].sum() / max(flat.sum(), 1e-9)),
+        }
+
+    shipped = run(config.Config().resolve().agents.sense_cap)
+    control = run(0.0)
+
+    assert shipped["p99_over_mean"] < 8.0, (
+        f"trail concentration is {shipped['p99_over_mean']:.1f} (p99/mean); "
+        f"the layer is condensing into knots, not spreading into a network"
+    )
+    assert shipped["p99_over_mean"] > 1.5, (
+        f"trail concentration is {shipped['p99_over_mean']:.1f}; there are no "
+        f"strands at all, only mush"
+    )
+    assert shipped["top2"] < 0.20, (
+        f"the network holds {shipped['top2']:.2f} of its mass in its top 2% "
+        f"of texels; those are the persistent light dots"
+    )
+    assert control["p99_over_mean"] > shipped["p99_over_mean"] * 1.5, (
+        "the uncapped control is no more concentrated than the shipped "
+        "configuration, so this test is no longer measuring the cap"
+    )
+    drift = abs(shipped["mass"] - control["mass"]) / max(control["mass"], 1e-9)
+    assert drift < 0.15, (
+        f"trail mass moved {drift:.1%} against the uncapped control; the cap "
+        f"should redirect traffic, not add or remove material"
+    )
+
+
+@pytest.mark.slow
 def test_the_deposit_capacity_dissolves_hubs_without_draining_the_network(
     gpu_device,
 ):
@@ -1261,8 +1359,13 @@ def test_the_deposit_capacity_dissolves_hubs_without_draining_the_network(
         params.render.layers = 1
         params.agents.deposit_cap = cap
         # Isolated from the other step-6 mechanism, so a regression here names
-        # its culprit.
+        # its culprit -- and from the sensing saturation, which removes the
+        # hubs this test needs both arms to grow: the thresholds below were
+        # measured in the uncapped-sensing regime, and the capacity's job
+        # (bounding what a hub stores, and the return accounting around it)
+        # is the same whether or not sensing lets hubs form.
         params.agents.trail_advect = 0.0
+        params.agents.sense_cap = 0.0
         engine = engine_module.Engine(device, width, height, params, seed=23)
         for _ in range(ticks):
             engine.tick(params, [])
