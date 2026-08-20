@@ -140,8 +140,14 @@ def test_switching_the_mode_reaches_the_app_and_refilters_the_presets(monkeypatc
     app, panel = _mode_panel(monkeypatch)
     from anastomosis import presets
 
+    # The list is filtered by *world* as well as by mode (DESIGN.md §15), so
+    # the expectation is asked of the backend this panel is actually driving
+    # rather than of the whole preset table -- offering `meadow` under a
+    # fungal view would offer a picture nobody has judged.
+    world = presets.world_for_backend(app.backend)
+
     assert panel.mode_combo.currentData() == "regulation"
-    assert panel.preset_combo.count() == len(presets.names("regulation"))
+    assert panel.preset_combo.count() == len(presets.names("regulation", world))
 
     panel.mode_combo.setCurrentIndex(panel.mode_combo.findData("activation"))
     panel._on_mode()
@@ -150,15 +156,48 @@ def test_switching_the_mode_reaches_the_app_and_refilters_the_presets(monkeypatc
     # mode actually has rather than against a count, so it holds both before
     # and after a mode gains presets. A mode with none says so rather than
     # offering regulation presets through the wrong table.
-    names = presets.names("activation")
+    names = presets.names("activation", world)
     assert panel.preset_combo.count() == len(names)
     assert panel.preset_combo.isEnabled() == bool(names)
 
     panel.mode_combo.setCurrentIndex(panel.mode_combo.findData("regulation"))
     panel._on_mode()
     assert app.config.mode == "regulation"
-    assert panel.preset_combo.count() == len(presets.names("regulation"))
+    assert panel.preset_combo.count() == len(presets.names("regulation", world))
     assert panel.preset_combo.isEnabled()
+    panel.close()
+
+
+def test_the_rhizotron_offers_its_own_presets_and_no_mode(monkeypatch):
+    """DESIGN.md §15: the root world has one tuning and its own presets.
+
+    Both halves matter to the panel. The preset list follows the *world*, so
+    `meadow` is offered here and `dense` is not -- a preset is macro
+    positions plus the table they were tuned against plus the world that
+    renders them. And the Mode selector, which under this backend would
+    change nothing at all (`Config.resolve` pins the rhizotron to the
+    regulation table), is disabled and says why rather than sitting there
+    inviting a click that does nothing.
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+
+    import panelstub
+    from anastomosis import presets
+
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app = panelstub.PanelApp(backend="rhizotron")
+    panel = control_panel.ControlPanel(app)
+
+    listed = [panel.preset_combo.itemText(i)
+              for i in range(panel.preset_combo.count())]
+    assert listed == presets.names("regulation", "rhizotron")
+    assert "meadow" in listed
+    assert "dense" not in listed
+    assert panel.preset_combo.isEnabled()
+
+    assert not panel.mode_combo.isEnabled()
+    assert "one tuning" in panel.mode_combo.toolTip()
     panel.close()
 
 
