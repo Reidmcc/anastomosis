@@ -4,7 +4,7 @@
 
 Built and verified headless against a software adapter (Mesa lavapipe), so every
 shader compiles and the full tick/render sequence runs in CI without a GPU. The
-suite is 405 tests, split the way their costs are: `.github/workflows/ci.yml`
+suite is 422 tests, split the way their costs are: `.github/workflows/ci.yml`
 runs everything not marked `slow` on every push, across three Python versions
 plus a leg with no PySide6 that holds the README's promise that the panel is
 optional, and runs the `slow` marks -- drift, morphology, regime occupancy,
@@ -70,7 +70,8 @@ correct pixels far too slowly to watch. The numbers say the simulation is alive,
 structured, and stable; whether it is *pleasant* is a judgement that needs the
 real GPU and a pair of eyes.
 
-That caveat now has two specific things attached to it, both from §4.7 step 5.
+That caveat now has two specific things attached to it, both starting from
+§4.7 step 5.
 
 The shading balance was changed on the strength of two measures of the rendered
 image — how many separate bright blobs it is made of, and how varied their size
@@ -85,13 +86,30 @@ And it costs the slab more than the stack, which puts it on the list of
 slab-specific numbers this section already keeps. A filament network fills far
 less of a volume than of a plane, so gating the reaction on the network removes
 more of the slab's density than of the stack's, and the exposure governor makes
-it up: measured through the march, its multiplier goes from 2.8 to 8.3 against
-a hard bound of 20. The settled image lightness is unchanged and nothing is
-saturating, but the headroom above the brightness macro's top end is now about
-1.4× where it was 4×. The lever is the march's `extinction` calibration (§5.1),
-which was set against the old density scale; it is shared with the compositor,
+it up: measured through the march, its multiplier went from 2.8 to 8.3 against
+a hard bound of 20. Step 6 then cost it again, and by more, which nothing
+measured at the time — dimming the trail hubs is dimming the brightest thing in
+the volume, and the multiplier went to 17.6, with the sensing saturation later
+handing part of that back, to 15.5.
+
+Those three numbers are all from a 24-voxel slab: half the shipped thickness,
+and the volumetric exposure test's own economy until it was corrected to
+measure the shipped 48. Optical depth accumulates per filament a ray crosses,
+so it scales with the depth in voxels — through the slab the application
+actually grows, the same field asks for 9.8. The whole brightness macro still
+works there: measured at the top of that knob the governor settles its target
+with the multiplier at 15.5, inside the clamp of 20. So the headroom above the
+knob is about 1.3× now, where it was 4× before any of this. The settled image
+lightness is unchanged throughout and nothing is saturating; what is thinning
+is the room above the knob, and it has thinned twice now without either change
+noticing. The lever is the march's `extinction` calibration (§5.1), which was
+set against a density scale two changes ago; it is shared with the compositor,
 so moving it is not free, and it should wait for the same viewing everything
-else here is waiting for.
+else here is waiting for. Until it moves, the test holds the line where it
+belongs: its ceiling is derived from the governor's clamp and the top of the
+brightness macro rather than chosen, so the next change to the slab's density
+is measured against the setting it would cost rather than against a number
+someone raised.
 
 That caveat is heavier for the volumetric backend than for the layered one, and
 worth being explicit about. Its invariants are checked and hold -- the flow is
@@ -101,8 +119,9 @@ homeostat keeps mean V in band over a long run, and the flash-safety bound holds
 through the ray march exactly as it does through the compositor. One statement
 about the *image* survives too, and it is the only one: over 700 frames the
 exposure governor settles the mean image lightness on its target under the slab
-as it does under the stack (0.153 against a target of 0.156), with the exposure
-multiplier well inside its bounds -- so the march is handing the output stage
+as it does under the stack (0.163 against a target of 0.156), with the exposure
+multiplier inside its bounds by the margin above -- so the march is handing the
+output stage
 something it can work with, rather than a field too sparse or too dense for the
 knobs the two backends share to mean the same thing. But §5.1's own warning that
 a volume "makes every parameter harder to reason about" is unaddressed by any of
