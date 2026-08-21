@@ -433,6 +433,97 @@ def test_activation_shears_the_structure_harder_without_disabling_it():
     assert act_fast.agents.trail_advect < 1.0
 
 
+def test_an_untouched_stability_knob_is_the_shipped_field():
+    """stability=0 must resolve every path it drives to the dataclass default.
+
+    The macro's whole contract is that its low end *is* the shipped volatile
+    character (DESIGN.md §9): flux pruning inert at gain zero exactly as §4.7
+    shipped it, and repulsion, founding and jitter untouched. A low end that
+    drifted off the defaults would change the field everyone already has.
+    """
+    defaults = config.Params()
+    for mode in config.MODES:
+        params = config.Config(
+            macros=config.Macros(stability=0.0), mode=mode).resolve()
+        assert params.agents.prune_gain == 0.0, (
+            "pruning is not inert at the bottom of the stability travel"
+        )
+        for path, _lo, _hi, _gamma in config.MODE_CURVES[mode]["stability"]:
+            assert config.get_path(params, path) == pytest.approx(
+                config.get_path(defaults, path)
+            ), f"stability=0 moved {path} off its shipped default"
+
+
+def test_the_sturdy_end_prunes_at_a_gain_measured_stable():
+    """The top of the travel is gain 3.0, and specifically not 1.5.
+
+    The stability record in §4.7 runs backwards from intuition: one run in
+    four at gain 1.5 fell into a sparse state and never left it, while gains
+    3 and 5 were stable across every seed tried. 3.0 is also the gain
+    test_flux_pruning_returns_the_mass_it_removes verifies against the
+    homeostat, so the endpoint stays inside what is measured twice over.
+    """
+    for mode in config.MODES:
+        params = config.Config(
+            macros=config.Macros(stability=1.0), mode=mode).resolve()
+        assert params.agents.prune_gain == pytest.approx(3.0)
+
+
+def test_a_rift_can_still_take_a_sturdy_network_apart():
+    """Events must keep their authority at every stability setting.
+
+    A rift pins the climate's `repel` channel at its 1.0 clamp, and severance
+    needs the resulting commitment past the crossing at 1.0 (§4.7 step 4):
+    `fusion_bias + range_repel > 1`. The sturdy end lowers `range_repel` so
+    the *weather* stops taking junctions apart, and this is the floor that
+    lowering must respect -- from the lowest `fusion_bias` the intensity
+    macro can set, in both modes.
+    """
+    for mode in config.MODES:
+        for intensity in (0.0, 0.5, 1.0):
+            params = config.Config(
+                macros=config.Macros(stability=1.0, intensity=intensity),
+                mode=mode,
+            ).resolve()
+            crossing = params.agents.fusion_bias + params.climate.range_repel
+            assert crossing > 1.05, (
+                f"a pinned rift reaches commitment {crossing:.2f} at "
+                f"intensity {intensity} under {mode}; severance needs > 1"
+            )
+            assert params.agents.fusion_max > 1.0, (
+                "the commitment clamp no longer reaches past the crossing"
+            )
+
+
+def test_stability_keeps_founding_a_real_presence():
+    """Founding is how a rifted disc heals (§4.7: bare ground that never came
+    back without it), so the sturdy end may bias respawns toward accretion
+    but must not starve the mechanism."""
+    for mode in config.MODES:
+        params = config.Config(
+            macros=config.Macros(stability=1.0), mode=mode).resolve()
+        assert params.agents.found_fraction >= 0.30
+
+
+def test_stability_is_monotone_and_never_overshoots_its_endpoints():
+    """Each driven primitive moves one way along the travel, between the
+    shipped default and its sturdy endpoint -- a knob that doubled back would
+    make two slider positions mean the same thing."""
+    for mode in config.MODES:
+        series: dict[str, list[float]] = {}
+        for step in range(11):
+            params = config.Config(
+                macros=config.Macros(stability=step / 10.0), mode=mode
+            ).resolve()
+            for path, _lo, _hi, _gamma in config.MODE_CURVES[mode]["stability"]:
+                series.setdefault(path, []).append(config.get_path(params, path))
+        for path, values in series.items():
+            ordered = sorted(values)
+            assert values in (ordered, ordered[::-1]), (
+                f"{path} is not monotone along the stability travel"
+            )
+
+
 def test_presets_keep_the_arrival_rate_they_had():
     """The rate used to come from `intensity`; presets must not have shifted.
 

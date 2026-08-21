@@ -2,11 +2,11 @@
 
 Two tiers, per DESIGN.md §9:
 
-* **Macros** — eight knobs in 0..1, the normal interface.
+* **Macros** — nine knobs in 0..1, the normal interface.
 * **Primitives** — the ~50 values the shaders actually read.
 
 Macros drive primitives through a curve table -- one per *mode*, in
-:data:`MODE_CURVES` (DESIGN.md §14): the same eight knobs mean the same things
+:data:`MODE_CURVES` (DESIGN.md §14): the same nine knobs mean the same things
 in both modes, and only the endpoints they reach differ. The config file may
 also pin individual primitives, which override the macro result.
 
@@ -142,8 +142,11 @@ class AgentParams:
     # trail's autocorrelation at a 1050-tick lag rises from 0.11 to 0.27. It
     # buys concentration at the cost of exactly the monotony 4.7 exists to fix,
     # and one run in four at gain 1.5 fell into a sparse state it never left.
-    # The mechanism is built, plumbed and tested; see DESIGN.md 4.7 for what
-    # would have to change for it to earn being switched on.
+    # The mechanism is built, plumbed and tested -- and that "cost" is a thing
+    # somebody can now ask for by name: the `stability` macro drives this from
+    # the 0 here up to the measured-stable gain of 3 at the sturdy end of its
+    # travel (see MACRO_CURVES), so the default stays the volatile character
+    # DESIGN.md 4.7 tuned while the panel can firm it.
     prune_gain: float = 0.0
     # Deposit capacity -- the counter to winner-take-all trail following, and
     # the mechanism behind the persistent white dots (DESIGN.md 4.7, "what the
@@ -519,7 +522,7 @@ class ClimateParams:
     # Pruning strength, per region -- geometric, like range_du and for the same
     # reasons. Zones where the network visibly comes apart, migrating past zones
     # where it holds together. Inert while agents.prune_gain is zero, which it
-    # is by default.
+    # is by default and stops being once the `stability` macro is raised.
     range_prune: float = 1.5
     # Junction behaviour, per region -- the `repel` channel of the third pair.
     # Additive, unlike range_du and range_prune, because what matters on this
@@ -1066,6 +1069,20 @@ class Macros:
     brightness: float = 0.35
     filament_glow: float = 0.45
     depth: float = 0.60
+    # How sturdy the filament network is -- whether a lasting network forms
+    # and holds, or the filaments keep fusing, unfusing and re-forming
+    # forever. At the shipped default the layer balances to perpetual motion:
+    # nothing can remove a strand traffic has abandoned, anti-fusion zones
+    # migrate through, and founding cohorts keep starting structure somewhere
+    # else, so a coherent network never settles out. That is a deliberate
+    # character (DESIGN.md §4.7 tuned *against* monotony), which is exactly
+    # why it has to be a knob rather than a better default: volatility and
+    # sturdiness are both coherent things to want.
+    #
+    # Zero is the shipped character, so an untouched slider changes nothing;
+    # the travel only firms. See the `stability` entry in MACRO_CURVES for
+    # which primitives it moves and why those four.
+    stability: float = 0.0
     # How far the viewpoint swings, and how briskly. Its own knob rather than
     # a part of `depth` for the same reason `event_rate` is not part of
     # `intensity`: the two are different questions. Everything `depth` moves is
@@ -1158,6 +1175,59 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("rhizotron.splat_axis", 1.0, 1.6, 1.0),
         ("rhizotron.splat_lateral", 0.55, 0.85, 1.0),
         ("rhizotron.splat_fine", 0.32, 0.48, 1.0),
+    ],
+    # How sturdy the network is. Every low end is the shipped default, so an
+    # untouched slider is exactly the field §4.7 tuned; the travel firms it.
+    # Four primitives, because the shipped volatility has four legs and a
+    # knob that pulled only one of them would trade one kind of motion for
+    # another rather than answer the question being asked:
+    #
+    # * `prune_gain` is the load-bearing one -- flux pruning (§4.7 step 3),
+    #   built and tested but shipped off. On, strands traffic has abandoned
+    #   are resorbed instead of persisting as competitors, and the network
+    #   concentrates into fewer, stronger, *lasting* filaments: trail
+    #   autocorrelation at a 1050-tick lag rises 0.11 -> 0.27 at gain 3. The
+    #   top is 3.0 rather than the 1.5 that first shows an effect, because
+    #   the stability record runs the other way around: one run in four at
+    #   gain 1.5 fell into a sparse state and stayed there, while gains 3 and
+    #   5 were stable across every seed tried (§4.7, "What step 3 actually
+    #   did"). gamma 0.6 moves the low, riskier gains behind quickly -- the
+    #   middle of the travel already resolves to 2.0.
+    # * `range_repel` is how much of the field is actively coming apart: at
+    #   the shipped 2.6 about 6% of the field repels at junctions at any
+    #   moment, and those zones migrate. 0.9 at the top takes the ordinary
+    #   climate excursion out of reach of the crossing while keeping a rift
+    #   event -- which pins its channel at the 1.0 clamp -- decisively past
+    #   it from the lowest `fusion_bias` up (0.35 + 0.9 > 1), so events can
+    #   still take a sturdy network apart; the weather just stops doing it
+    #   on its own.
+    # * `found_fraction` is the turnover half of §4.7 step 4: founding
+    #   cohorts start new structure on bare ground, which is what keeps the
+    #   network *moving house*. 0.30 at the top biases respawns back toward
+    #   accretion onto what exists. Not lower: founding is also what heals a
+    #   rifted disc (§4.7 measured bare ground that never came back without
+    #   it), so it must stay a real presence.
+    # * `jitter` is the per-tick angular noise that keeps strands wandering;
+    #   0.07 at the top settles them without approaching zero, which would
+    #   be a different (and untested) regime.
+    #
+    # Measured on the software adapter (128x128 and 256x256, 2550-2850
+    # ticks, three or four seeds per point, paired by seed; the sweep is
+    # recorded in §9): the full sturdy end holds trail mass within ~4% of
+    # the control -- pruning's return accounting genuinely gives back what
+    # it takes, see test_flux_pruning_returns_the_mass_it_removes -- raises
+    # mass-per-area, and leaves the condensation guard (§4.9's band share)
+    # at the control's level; no pruned run fell into §4.7's sparse state,
+    # at gain 1.5, 3, or the mid-travel combination. The persistence gain
+    # itself resolves as a ~20% mean rise in how much of the network's
+    # footprint survives a 1050-tick lag (3 of 4 paired seeds), which is
+    # the familiar §4.7 story: real, directional, and finally a judgement
+    # for real eyes on real hardware (§13).
+    "stability": [
+        ("agents.prune_gain", 0.0, 3.0, 0.6),
+        ("climate.range_repel", 2.6, 0.9, 1.0),
+        ("agents.found_fraction", 0.55, 0.30, 1.0),
+        ("agents.jitter", 0.10, 0.07, 1.0),
     ],
     "tempo": [
         ("sim_hz", 12.0, 26.0, 1.0),
@@ -1267,7 +1337,7 @@ def _palette_hue_anchor(v: float) -> float:
 # --------------------------------------------------------------------------
 
 # Two tunings of one instrument. Regulation is everything the application has
-# always been; activation is the same eight macros over endpoints retuned for
+# always been; activation is the same macros over endpoints retuned for
 # sensory seeking -- more motion, more colour, more happening. The mode decides
 # which curve table `resolve` reads and nothing else: the safety ceilings are
 # one table serving both, every value a mode moves is one the ramp smooths, and
@@ -1276,7 +1346,7 @@ def _palette_hue_anchor(v: float) -> float:
 MODES = ("regulation", "activation")
 DEFAULT_MODE = "regulation"
 
-# The activation table. Same eight macros, same meanings, same paths in the
+# The activation table. Same macros, same meanings, same paths in the
 # same order (the structure test holds the two tables to that); what differs
 # is where the top of each travel reaches. Low ends stay at regulation's, so
 # the modes overlap rather than abut and the bottom of activation is
@@ -1343,6 +1413,16 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("rhizotron.splat_axis", 1.0, 1.6, 1.0),
         ("rhizotron.splat_lateral", 0.55, 0.85, 1.0),
         ("rhizotron.splat_fine", 0.32, 0.48, 1.0),
+    ],
+    # Regulation's curves verbatim, like brightness and depth below: how
+    # sturdy the network is answers the same question in both tunings, and
+    # nothing about activation's energy sources (motion, chroma, incident
+    # density -- §14.1) runs through these four primitives.
+    "stability": [
+        ("agents.prune_gain", 0.0, 3.0, 0.6),
+        ("climate.range_repel", 2.6, 0.9, 1.0),
+        ("agents.found_fraction", 0.55, 0.30, 1.0),
+        ("agents.jitter", 0.10, 0.07, 1.0),
     ],
     "tempo": [
         # 30 Hz at the top: one sim tick per displayed frame at the 30 FPS
@@ -2054,12 +2134,12 @@ _HEADER = """\
 # costs the same at all three. Structural like `backend`, so a saved field
 # keeps the size it grew at until the simulation is reset.
 #
-# `mode` is which tuning the eight knobs move through: "regulation" (calm,
+# `mode` is which tuning the knobs move through: "regulation" (calm,
 # the original) or "activation" (more motion and colour, for sensory seeking
 # rather than settling). Not structural: switching it is a smooth transition
 # on the field you already have. The flash-safety bound is identical in both.
 #
-# [macros] are the normal interface -- eight knobs, all 0..1.
+# [macros] are the normal interface -- nine knobs, all 0..1.
 # [overrides] pins individual primitive parameters by dotted path, e.g.
 #   "render.filament_luma" = 0.42
 # Overrides take precedence over macros.
