@@ -22,7 +22,7 @@ from __future__ import annotations
 import pytest
 
 from anastomosis import diagnostics
-from anastomosis.app import AppOptions, Application
+from anastomosis.app import WINDOW_POLL_SECONDS, AppOptions, Application
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +43,27 @@ class FakeSizeInfo(dict):
         self.writes.append((int(width), int(height), float(ratio)))
 
 
+class FakeScheduler:
+    """``rendercanvas``' scheduler, reduced to the state that stops a session.
+
+    Enabled is the whole of it. A disabled scheduler goes on ticking -- it
+    processes events, it is not stuck, and nothing anywhere reports a fault --
+    and simply never asks for a frame again, which is what a freeze of this
+    shape actually is. Nothing outside the canvas can un-set it except by
+    telling the canvas the window is visible, which is why the re-assertion
+    below is a recovery and a forced frame is not.
+    """
+
+    def __init__(self) -> None:
+        self._enabled = True
+        self._mode = "continuous"
+        self._ready_for_present = None
+        self._just_cancelled_a_frame = False
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = bool(enabled)
+
+
 class FakeSubwidget:
     """The inner render widget: Qt's geometry, and the canvas' idea of it.
 
@@ -59,6 +80,9 @@ class FakeSubwidget:
         # What the scheduler would do with it: enabled draws, disabled does not.
         self.visible = True
         self.visibility_calls: list[bool] = []
+        # Spelled the way the base class' name mangling leaves it, because
+        # that is the name the report reads it under.
+        self._BaseRenderCanvas__scheduler = FakeScheduler()
 
     # -- Qt's side, which stays right whether or not events were delivered
     def width(self):
@@ -84,6 +108,7 @@ class FakeSubwidget:
     def _set_visible(self, visible: bool) -> None:
         self.visible = bool(visible)
         self.visibility_calls.append(bool(visible))
+        self._BaseRenderCanvas__scheduler.set_enabled(visible)
 
 
 class FakeCanvas:
@@ -102,6 +127,11 @@ class FakeCanvas:
         self.forced = 0
         self.requests = 0
         self.drawing = False
+        # A canvas cancels every frame it is given -- forced ones included --
+        # when it believes it has no size or has been closed. It says nothing
+        # about it, which is the point: from outside, a kick that draws and a
+        # kick that is thrown away look identical.
+        self.cancels = False
 
     # -- window state
     def isVisible(self):  # noqa: N802 - Qt naming
@@ -126,6 +156,8 @@ class FakeCanvas:
         if self.drawing:
             raise RuntimeError("Cannot force a draw while drawing.")
         self.forced += 1
+        if self.cancels:
+            return
         if self._draw is not None:
             self._draw()
 
@@ -243,6 +275,86 @@ def test_a_scheduler_that_never_comes_back_leaves_a_report(app, tmp_path):
     assert "scheduler" in reports[0].read_text()
 
 
+def test_the_report_says_what_the_scheduler_was_doing(app, tmp_path):
+    """Which of the three ways it stops is what decides how to fix it."""
+    settle(app)
+    app.canvas._subwidget._BaseRenderCanvas__scheduler._enabled = False
+
+    assert "paused" in app._scheduler_summary()
+    assert "continuous" in app._scheduler_summary()
+
+    app.canvas._subwidget._BaseRenderCanvas__scheduler._enabled = True
+    app.canvas._subwidget._BaseRenderCanvas__scheduler._ready_for_present = object()
+    assert "waiting for a frame it asked for" in app._scheduler_summary()
+
+
+def test_a_forced_frame_the_canvas_throws_away_is_not_counted_as_one(app):
+    """A canvas that cancels every frame is a different fault, and worse.
+
+    The kick used to count itself rather than the frame, so a session drawing
+    nothing whatever was described in the report as one being carried at a
+    frame every few seconds -- and the difference between those two is the
+    difference between a window that creeps and a window that has stopped.
+    """
+    settle(app)
+    app.canvas.cancels = True
+
+    for _ in range(3):
+        app.clock.advance(5.0)
+        app._reconcile_window()
+
+    assert app._kicks == 3
+    assert app._blank_kicks == 3
+    assert "3 of them drew nothing" in app._kick_summary()
+    assert not app._carrying, (
+        "the poll took over pacing from a canvas that draws nothing at all"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Carrying the session
+# ---------------------------------------------------------------------------
+
+
+def test_a_scheduler_that_will_not_come_back_has_its_pacing_taken_over(app):
+    """A frame every four seconds is the freeze, not the recovery from it."""
+    settle(app)
+
+    for _ in range(3):
+        app.clock.advance(5.0)
+        app._reconcile_window()
+
+    assert app._carrying, "the session was left frozen with the poll watching it"
+    assert app._poll_interval == pytest.approx(1.0 / app.options.max_fps)
+
+    # And now every pass is a frame, without waiting out the unasked leash.
+    drawn = app.watchdog.frames
+    for _ in range(5):
+        app.clock.advance(app._poll_interval)
+        app._reconcile_window()
+
+    assert app.watchdog.frames == drawn + 5, (
+        "the poll took over the frame clock and then ran at the old interval"
+    )
+
+
+def test_pacing_is_handed_back_the_moment_the_scheduler_asks_again(app):
+    settle(app)
+    for _ in range(3):
+        app.clock.advance(5.0)
+        app._reconcile_window()
+    assert app._carrying
+
+    # One frame this poll did not force is the whole signal.
+    app.watchdog.frame()
+    app.clock.advance(app._poll_interval)
+    app._reconcile_window()
+
+    assert not app._carrying
+    assert app._poll_interval == pytest.approx(WINDOW_POLL_SECONDS)
+    assert app._kicks == 0
+
+
 # ---------------------------------------------------------------------------
 # Telling the canvas what the window is doing
 # ---------------------------------------------------------------------------
@@ -305,7 +417,7 @@ def test_a_window_that_comes_back_is_drawn_again(app):
     assert app.canvas.forced == 1
 
 
-def test_a_canvas_that_cannot_say_is_not_told_anything(app):
+def test_a_canvas_with_no_window_at_all_is_not_told_anything(app):
     """glfw windows, offscreen canvases, and every stand-in the suite has."""
 
     class Windowless:
@@ -319,6 +431,63 @@ def test_a_canvas_that_cannot_say_is_not_told_anything(app):
     app._reconcile_window()  # must not raise
 
     assert app._window_visible is None
+
+
+def test_a_window_that_will_not_say_still_has_its_canvas_un_paused(app):
+    """The second freeze, and the hole this whole mechanism had in it.
+
+    A canvas paused by a minimise event that never had its counterpart is only
+    ever un-paused by being told the window is up. The poll used to skip that
+    push whenever the window would not answer -- and then force a frame anyway,
+    which goes *around* the scheduler and leaves the pause exactly where it
+    found it. The two together are a session that is drawn once every few
+    seconds forever: nothing is stuck, nothing errors, and nothing will ever
+    start again.
+
+    So a window that cannot say is treated as up, which is the answer the kick
+    on the next line already gives the same question.
+    """
+    settle(app)
+    # Something paused the canvas -- a spurious minimise, a state change during
+    # a fullscreen transition -- and the window stopped answering afterwards.
+    app.canvas._subwidget._set_visible(False)
+    app.canvas.isVisible = lambda: (_ for _ in ()).throw(
+        RuntimeError("the window will not say")
+    )
+
+    app.clock.advance(5.0)
+    app._reconcile_window()
+
+    scheduler = app.canvas._subwidget._BaseRenderCanvas__scheduler
+    assert scheduler._enabled is True, (
+        "a canvas paused behind the application's back was left paused, so "
+        "the scheduler will never ask for another frame"
+    )
+    assert app._window_visible is None, "the report must not invent an answer"
+    assert app.watchdog.paused is None, (
+        "a window that would not answer was recorded as deliberately parked"
+    )
+
+
+def test_a_probe_that_flaps_does_not_disarm_the_kick(app):
+    """Losing the answer is not the window coming back from being away.
+
+    A window that comes back from being off screen has its unasked clock
+    restarted, because it could not have been drawn while it was away. If a
+    probe that merely stops answering did the same, every poll would restart
+    that clock and no frame would ever be forced again.
+    """
+    settle(app)
+    answers = iter([True, None, True, None, True, None, True, None])
+    app._window_is_up = lambda: next(answers)
+
+    for _ in range(4):
+        app.clock.advance(2.0)
+        app._reconcile_window()
+
+    assert app.canvas.forced >= 1, (
+        "a window flapping between an answer and none disarmed the recovery"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +578,10 @@ def test_a_window_that_answers_with_an_error_is_treated_as_unknown(app):
     assert app.canvas.forced == 1, (
         "a window that could not say whether it was up was assumed to be down"
     )
+    assert app.canvas._subwidget.visibility_calls[-1] is True, (
+        "the canvas was left holding whatever it believed, which is the one "
+        "thing this poll exists to stop"
+    )
 
 
 def test_shutdown_stops_the_poll(app):
@@ -447,6 +620,22 @@ def test_the_canvas_internals_the_recovery_reaches_for_still_exist():
     assert callable(getattr(Scheduler, "set_enabled", None)), (
         "the scheduler no longer has the enabled state _set_visible drives"
     )
+    # And the state a report reads to say *which* way the scheduler stopped:
+    # paused, waiting for a frame it asked for, or asking into a canvas that
+    # throws every frame away. Read under the name the base class' mangling
+    # leaves behind, since that is how the report has to reach it.
+    assert "_BaseRenderCanvas__scheduler" in (
+        BaseRenderCanvas.__init__.__code__.co_names
+    ), "the canvas no longer keeps its scheduler where the report reads it"
+    for owner, name in (
+        (Scheduler.set_enabled, "_enabled"),
+        (Scheduler.set_update_mode, "_mode"),
+        (Scheduler.__init__, "_ready_for_present"),
+    ):
+        assert name in owner.__code__.co_names, (
+            f"the scheduler no longer keeps {name}, which is what a stall "
+            f"report reads to say whether it was asking for frames"
+        )
     assert callable(getattr(SizeInfo, "set_physical_size", None)), (
         "the canvas' cached size is no longer written through SizeInfo"
     )

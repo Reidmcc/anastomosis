@@ -98,6 +98,12 @@ UNASKED_SECONDS = 3.0
 # on its own, and the session is being carried by the poll. Worth a report at
 # that point: the loop is alive, so the watchdog will never write one, and the
 # stacks are the only thing that says why the scheduler stopped.
+#
+# It is also the point at which the poll stops reconciling and starts pacing.
+# Three forced frames at this interval is ten seconds of a window that has not
+# moved, which is a freeze however carefully it is being carried; from here the
+# poll runs at the frame interval instead and the session keeps its frame rate
+# until the scheduler comes back -- see `_start_carrying`.
 KICKS_BEFORE_A_REPORT = 3
 
 # Signals that mean "stop", handled so that a `kill` or a session logout ends
@@ -227,6 +233,17 @@ class Application:
         self._frames_at = time.perf_counter()
         self._kicks = 0
         self._kicked_at: float | None = None
+        # Forced frames the canvas threw away without drawing. Counted apart
+        # from the kicks because it is a different fault: a scheduler that has
+        # stopped asking is recoverable from out here, and a canvas that
+        # cancels every frame it is given is not -- see `_kick_the_loop`.
+        self._blank_kicks = 0
+        # Whether the poll has taken over pacing from the scheduler, and how
+        # often it runs while it has. The interval is an attribute rather than
+        # the constant so the fallback path re-arms itself at whichever one is
+        # in force.
+        self._carrying = False
+        self._poll_interval = WINDOW_POLL_SECONDS
 
     # -- setup --------------------------------------------------------------
 
@@ -425,7 +442,7 @@ class Application:
             else:
                 timer = QtCore.QTimer()
                 timer.timeout.connect(self._poll_window)
-                timer.start(int(WINDOW_POLL_SECONDS * 1000))
+                timer.start(int(self._poll_interval * 1000))
                 # Held on the application: an unparented QTimer that nothing
                 # references is collected, and a collected timer never fires.
                 self._window_poll = timer
@@ -444,11 +461,32 @@ class Application:
             log.debug("this loop cannot schedule the window poll; skipping it")
             return
         try:
-            call_later(WINDOW_POLL_SECONDS, self._poll_window)
+            call_later(self._poll_interval, self._poll_window)
         except Exception as exc:
             log.debug("could not schedule the window poll: %s", exc)
             return
         self._window_poll = self.loop
+
+    def _set_poll_interval(self, seconds: float) -> None:
+        """Change how often the poll runs, on whichever timer is carrying it.
+
+        The Qt timer is re-intervalled in place; the fallback path re-arms
+        itself from the attribute at the end of every pass, so setting it is
+        all there is to do there.
+        """
+        if self._poll_interval == seconds:
+            return
+        self._poll_interval = seconds
+        poll = self._window_poll
+        if poll is None or poll is self.loop:
+            return
+        setter = getattr(poll, "setInterval", None)
+        if not callable(setter):
+            return
+        try:
+            setter(int(seconds * 1000))
+        except Exception as exc:  # pragma: no cover - Qt timer internals
+            log.debug("could not change the window poll's interval: %s", exc)
 
     def _stop_window_poll(self) -> None:
         poll, self._window_poll = self._window_poll, None
@@ -491,7 +529,8 @@ class Application:
         if frames != self._frames_seen:
             self._frames_seen = frames
             self._frames_at = now
-            self._kicks = 0
+            self._kicks = self._blank_kicks = 0
+            self._stop_carrying()
             return
 
         # Nothing has been drawn since the last poll. Whether that is a fault
@@ -500,7 +539,10 @@ class Application:
         # where a still frame loop is the right answer rather than a bug.
         if visible is False or width <= 0 or height <= 0:
             return
-        if now - self._frames_at < UNASKED_SECONDS:
+        # While carrying, every pass is a frame: the interval *is* the frame
+        # interval, and waiting three seconds between them would be the freeze
+        # this exists to end.
+        if not self._carrying and now - self._frames_at < UNASKED_SECONDS:
             return
         self._kick_the_loop(now - self._frames_at, width, height)
 
@@ -523,39 +565,66 @@ class Application:
             return None
 
     def _tell_the_canvas(self, visible: bool | None) -> None:
-        """Re-assert the window's visibility, every poll, in both directions.
+        """Re-assert the window's visibility, every poll, in all three cases.
 
         Pushed unconditionally rather than on a change, which is the whole
         point of doing it here: if this only spoke up when *its own* view
         changed, a stray event that paused the canvas a moment later would
         never be answered. Logged on a change, though -- the state is worth a
         line in the log, and two lines a second is not.
+
+        The third case is a window that will not say, and it used to return
+        here without pushing anything, which left exactly one way for the
+        original fault to survive this poll: a canvas paused by a minimise
+        event that never had its counterpart, plus a window that stopped
+        answering, is a session that is never drawn again. A forced frame does
+        not help -- it goes around the scheduler rather than through it, so it
+        leaves the pause exactly where it found it, which is why such a session
+        can be kicked for hours and never come back.
+
+        So "cannot say" is pushed as "up". That is the same answer the kick
+        already gives the same question -- a window that cannot say whether it
+        is up is not assumed to be down -- and its worst case is one poll's
+        drawing into a window that really was off screen, which the next poll
+        that gets an answer undoes. What is *not* assumed is the rest of it:
+        the watchdog is only told the loop is parked on purpose when the window
+        actually said so, and the report says "cannot say" rather than
+        inventing a state the window never claimed.
         """
-        if visible is None:
-            return
+        # Three-valued in, two-valued out: only a definite "off screen" pauses
+        # anything.
+        up = visible is not False
         if visible != self._window_visible:
+            # A window that has just come back has not been unasked for the
+            # time it spent away -- it could not have been drawn -- so the
+            # clock starts from the moment it could. Only from a definite
+            # absence, though: a probe that flaps between an answer and none
+            # would otherwise reset the kick's clock on every poll and disarm
+            # the recovery it is part of.
+            came_back = up and self._window_visible is False
             self._window_visible = visible
-            self._paused_since = None if visible else time.perf_counter()
+            self._paused_since = None if up else time.perf_counter()
             self.watchdog.set_paused(
-                None if visible else "the window is not on screen"
+                None if up else "the window is not on screen"
             )
-            if visible:
-                # A window that has just come back has not been unasked for
-                # the time it spent away -- it could not have been drawn. The
-                # clock starts from the moment it could.
+            if came_back:
                 self._frames_at = time.perf_counter()
-                self._kicks = 0
+                self._kicks = self._blank_kicks = 0
             log.info(
                 "render window %s",
-                "is on screen again; resuming" if visible
-                else "is off screen; pausing until it comes back",
+                {
+                    True: "is on screen again; resuming",
+                    False: "is off screen; pausing until it comes back",
+                    None: "will not say whether it is on screen; "
+                          "assuming it is",
+                }[visible],
             )
 
         subwidget = getattr(self.canvas, "_subwidget", None)
         setter = getattr(subwidget, "_set_visible", None)
         if callable(setter):
             try:
-                setter(visible)
+                setter(up)
             except Exception as exc:  # pragma: no cover - backend internals
                 log.debug("could not set the canvas' visibility: %s", exc)
 
@@ -622,6 +691,12 @@ class Application:
         this is the difference, written down by the thread that is allowed to
         ask. The two sizes are printed even when they agree, because their
         agreeing is itself the fact worth having.
+
+        "Cannot say" is a state this reports and not a gap in it: what the
+        window answered last is what goes here, including its having refused
+        to answer. A report that carried the last *definite* answer instead
+        would say "on screen" about a window that had stopped speaking, which
+        is the one fact that would have explained the last freeze.
         """
         if self._polled_at is None:
             return "not polled yet"
@@ -663,7 +738,57 @@ class Application:
             f", last {time.perf_counter() - self._kicked_at:.0f}s ago"
             if self._kicked_at is not None else ""
         )
-        return f"{self._kicks} in a row{last}"
+        blank = (
+            f", {self._blank_kicks} of them drew nothing"
+            if self._blank_kicks else ""
+        )
+        carrying = ", now pacing the session" if self._carrying else ""
+        return f"{self._kicks} in a row{last}{blank}{carrying}"
+
+    def _scheduler(self):
+        """``rendercanvas``' frame scheduler for this canvas, or None.
+
+        The same deliberate reach past the public API that the visibility push
+        is, and for the same reason: what the scheduler believes about this
+        window lives nowhere else, and a report that cannot say whether it was
+        asking for frames cannot say why the session stopped. Read only from
+        here -- the state is *written* through ``_set_visible``, which is the
+        backend's own door.
+
+        Under Qt the canvas that owns it is the inner widget; everywhere else
+        it is the canvas itself. The attribute is name-mangled because it is
+        private to the base class, which is also why it is spelled out rather
+        than reached through a helper that might not exist.
+        """
+        canvas = getattr(self.canvas, "_subwidget", None)
+        if canvas is None:
+            canvas = self.canvas
+        return getattr(canvas, "_BaseRenderCanvas__scheduler", None)
+
+    def _scheduler_summary(self) -> str:
+        """What the scheduler was doing, for a report written from outside it.
+
+        The line this report was missing. "The scheduler stopped asking for
+        frames" is a symptom with three quite different causes -- it was
+        paused, it is waiting for a frame it asked for and was never told
+        about, or it is asking and every frame is being thrown away -- and
+        which one it is decides whether the session was recoverable and by
+        what. Attribute reads only, like everything else the watchdog thread
+        is allowed to touch.
+        """
+        scheduler = self._scheduler()
+        if scheduler is None:
+            return "not reachable"
+        enabled = getattr(scheduler, "_enabled", None)
+        mode = getattr(scheduler, "_mode", "unknown")
+        summary = {True: "asking", False: "paused", None: "cannot say"}.get(
+            enabled, "cannot say"
+        )
+        if getattr(scheduler, "_ready_for_present", None) is not None:
+            summary += ", waiting for a frame it asked for"
+        if getattr(scheduler, "_just_cancelled_a_frame", False):
+            summary += ", last frame cancelled"
+        return f"{summary} ({mode})"
 
     def _kick_the_loop(self, unasked: float, width: int, height: int) -> None:
         """Force a frame the scheduler did not ask for.
@@ -686,6 +811,7 @@ class Application:
             self.canvas.request_draw()
         except Exception as exc:  # pragma: no cover - a canvas without one
             log.debug("could not request a draw: %s", exc)
+        before = self.watchdog.frames
         try:
             force()
         except RuntimeError:
@@ -698,6 +824,14 @@ class Application:
             log.warning("could not force a frame: %s", exc)
             return
 
+        # Whether the frame this just forced actually happened. A canvas can
+        # take a forced draw and quietly throw it away -- it cancels every
+        # frame it is given when it believes it has no size, or that it has
+        # been closed -- and counting that as a frame is how a session that is
+        # drawing nothing at all comes to be described as one being carried at
+        # a frame every few seconds.
+        drawn = self.watchdog.frames > before
+
         # The frame just forced is this poll's own doing, and must not read as
         # the scheduler having come back on the next pass -- otherwise the
         # count below can never reach two, and a session being carried by the
@@ -705,9 +839,14 @@ class Application:
         self._frames_seen = self.watchdog.frames
         self._frames_at = self._kicked_at = time.perf_counter()
         self._kicks += 1
+        if not drawn:
+            self._blank_kicks += 1
         log.warning(
             "no frame was asked for in %.1fs with the window up at %dx%d; "
-            "forced one (%d in a row)", unasked, width, height, self._kicks,
+            "forced one and %s (%d in a row, scheduler %s)",
+            unasked, width, height,
+            "it was drawn" if drawn else "the canvas threw it away",
+            self._kicks, self._scheduler_summary(),
         )
         if self._kicks == KICKS_BEFORE_A_REPORT:
             path = self.watchdog.dump(
@@ -719,6 +858,45 @@ class Application:
                 "coming back; this session is being drawn by the window poll. "
                 "%s", f"wrote {path}" if path else "no report was written",
             )
+        if self._kicks >= KICKS_BEFORE_A_REPORT and drawn:
+            self._start_carrying()
+
+    def _start_carrying(self) -> None:
+        """Pace the session from this poll, since the scheduler will not.
+
+        A forced frame every few seconds keeps the field alive and the panel
+        answering, which was the whole of the claim made for it: a bad way to
+        run and a much better way to stop. What the last report made plain is
+        that it is not a way to *run* at all -- from the outside it is a frozen
+        window, indistinguishable from the freeze it is recovering from, and a
+        session nobody can tell is being carried is a session nobody knows they
+        should save and restart.
+
+        So once the scheduler has been given three chances and taken none of
+        them, the poll stops being a reconciliation and becomes the frame
+        clock: same forced frame, at the interval the frames were asked for.
+        Nothing else changes -- the simulation is paced off real elapsed time
+        and cannot tell the difference -- and the moment a frame arrives that
+        this poll did not force, it hands the pacing straight back.
+        """
+        if self._carrying:
+            return
+        self._carrying = True
+        self._set_poll_interval(1.0 / max(self.options.max_fps, 1))
+        log.error(
+            "pacing the session from the window poll at %d fps until the "
+            "render scheduler comes back", self.options.max_fps,
+        )
+
+    def _stop_carrying(self) -> None:
+        """Hand pacing back to a scheduler that has started asking again."""
+        if not self._carrying:
+            return
+        self._carrying = False
+        self._set_poll_interval(WINDOW_POLL_SECONDS)
+        log.info(
+            "the render scheduler is asking for frames again; standing down"
+        )
 
     # -- hot reload ---------------------------------------------------------
 
@@ -1570,6 +1748,7 @@ class Application:
             "pending resize": self._pending_size,
             "window": safe("window", self._window_summary),
             "window poll": safe("window poll", self._poll_summary),
+            "scheduler": safe("scheduler", self._scheduler_summary),
             "forced frames": safe("forced frames", self._kick_summary),
             "sim_hz": (
                 f"{self.params.sim_hz * self._sim_hz_scale:.1f} "

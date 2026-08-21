@@ -160,10 +160,60 @@ draws and presents on the spot, and telling the scheduler that a frame is done
 is part of that — which is exactly what a scheduler waiting on a frame it was
 never told about is waiting for. One forced frame and it is running again.
 
-When it is not, the session is carried by the poll at a frame every few
-seconds. That is a bad way to run and a much better way to stop: the field
-keeps its state, the panel keeps working, and the user can save and quit rather
-than killing a wedged process. Three forced frames in a row say the scheduler
-is not coming back, and write a report — the loop is alive, so the watchdog
-never would, and the stacks are the only thing that says why it stopped.
+When it is not, three forced frames in a row say the scheduler is not coming
+back, and write a report — the loop is alive, so the watchdog never would, and
+the stacks are the only thing that says why it stopped. From that point the
+poll stops being a reconciliation and becomes the frame clock: it runs at the
+frame interval and forces every frame itself, so a session the scheduler has
+abandoned keeps the rate it was asked for instead of creeping at a frame every
+few seconds. The simulation is paced off elapsed real time and cannot tell the
+difference. The moment a frame arrives that the poll did not force, it hands
+the pacing back.
+
+That last part is not a refinement, it is the second freeze. A frame every few
+seconds was described here as a bad way to run and a much better way to stop —
+the field keeps its state, the panel keeps working, the user can save and quit
+rather than kill a wedged process. What a second report made plain is that from
+the outside it is not a way to *run* at all: a window that moves once every four
+seconds is a frozen window, indistinguishable from the fault it is recovering
+from, and a session nobody can tell is being carried is a session nobody knows
+to restart.
+
+## What "cannot say" means
+
+The poll asks the window three questions and can get three answers to the
+first: on screen, off screen, and no answer at all — a canvas with no window
+behind it, or a window that raised on being asked. The kick has always treated
+the third as "up": a window that will not say whether it is on screen is not a
+window that has said it is off, and refusing to draw into it is how a session
+stops for no reason.
+
+The pause did not. It was pushed only on a definite answer, which left one
+route by which the original fault could survive an unlimited number of polls: a
+canvas paused by a minimise event that never had its counterpart, plus a window
+that has stopped answering, is a session that is never drawn again. The forced
+frame cannot save it — going around the scheduler is the whole point of forcing
+one, and it leaves the pause exactly where it found it — so the session is
+kicked for as long as it is left running and never comes back. That is the
+second freeze, exactly: the report said the window was on screen, the scheduler
+was paused, and every frame in the last four minutes was one the poll had
+forced.
+
+So both answers now follow the same rule. "Cannot say" is pushed as "up", and
+its worst case is one poll's drawing into a window that really was off screen,
+which the next poll that gets an answer undoes. What is not assumed is the rest
+of it: the watchdog is only told the loop is parked on purpose when the window
+actually said so, and the report prints "cannot say" rather than the last
+definite answer — which is the line that would have explained the second freeze
+on sight instead of claiming a window that had stopped speaking was on screen.
+
+Two more things a report of this shape has to carry, both learned the same way.
+What the *scheduler* was doing, since "it stopped asking for frames" has three
+quite different causes — it was paused, it is waiting for a frame it asked for
+and was never told about, or it is asking and the canvas is throwing every
+frame away — and which one it is decides whether the session was recoverable
+and by what. And whether the forced frames were actually drawn: a canvas
+cancels every frame it is given when it believes it has no size or has been
+closed, forced frames included, and a kick that counted itself rather than the
+frame described a session drawing nothing whatever as one being carried.
 
