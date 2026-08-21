@@ -153,6 +153,16 @@ VOLUME_DETAIL_LABELS: list[tuple[str, str, str]] = [
 MACRO_LABELS: list[tuple[str, str, str]] = [
     ("intensity", "Intensity", "How much is happening: density, contrast, colour"),
     ("scale", "Scale", "Feature size, from fine filaments to broad forms"),
+    (
+        "stability",
+        "Stability",
+        "How sturdy the network is.\n"
+        "At the left -- the default -- the filaments keep fusing, unfusing "
+        "and re-forming, and no lasting network settles out. Moving right, "
+        "abandoned strands are resorbed and what remains concentrates into "
+        "a network that forms and holds. Events can still take it apart "
+        "either way.",
+    ),
     ("tempo", "Tempo", "Speed of flow, drift, and colour rotation"),
     ("palette", "Palette", "Where the colour range sits on the hue circle"),
     ("brightness", "Brightness", "Overall level and the background"),

@@ -76,9 +76,10 @@ makes about the defaults.
   network apart and lets it heal. As with step 4, what the tests assert for
   the trail advection is the mechanism and the invariants; its aggregate
   effect did not resolve above run-to-run variance at test resolution — see
-  §4.7. Flux pruning (step 3) is still switched off; the founding respawn it
-  was waiting for exists now, but nothing measured says it has earned being
-  switched on.
+  §4.7. Flux pruning (step 3) is still switched off *by default*; the
+  `stability` macro (§9) now runs it up to gain 3 at the sturdy end of its
+  travel, so it is a character the panel can ask for rather than a default
+  anyone is given.
 - **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is
   untested, since a software adapter offers no way to provoke a device loss.
 

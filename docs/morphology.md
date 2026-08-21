@@ -386,6 +386,13 @@ That makes step 4 the interesting one, and it makes step 3 a component of step 4
 rather than a step in its own right. The mechanism stays in the tree, tested and
 inert, waiting for that.
 
+*(Later:* the mechanism found a different way to earn its keep. The
+"more persistent, not less" result above — a defect against this section's
+churn brief — is exactly what someone asking for a *sturdy* network wants, so
+the `stability` macro (§9) now drives `prune_gain` from this default of 0 up
+to 3 at the top of its travel. The default is unchanged, and everything above
+about why it is not the shipped character still stands.)*
+
 ### What step 4 actually did
 
 Three mechanisms rather than two: anti-fusion and rift events as prescribed,

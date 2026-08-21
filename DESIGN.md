@@ -94,9 +94,10 @@ and the tests — resolves via the table below, and means the file listed agains
   the freeze is still happening.
 
 - **§9 — [docs/parameters.md](docs/parameters.md)**
-  The control surface: eight macros over ~40 primitives, presets, TOML as the
-  hot-reloaded source of truth, every change ramped — and why event rate was
-  split out of intensity.
+  The control surface: nine macros over ~40 primitives, presets, TOML as the
+  hot-reloaded source of truth, every change ramped — why event rate was
+  split out of intensity, and the stability knob that makes §4.7's flux
+  pruning reachable from the panel.
 
 - **§10 — [docs/testing.md](docs/testing.md)**
   What the real QA is: the flash-safety assertion, soak tests, non-repetition
