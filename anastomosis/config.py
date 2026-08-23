@@ -580,6 +580,36 @@ class EventParams:
 
 
 @dataclass
+class AudioParams:
+    """How hard the resonance mode's audio drive leans on the field.
+
+    DESIGN.md §16.4. These scale what the drive does with the features the
+    front end emits (`audio.AudioFeatures`); the *list* of parameters it may
+    touch is `audio.MODULATED_PATHS`, a whitelist that excludes the luminance
+    architecture by construction. Every gain at zero is the identity, which
+    is also what silence produces whatever the gains say -- the two ways the
+    drive can be "off" deliberately meet at the same field.
+
+    The motion gain's ceiling is load-bearing: the top of the resonance tempo
+    curve times (1 + ceiling) must stay inside the 6x envelope the §14.8
+    step 2 sweep certified, which is what
+    test_the_modulated_motion_tops_stay_inside_the_swept_certificate holds it
+    to. A larger ceiling needs `tempo_sweep.py` re-run first.
+    """
+
+    motion_gain: float = 0.9    # bass/level -> flow gains
+    colour_gain: float = 0.8    # treble/level -> chroma activity, c_max
+    material_gain: float = 0.5  # mids -> pigment injection
+    hue_gain: float = 1.0       # flux -> hue rotation rate
+    # An onset must reach this strength before the drive asks the scheduler
+    # for an event, and asks are spaced by at least this many seconds of
+    # *stream* time -- sample count, not wall clock (§3) -- so a busy track
+    # becomes "always inside weather" rather than a queue of refusals.
+    onset_threshold: float = 0.25
+    onset_spacing: float = 5.0
+
+
+@dataclass
 class VolumeParams:
     """The volumetric slab backend -- DESIGN.md §5.1.
 
@@ -1054,6 +1084,7 @@ class Params:
     rhizotron: RhizotronParams = field(default_factory=RhizotronParams)
     homeostat: HomeostatParams = field(default_factory=HomeostatParams)
     events: EventParams = field(default_factory=EventParams)
+    audio: AudioParams = field(default_factory=AudioParams)
     render: RenderParams = field(default_factory=RenderParams)
     safety: SafetyParams = field(default_factory=SafetyParams)
 
@@ -1343,7 +1374,7 @@ def _palette_hue_anchor(v: float) -> float:
 # one table serving both, every value a mode moves is one the ramp smooths, and
 # no geometry follows it -- which is why, unlike `backend`, switching mode is a
 # live transition on the running field rather than a reset.
-MODES = ("regulation", "activation")
+MODES = ("regulation", "activation", "resonance")
 DEFAULT_MODE = "regulation"
 
 # The activation table. Same macros, same meanings, same paths in the
@@ -1502,9 +1533,22 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
     ],
 }
 
+# The resonance table (DESIGN.md §16). Activation's tuning verbatim, and a
+# *copy* on purpose rather than an alias: what makes resonance a different
+# mode is not where the knobs reach but where the variation comes from -- the
+# audio drive rides on top of what this table resolves -- and the copy is the
+# seam §16.8 step 5 will tune through when the mode's endpoints get their own
+# judgement by eyes. Until then, silence under resonance *is* activation, by
+# construction, which is the §16.1 degradation contract. (Deep-copied so a
+# future retune of one table cannot silently move the other.)
+RESONANCE_CURVES: dict[str, list[tuple[str, float, float, float]]] = copy.deepcopy(
+    ACTIVATION_CURVES
+)
+
 MODE_CURVES: dict[str, dict[str, list[tuple[str, float, float, float]]]] = {
     "regulation": MACRO_CURVES,
     "activation": ACTIVATION_CURVES,
+    "resonance": RESONANCE_CURVES,
 }
 
 
@@ -1525,6 +1569,23 @@ def normalise_mode(name: object) -> str:
             name, DEFAULT_MODE, ", ".join(MODES),
         )
     return DEFAULT_MODE
+
+
+def active_mode(config: "Config") -> str:
+    """The mode ``config`` actually resolves through.
+
+    Usually ``config.mode`` normalised, with one exception carried over from
+    §15: the rhizotron has one tuning, so under that backend the macros
+    resolve through regulation whatever the mode key says -- the key keeps
+    its value so switching backends away again restores the fungal tuning.
+    Split out of :meth:`Config.resolve` because the application needs the
+    same answer for a different question: the audio drive (§16) runs exactly
+    when this returns ``"resonance"``, and a drive keyed off the raw mode
+    string would keep listening under a backend that cannot hear.
+    """
+    if normalise_backend(config.backend) == "rhizotron":
+        return "regulation"
+    return normalise_mode(config.mode)
 
 
 # --------------------------------------------------------------------------
@@ -1554,6 +1615,17 @@ SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
     "events.max_radius_frac": (0.0, 0.250),
     "sim_hz": (4.0, 60.0),
     "max_fps": (5, 60),
+    # The audio drive's leverage (DESIGN.md §16.4). The motion ceiling is set
+    # by arithmetic, not taste: resonance's tempo top times (1 + 2.0) must
+    # stay inside the 6x motion envelope §14.8 step 2 swept, and at the
+    # current tops it lands at 12.0 against the certificate's 12.6. The
+    # others bound multiplicative levers that have no absolute ceiling of
+    # their own (chroma activity, injection, hue rate); everything they move
+    # is still downstream-limited as ever.
+    "audio.motion_gain": (0.0, 2.0),
+    "audio.colour_gain": (0.0, 2.0),
+    "audio.material_gain": (0.0, 2.0),
+    "audio.hue_gain": (0.0, 2.0),
 }
 
 # The lightness slew budget per *second* -- the quantity the WCAG arithmetic
@@ -1736,6 +1808,18 @@ class Config:
     switching mode is a live, ramped transition on the running field, exactly
     like a preset switch, and a field checkpointed in one mode resumes cleanly
     into the other.
+
+    ``filaments`` is the resonance mode's option to not *draw* the network
+    (DESIGN.md §16): the agents keep running -- the reaction still nucleates
+    on their trail, so the picture keeps its structural story -- but the
+    trail's direct rendered contribution fades to nothing and the medium
+    alone carries the image. Only resonance reads it; the fungal modes'
+    identity is the network, and the rhizotron has no filaments to hide.
+    Ramped like everything else, so toggling it is a fade, never a cut.
+
+    ``audio_device`` names the capture device the resonance mode should
+    listen to, when the §16.2 heuristic picks the wrong one -- a substring of
+    the device's name, or empty to let the heuristic choose.
     """
 
     macros: Macros = field(default_factory=Macros)
@@ -1744,22 +1828,15 @@ class Config:
     backend: str = DEFAULT_BACKEND
     volume_detail: str = DEFAULT_VOLUME_DETAIL
     mode: str = DEFAULT_MODE
+    filaments: bool = True
+    audio_device: str = ""
 
     def resolve(self) -> Params:
         params = Params()
 
-        # The rhizotron has one tuning (DESIGN.md §15): the root world's
-        # whole character is the calm half of the
-        # brief, and a second table nobody has judged would be a divergence
-        # waiting to mislead. The mode key keeps its value -- switching
-        # backends away again restores whichever tuning the fungal field was
-        # in -- but under this backend the macros resolve through regulation,
-        # always.
-        mode = self.mode
-        if normalise_backend(self.backend) == "rhizotron":
-            mode = "regulation"
+        mode = active_mode(self)
 
-        for macro_name, curves in MODE_CURVES[normalise_mode(mode)].items():
+        for macro_name, curves in MODE_CURVES[mode].items():
             value = getattr(self.macros, macro_name)
             value = min(1.0, max(0.0, float(value)))
             for path, lo, hi, gamma in curves:
@@ -1770,6 +1847,18 @@ class Config:
         params.render.hue_anchor = _palette_hue_anchor(
             min(1.0, max(0.0, self.macros.palette))
         )
+
+        # The resonance mode's filament option (DESIGN.md §16). The seam is
+        # the pigment composition: `density_from_trail` is the network's
+        # *direct* rendered contribution, separate from the reaction's, so
+        # zeroing it hides the filaments while everything they do to the
+        # simulation -- the trail-fed nucleation that keeps the visible
+        # reaction structured, the seeding of §4.5 -- carries on underneath.
+        # Applied like a macro, before the overrides, so a hand-pinned value
+        # still wins; ramped downstream, so the network fades rather than
+        # cuts.
+        if mode == "resonance" and not self.filaments:
+            params.pigment.density_from_trail = 0.0
 
         # The named slab size, which is a choice rather than a curve. Applied
         # after the macros and before the overrides, so that it beats nothing
@@ -1862,6 +1951,13 @@ def validate(params: Params) -> Params:
     agents = params.agents
     agents.sense_cap = 0.0 if agents.sense_cap <= 0.0 else min(
         agents.sense_cap, 100.0)
+    # The audio drive's event door. A floor under the spacing keeps a dense
+    # onset stream from turning the scheduler's refusal path into a per-frame
+    # log; the threshold floor keeps numeric dust from counting as onsets.
+    audio = params.audio
+    audio.onset_threshold = min(max(audio.onset_threshold, 0.05), 1.0)
+    audio.onset_spacing = min(max(audio.onset_spacing, 1.0), 600.0)
+
     # The viewpoint's drift has to stay a drift. The flash bound does not
     # depend on this -- the limiter is per-pixel and holds whatever the camera
     # does -- but a time constant of a second or two would make the whole image
@@ -2135,9 +2231,16 @@ _HEADER = """\
 # keeps the size it grew at until the simulation is reset.
 #
 # `mode` is which tuning the knobs move through: "regulation" (calm,
-# the original) or "activation" (more motion and colour, for sensory seeking
-# rather than settling). Not structural: switching it is a smooth transition
-# on the field you already have. The flash-safety bound is identical in both.
+# the original), "activation" (more motion and colour, for sensory seeking
+# rather than settling), or "resonance" (activation's tuning, driven by
+# whatever audio the machine is playing -- a music visualizer that dances
+# and never strobes). Not structural: switching it is a smooth transition
+# on the field you already have. The flash-safety bound is identical in all.
+#
+# `filaments` (resonance only): false hides the network from the image while
+# the organism keeps running underneath. `audio_device` names the capture
+# device by a substring of its name; empty lets the loopback-preferring
+# heuristic choose.
 #
 # [macros] are the normal interface -- nine knobs, all 0..1.
 # [overrides] pins individual primitive parameters by dotted path, e.g.
@@ -2226,6 +2329,10 @@ def load(path: str | Path) -> Config:
         # migration note the way the split-out macros did: every such file was
         # written for the regulation mode, which is what the default is.
         mode=normalise_mode(data.get("mode", DEFAULT_MODE)),
+        # §16's two settings, with the same posture: absence means the
+        # defaults -- the network drawn, the capture heuristic choosing.
+        filaments=bool(data.get("filaments", True)),
+        audio_device=str(data.get("audio_device", "")),
     )
 
 
@@ -2244,6 +2351,8 @@ def save(config: Config, path: str | Path) -> None:
     doc.add("backend", normalise_backend(config.backend))
     doc.add("volume_detail", normalise_volume_detail(config.volume_detail))
     doc.add("mode", normalise_mode(config.mode))
+    doc.add("filaments", bool(config.filaments))
+    doc.add("audio_device", str(config.audio_device))
 
     macros = tomlkit.table()
     for f in fields(config.macros):

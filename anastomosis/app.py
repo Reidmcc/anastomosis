@@ -40,6 +40,7 @@ from pathlib import Path
 
 import wgpu
 
+from . import audio as audio_module
 from . import checkpoint as checkpoint_module
 from . import config as config_module
 from . import device as device_module
@@ -150,6 +151,13 @@ class AppOptions:
 
 
 class Application:
+    # Class-level so a partially built Application -- tests probe single
+    # methods on objects made with ``__new__`` -- passes through
+    # `_sync_audio` (reached from any `_retarget`) as a no-op instead of
+    # tripping on attributes ``__init__`` has not set yet.
+    audio: audio_module.AudioDrive | None = None
+    _audio_started = False
+
     def __init__(self, options: AppOptions) -> None:
         self.options = options
         self.config_path = options.config_path or config_module.default_config_path()
@@ -165,6 +173,15 @@ class Application:
 
         self.backend = config_module.normalise_backend(
             options.backend or self.config.backend)
+
+        # The resonance mode's ears (DESIGN.md §16). Built unconditionally --
+        # like the watchdog, so nothing downstream needs guarding -- but
+        # capture only opens while that mode is active; `_sync_audio` is what
+        # starts and stops it as the mode comes and goes.
+        self.audio = audio_module.AudioDrive(
+            device=self.config.audio_device or None)
+        self._audio_started = False
+        self._sync_audio()
         # One saved field per backend, so switching does not destroy the one
         # switched away from -- see `checkpoint.default_checkpoint_path`.
         self.checkpoint_path = (
@@ -1009,7 +1026,51 @@ class Application:
         resolved = self.config.resolve()
         resolved.max_fps = min(resolved.max_fps, self.options.max_fps)
         self.ramp.set_target(resolved)
+        self._sync_audio()
         return resolved
+
+    def set_filaments(self, on: bool) -> bool:
+        """Show or hide the filament network under resonance. DESIGN.md §16.
+
+        Called by the control panel. The simulation is untouched -- the
+        agents keep running and the reaction keeps nucleating on their trail
+        -- and only the network's rendered contribution goes, through the
+        same ramp as everything else, so the change is a fade over seconds
+        rather than a cut. Saved when the user saves, like the mode.
+        """
+        on = bool(on)
+        if self.config.filaments == on:
+            return False
+        self.config.filaments = on
+        self._retarget()
+        log.info("filaments %s", "shown" if on else "hidden")
+        return True
+
+    def _sync_audio(self) -> None:
+        """Open or close the capture stream to match the active mode.
+
+        The drive runs exactly while resonance is what the engine is showing:
+        not under the rhizotron (which resolves through regulation whatever
+        the mode key says -- `config.active_mode`), and not in the other two
+        modes. `_audio_started` tracks the *intent* rather than whether the
+        open succeeded, so an unavailable backend is a status line the panel
+        shows, polled zeros, and no retry storm on every slider move --
+        leaving the mode and coming back is the retry.
+        """
+        if self.audio is None:
+            return  # not built yet; __init__ syncs once it is
+        want = (
+            config_module.normalise_mode(self.config.mode) == "resonance"
+            and config_module.normalise_backend(self.backend) != "rhizotron"
+        )
+        if want and not self._audio_started:
+            self._audio_started = True
+            self.audio.start()
+            log.info("audio drive: %s", self.audio.describe())
+        elif not want and self._audio_started:
+            self._audio_started = False
+            self.audio.stop()
+            log.info("audio drive stopped with the mode")
 
     def trigger_event(self, kind: str) -> bool:
         """Start one event of `kind` now. Called by the control panel.
@@ -1402,6 +1463,9 @@ class Application:
         self._frame_times.clear()
         self._last_time = time.perf_counter()
         self._last_checkpoint = time.perf_counter()
+        # The rhizotron cannot hear (§15 has one tuning), so a backend switch
+        # is one of the two edges the capture stream follows.
+        self._sync_audio()
         log.info("depth backend is now %s", wanted)
         return True
 
@@ -1519,6 +1583,8 @@ class Application:
         self.watchdog.mark(diagnostics_module.SHUTDOWN)
         self.save_checkpoint(blocking=True)
         self._saver.join()
+        if self.audio is not None:
+            self.audio.stop()
         self._stop_window_poll()
         self._stop_hot_reload()
         self._close_panel()
@@ -1630,7 +1696,32 @@ class Application:
         self.params = self.ramp.update(frame_dt)
         self._follow_canvas_size(now)
 
-        sim_hz = max(self.params.sim_hz * self._sim_hz_scale, 2.0)
+        # The audio drive (DESIGN.md §16.4): features in, an effective
+        # parameter set out. Applied after the ramp -- the drive is allowed
+        # to be quicker than the 8 s ramp, and its own speed limit is the
+        # front end's followers -- and only to this frame's local view, so
+        # the ramp's state is never written through. With the drive off, or
+        # the room silent, `modulate` is the identity and `params` *is*
+        # `self.params`.
+        params = self.params
+        if self._audio_started:
+            features = self.audio.poll()
+            params = audio_module.modulate(params, features)
+            # The second door: an onset may ask for an event, through the
+            # same `trigger` the panel's buttons use -- same envelopes, same
+            # caps, no privileged path. Checked against the cap here first so
+            # a busy track reads as a full sky, not a log of refusals.
+            kind = self.audio.event_request(params.audio)
+            if (
+                kind is not None
+                and len(self.scheduler.active) < params.events.max_concurrent
+            ):
+                event = self.scheduler.trigger(kind, params.events)
+                if event is not None:
+                    log.debug("onset -> %s event at (%.2f, %.2f)",
+                              event.kind, event.x, event.y)
+
+        sim_hz = max(params.sim_hz * self._sim_hz_scale, 2.0)
         tick_interval = 1.0 / sim_hz
 
         self._accumulator += frame_dt
@@ -1643,9 +1734,9 @@ class Application:
             # are each merely slow should not add up to something that reads
             # as one tick that never returned.
             self.watchdog.mark("tick")
-            active = self.scheduler.update(tick_interval, self.params.events)
+            active = self.scheduler.update(tick_interval, params.events)
             rows, _ = self.scheduler.pack(8)
-            self.engine.tick(self.params, rows)
+            self.engine.tick(params, rows)
             self._accumulator -= tick_interval
             ticks += 1
         if ticks == max_ticks:
@@ -1660,7 +1751,7 @@ class Application:
         texture = self.present_context.get_current_texture()
         self.watchdog.mark("render")
         self.engine.render(
-            self.params,
+            params,
             frac=frac,
             target_view=texture.create_view(),
             target_format=self.target_format,
@@ -1711,6 +1802,19 @@ class Application:
             1000.0 * (sum(window) / len(window)),
             self.scheduler.describe(),
         )
+        if self._audio_started:
+            # One line, only while the drive is meant to be listening: a dead
+            # stream in a running resonance session should be in the log, not
+            # a mystery of a suddenly still field (DESIGN.md §16.6).
+            features = self.audio.features
+            log.info(
+                "audio: %s  level=%.2f bass=%.2f mid=%.2f treble=%.2f "
+                "onsets=%d%s",
+                self.audio.describe(),
+                features.level, features.bass, features.mid, features.treble,
+                self.audio.extractor.onsets,
+                " (silent)" if features.silent else "",
+            )
 
     # -- diagnostics --------------------------------------------------------
 
@@ -1766,6 +1870,14 @@ class Application:
                 f"{time.perf_counter() - self._last_checkpoint:.0f}s"
             ),
             "events": safe("events", self.scheduler.describe),
+            # The drive's one status line (DESIGN.md §16.6(5)): a resonance
+            # session whose stream died should say so in a stall report
+            # rather than present as a mysteriously still field. An attribute
+            # read plus string formatting, within this method's constraints.
+            "audio": (
+                safe("audio", self.audio.describe)
+                if self._audio_started else "off"
+            ),
             "preset": self.config.preset_name,
             "config": str(self.config_path),
             "stopping": self._stop_requested,

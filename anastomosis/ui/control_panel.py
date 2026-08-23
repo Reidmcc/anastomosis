@@ -93,6 +93,15 @@ MODE_LABELS: list[tuple[str, str, str]] = [
         "colour, more happening. The same flash-safety bound holds in both "
         "modes; nothing here can flash.",
     ),
+    (
+        "resonance",
+        "Resonance",
+        "Activation's tuning, driven by whatever this machine is playing "
+        "(DESIGN.md §16): the current surges with the bass, colour "
+        "saturates with the highs, and onsets bloom events. Silence is the "
+        "plain instrument. The same flash-safety bound holds -- the field "
+        "dances; it cannot strobe.",
+    ),
 ]
 
 # The two depth backends (DESIGN.md §5), with the difference stated in terms of
@@ -306,7 +315,8 @@ class ControlPanel(QtWidgets.QWidget):
         switch is ramped, reversible, and keeps the field on screen.
         """
         box = QtWidgets.QGroupBox("Mode")
-        row = QtWidgets.QHBoxLayout(box)
+        column = QtWidgets.QVBoxLayout(box)
+        row = QtWidgets.QHBoxLayout()
         self.mode_combo = QtWidgets.QComboBox()
         for name, label, tip in MODE_LABELS:
             self.mode_combo.addItem(label, name)
@@ -314,6 +324,26 @@ class ControlPanel(QtWidgets.QWidget):
                 self.mode_combo.count() - 1, tip, QtCore.Qt.ToolTipRole)
         self.mode_combo.activated.connect(self._on_mode)
         row.addWidget(self.mode_combo, 1)
+        column.addLayout(row)
+
+        # Resonance's two extras (DESIGN.md §16), visible only under that
+        # mode: the option to not draw the network, and one honest line about
+        # what the drive is actually listening to -- which is where "why is
+        # nothing moving with the music" gets its answer.
+        self.filaments_check = QtWidgets.QCheckBox("Draw the filament network")
+        self.filaments_check.setToolTip(
+            "Untick and the medium carries the image alone: the organism "
+            "keeps running underneath -- the picture keeps its structure, "
+            "because the reaction still grows on the invisible network -- "
+            "and the change is a fade, never a cut."
+        )
+        self.filaments_check.setChecked(bool(self.app.config.filaments))
+        self.filaments_check.toggled.connect(self._on_filaments)
+        column.addWidget(self.filaments_check)
+        self.audio_status = QtWidgets.QLabel("")
+        self.audio_status.setWordWrap(True)
+        column.addWidget(self.audio_status)
+        self._sync_resonance_row()
         return box
 
     def _build_presets(self) -> QtWidgets.QWidget:
@@ -689,6 +719,26 @@ class ControlPanel(QtWidgets.QWidget):
         )
         self._updating = was
 
+    def _sync_resonance_row(self) -> None:
+        """Show resonance's extras exactly while resonance is showing.
+
+        Hidden rather than greyed under the other modes -- the filament
+        option and the capture status are not settings those modes have --
+        and hidden under the rhizotron too, which resolves through
+        regulation whatever the mode key says (DESIGN.md §15, §16).
+        """
+        visible = (
+            self._mode() == "resonance" and self.app.backend != "rhizotron"
+        )
+        self.filaments_check.setVisible(visible)
+        self.audio_status.setVisible(visible)
+        if not visible:
+            return
+        was_updating, self._updating = self._updating, True
+        self.filaments_check.setChecked(bool(self.app.config.filaments))
+        self._updating = was_updating
+        self.audio_status.setText(self.app.audio.describe())
+
     def _sync_mode_enabled(self) -> None:
         """The Mode selector belongs to the fungal field.
 
@@ -707,6 +757,9 @@ class ControlPanel(QtWidgets.QWidget):
             )
         else:
             self.mode_combo.setToolTip("")
+        # The resonance extras follow the same facts (mode and backend), and
+        # this is called from every path either changes.
+        self._sync_resonance_row()
 
     # -- the slab's thickness ----------------------------------------------
 
@@ -839,10 +892,17 @@ class ControlPanel(QtWidgets.QWidget):
         # the readouts must be re-asked, and the preset list belongs to the
         # new mode.
         self._sync_presets()
+        self._sync_resonance_row()
         for name, slider in self.sliders.items():
             self.values[name].setText(
                 self._format_macro(name, slider.value() / SLIDER_STEPS)
             )
+
+    def _on_filaments(self, checked: bool) -> None:
+        """Resonance's filament option (DESIGN.md §16): a ramped fade."""
+        if self._updating:
+            return
+        self.app.set_filaments(bool(checked))
 
     def _on_preset(self) -> None:
         name = self.preset_combo.currentText()
@@ -1015,6 +1075,11 @@ class ControlPanel(QtWidgets.QWidget):
         self._note_expires = 0.0
 
     def _refresh_status(self) -> None:
+        # The capture status is app state rather than engine state, so it
+        # refreshes ahead of the early return below -- a resonance session
+        # whose stream died should say so even while no engine is up.
+        if self.audio_status.isVisible():
+            self.audio_status.setText(self.app.audio.describe())
         engine = self.app.engine
         if engine is None:
             return

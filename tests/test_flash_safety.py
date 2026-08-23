@@ -398,3 +398,59 @@ def test_the_two_ceilings_are_jointly_safe_at_any_frame_rate():
         if fps == 30:
             assert resolved.safety.max_luma_delta == pytest.approx(
                 config.SAFETY_CEILINGS["safety.max_luma_delta"][1])
+
+
+def test_the_audio_drive_cannot_defeat_the_bound(gpu_device, offscreen_target):
+    """Slamming the resonance drive's whole reach must not defeat the bound.
+
+    DESIGN.md §16.6(1): adversarial audio is adversarial parameter movement,
+    and this is the standing adversarial pattern aimed at the new input. The
+    application never steps any of this -- features arrive through the §16.3
+    followers and the filament option through the ramp -- but the
+    shader-level guarantee must not depend on that, so each frame alternates,
+    un-ramped, between the two furthest states the drive can produce: the
+    plain resolved parameters, and `modulate` under full-scale features with
+    every audio gain at its SAFETY_CEILINGS bound -- with the filament
+    network's rendered contribution stepped between shown and hidden in the
+    same frame, which is strictly more movement than the ramped fade the
+    toggle actually gets.
+    """
+    from anastomosis import audio as audio_module
+
+    params = config.Config(mode="resonance").resolve()
+    params.render.layers = 1
+    params.flow.psi_gain = 0.0
+    params.flow.field_gain = 0.0
+
+    base = config.Config(mode="resonance").resolve()
+    for path in ("audio.motion_gain", "audio.colour_gain",
+                 "audio.material_gain", "audio.hue_gain"):
+        config.set_path(base, path, config.SAFETY_CEILINGS[path][1])
+    loud = audio_module.AudioFeatures(
+        level=1.0, bass=1.0, mid=1.0, treble=1.0, flux=1.0, onset=1.0,
+        silent=False)
+    ends = [audio_module.modulate(base, loud), base]
+    trail_shown = config.PigmentParams().density_from_trail
+
+    def mutate(index, p):
+        source = ends[index % 2]
+        for path in audio_module.MODULATED_PATHS:
+            config.set_path(p, path, config.get_path(source, path))
+        # The filament option's seam, stepped rather than faded.
+        p.pigment.density_from_trail = 0.0 if index % 2 else trail_shown
+        # Zero flow keeps reprojection the identity, so the per-pixel bound
+        # stays exact -- the same isolation as the adversarial test above.
+        p.flow.psi_gain = 0.0
+        p.flow.field_gain = 0.0
+
+    engine = _make_engine(gpu_device, params)
+    target, fmt = offscreen_target(WIDTH, HEIGHT)
+    frames = _capture(engine, params, target, fmt, 40, mutate=mutate)
+
+    deltas = np.abs(np.diff(frames, axis=0))
+    limit = params.safety.max_luma_delta + F16_TOLERANCE
+    worst = float(deltas.max())
+    assert worst <= limit, (
+        f"stepping the audio drive's reach produced a lightness step of "
+        f"{worst:.5f}, above the limit {limit:.5f}"
+    )

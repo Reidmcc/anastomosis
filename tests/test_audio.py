@@ -14,12 +14,29 @@ status line, never an exception.
 
 from __future__ import annotations
 
+import dataclasses
 import types
 
 import numpy as np
 import pytest
 
-from anastomosis import audio
+from anastomosis import audio, config, events
+
+
+def _float_paths(obj, prefix: str = ""):
+    """Every numeric leaf of a Params tree, as dotted paths."""
+    for f in dataclasses.fields(obj):
+        value = getattr(obj, f.name)
+        path = f"{prefix}{f.name}"
+        if dataclasses.is_dataclass(value):
+            yield from _float_paths(value, f"{path}.")
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            yield path
+
+
+LOUD = audio.AudioFeatures(
+    level=1.0, bass=1.0, mid=1.0, treble=1.0, flux=1.0, onset=1.0, silent=False
+)
 
 
 def _sine(freq: float, seconds: float, amplitude: float = 0.5,
@@ -363,3 +380,136 @@ def test_a_dead_stream_becomes_a_status_line_on_poll():
     sd.created[0].active = False
     drive.poll()
     assert "on its own" in drive.describe()
+
+
+# ---------------------------------------------------------------------------
+# Modulation -- §16.4's first door, and the three properties it promises
+# ---------------------------------------------------------------------------
+
+
+def test_modulation_is_the_identity_at_silence():
+    """§16.1: the drive is an overlay that is identity at zero, so silence
+    under resonance is the plain instrument -- the same object, untouched."""
+    params = config.Config(mode="resonance").resolve()
+    assert audio.modulate(params, audio.AudioFeatures()) is params
+
+
+def test_modulation_touches_only_the_whitelist():
+    """The whitelist is the reach: under the loudest possible features, the
+    diff between input and output parameters is MODULATED_PATHS exactly --
+    nothing more (a hidden lever) and nothing less (a dead entry)."""
+    params = config.Config(mode="resonance").resolve()
+    modulated = audio.modulate(params, LOUD)
+    moved = {
+        path
+        for path in _float_paths(params)
+        if config.get_path(params, path) != config.get_path(modulated, path)
+    }
+    assert moved == set(audio.MODULATED_PATHS)
+    # And the input was genuinely not written through (the ramp's state is
+    # what callers hand in).
+    assert params == config.Config(mode="resonance").resolve()
+
+
+def test_the_whitelist_excludes_the_luminance_architecture():
+    """§16.4's hard rule: audio buys motion, chroma and incident -- never
+    luminance, never the safety stage, never the agents. The luminance set is
+    collected from the macro tables rather than written out by hand, so a
+    path added to the brightness or glow macros later is covered without
+    anyone remembering this test exists."""
+    luminance = {
+        path
+        for table in config.MODE_CURVES.values()
+        for macro in ("brightness", "filament_glow")
+        for path, *_ in table[macro]
+    }
+    forbidden = set(audio.MODULATED_PATHS) & luminance
+    assert not forbidden, f"audio modulates luminance paths: {sorted(forbidden)}"
+    for path in audio.MODULATED_PATHS:
+        assert not path.startswith("safety."), path
+        assert not path.startswith("agents."), path
+        assert not path.startswith("events."), path
+
+
+def test_modulated_chroma_never_passes_its_ceiling():
+    """c_max approaches its SAFETY_CEILINGS bound and never crosses it, even
+    from the activation-top starting point with the colour gain at its own
+    ceiling."""
+    cfg = config.Config(
+        mode="resonance",
+        macros=config.Macros(intensity=1.0),
+        overrides={"audio.colour_gain": 100.0},  # clamped to its ceiling
+    )
+    params = cfg.resolve()
+    ceiling = config.SAFETY_CEILINGS["render.c_max"][1]
+    assert params.audio.colour_gain == config.SAFETY_CEILINGS["audio.colour_gain"][1]
+    modulated = audio.modulate(params, LOUD)
+    assert modulated.render.c_max <= ceiling + 1e-9
+    assert modulated.render.c_max > params.render.c_max
+
+
+def test_the_modulated_motion_tops_stay_inside_the_swept_certificate():
+    """§16.6(2): curve top x (1 + motion ceiling) must stay inside the 6x
+    envelope the §14.8 step 2 sweep certified. A retune of the resonance
+    tempo tops or a raised gain ceiling fails here until tempo_sweep.py is
+    re-run and the certificate extended."""
+    reg = {p: hi for p, _lo, hi, _g in config.MACRO_CURVES["tempo"]}
+    res = {p: hi for p, _lo, hi, _g in config.RESONANCE_CURVES["tempo"]}
+    ceiling = config.SAFETY_CEILINGS["audio.motion_gain"][1]
+    for path in ("flow.psi_gain", "flow.field_gain"):
+        worst = res[path] * (1.0 + ceiling)
+        assert worst <= 6.0 * reg[path] + 1e-9, (
+            f"{path}: modulated top {worst:.2f} exceeds the swept "
+            f"{6.0 * reg[path]:.2f}"
+        )
+
+
+def test_modulation_survives_gains_at_their_ceilings_with_hostile_features():
+    """Every output is finite whatever the gains and features say."""
+    cfg = config.Config(mode="resonance", overrides={
+        "audio.motion_gain": 2.0, "audio.colour_gain": 2.0,
+        "audio.material_gain": 2.0, "audio.hue_gain": 2.0,
+    })
+    params = cfg.resolve()
+    modulated = audio.modulate(params, LOUD)
+    for path in audio.MODULATED_PATHS:
+        value = config.get_path(modulated, path)
+        assert np.isfinite(value) and value >= 0.0, path
+    assert modulated.pigment.inject_rate <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# The event door -- §16.4's second, drive-side half
+# ---------------------------------------------------------------------------
+
+
+def test_onset_event_kinds_are_real_and_constructive():
+    """A beat is never a dieback: the kinds the drive may ask for exist in
+    the scheduler's table and exclude the destructive ones."""
+    assert set(audio.ONSET_EVENT_KINDS) <= set(events.EVENT_KINDS)
+    assert "dieback" not in audio.ONSET_EVENT_KINDS
+    assert "rift" not in audio.ONSET_EVENT_KINDS
+
+
+def test_event_requests_are_spaced_in_stream_time_and_typed_by_band():
+    """One ask per onset_spacing seconds of *stream* time -- sample count,
+    not wall clock -- and the kind follows the band carrying the moment."""
+    rate = audio.SAMPLE_RATE
+    drive = audio.AudioDrive()
+    gains = config.AudioParams(onset_threshold=0.05, onset_spacing=2.0)
+
+    # A bass hit out of silence: one ask, of the structural kind.
+    drive.extractor.push(np.zeros(rate, np.float32))
+    drive.extractor.push(_sine(60.0, 0.4, amplitude=0.9, rate=rate))
+    assert drive.event_request(gains) == "bloom"
+    # The onset envelope is still up, but the spacing gate holds.
+    assert drive.event_request(gains) is None
+
+    # Two stream-seconds later, a treble hit asks again, recoloured.
+    drive.extractor.push(_sine(60.0, 2.1, amplitude=0.05, rate=rate))
+    drive.extractor.push(_sine(6000.0, 0.4, amplitude=0.9, rate=rate))
+    assert drive.event_request(gains) == "tint"
+
+    # No onset, no ask, however long the stream runs.
+    drive.extractor.push(_sine(6000.0, 3.0, amplitude=0.9, rate=rate))
+    assert drive.event_request(gains) is None

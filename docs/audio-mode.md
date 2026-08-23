@@ -78,6 +78,22 @@ responds as an organism, on its own timescale. That seam is what keeps this
 anastomosis-with-music rather than a spectrum display wearing filaments: the
 music moves the weather; the network lives in the weather.
 
+The same seam supports an option the original proposal did not carry and the
+request, on reflection, wanted first: **not drawing the network at all**
+(`filaments = false`, resonance only — a checkbox beside the Mode selector).
+The right mechanism fell out of §4.7's own rendering work: the pigment's
+density is composed of two measured contributions, the reaction's
+(`density_from_v`) and the trail's (`density_from_trail`), so zeroing the
+second removes the filaments from the *image* while every simulation-side
+thing they do — the trail-fed nucleation that keeps the visible reaction
+structured, the §4.5 seeding — carries on underneath. That understructure is
+also why the option is safe against §4.7's dot-lattice hazard: the reaction
+still grows preferentially on the invisible network, so the filament-less
+picture is reaction texture organised by a living scaffold and stirred by
+the audio-driven flow, not free-standing Gray–Scott spots. The toggle rides
+the ramp, so it is a fade over seconds, never a cut; an explicit
+`pigment.density_from_trail` override still beats it, like any macro.
+
 ### 16.2 Getting the audio — the platform question answered honestly
 
 "Whatever the computer is playing" is a loopback capture, and the three
@@ -346,31 +362,36 @@ downstream of everything, modulation included. The honest risks:
 Each step lands something usable alone; the first is deliberately invisible,
 exactly as activation's was:
 
-1. **The audio front end.** `audio.py`: device discovery with the loopback
+1. ~~**The audio front end.** `audio.py`: device discovery with the loopback
    preference of §16.2, capture behind the optional `[audio]` extra with
    every degradation path of §16.2(3), and the feature extractor of §16.3 —
    deterministic in the sample stream, testable headless against
    synthesised signals, no engine wiring. Tests: band separation, AGC
    convergence, onset firing and refractory, silence gating, hostile-input
-   boundedness, stream-determinism, and the no-library degradation path.
+   boundedness, stream-determinism, and the no-library degradation path.~~
+   **Built**; see below.
 2. **The two load-bearing measurements, on real hardware** (the development
    environment has neither GPU nor sound): the platform capture inventory —
    which of §16.2's routes actually opens on each machine, and whether
    Windows needs the `soundcard` backend — and the end-to-end latency of
    §16.5's budget, hop to visible surge, measured rather than summed.
-3. **Mode plumbing.** `resonance` in `MODES` with its table a copy of
+   *Still open — steps 3 and 4 were built ahead of it, with the certificate
+   arithmetic standing in for what it can (see the step 4 record) and the
+   capture-side automatic reopen still parked here with the hardware.*
+3. ~~**Mode plumbing.** `resonance` in `MODES` with its table a copy of
    activation's, panel selector entry plus the drive's status line, preset
-   mode-tagging, the three-way switch-slam test. No audible effect on the
-   image yet beyond what the table copy implies (none).
-4. **The modulation layer and the event door.** `modulate()` over the
-   whitelist with clamps re-applied, onset → `trigger` with the placement
-   bias, the silence-identity test (features at zero ⇒ bit-identical
-   params), the feature-slam flash test, the whitelist/luminance
-   intersection test, and the homeostat lean measurement of §16.6(4).
+   mode-tagging, the three-way switch-slam test.~~ **Built**, together with
+   the filament option of §16.1; see below.
+4. ~~**The modulation layer and the event door.** `modulate()` over the
+   whitelist with clamps re-applied, onset → `trigger`, the
+   silence-identity test (features at zero ⇒ bit-identical params), the
+   feature-slam flash test, the whitelist/luminance intersection test.~~
+   **Built**; the placement bias and the homeostat lean measurement of
+   §16.6(4) moved to step 5, where the tuning they inform lives. See below.
 5. **Endpoint tuning and presets, by eyes** (§13's standing rule): the
-   modulation gains, the onset threshold's musical feel, and the first
-   resonance presets. The README section, including §16.5's sentence about
-   what this visualizer will never be.
+   modulation gains, the onset threshold's musical feel, the onset placement
+   bias of §16.4(2), the homeostat lean measurement of §16.6(4), and more
+   resonance presets beside the starter (`pulse`, shipped in step 3).
 6. **Bands into depth** (§16.4(3)), behind gains that default to the flat
    coupling, judged on real hardware; the volumetric variant if the layered
    one earns it.
@@ -405,3 +426,73 @@ deliberately *not* in step 1: it needs wall-clock-free backoff (poll-count
 based) and a real dead device to test against, so it belongs with step 2's
 hardware pass. Until then a dead stream is a visible status line and a
 silent, breathing field — the degradation §16.2 requires.
+
+### What step 3 actually did
+
+The plumbing is as prescribed, and rode §14's rails almost without
+incident: `RESONANCE_CURVES` is a deep copy of activation's table (a copy
+on purpose — silence under resonance *is* activation until step 5 tunes the
+endpoints, and the structure tests that hold every mode's table to the same
+macros and paths took the third mode with no change beyond `MODES` itself),
+`resonance` presets carry their mode exactly as activation's do, with one
+starter — `pulse`, motion-forward with tempo short of the top so the drive
+has headroom to surge into rather than a ceiling to press against — and the
+panel's Mode selector gains the third entry with the §16.5 sentence in its
+tooltip: it dances, it cannot strobe.
+
+Two additions the proposal only implied. `config.active_mode` now answers
+"which table is actually driving" for callers outside `resolve()` — the
+drive must run exactly when the *engine* is showing resonance, and a drive
+keyed off the raw mode string would keep listening under the rhizotron,
+which resolves through regulation whatever the key says. And the filament
+option landed here rather than in a step of its own, because §16.1's
+updated text reduced it to one seam: `filaments = false` zeroes
+`pigment.density_from_trail` under resonance only, before the overrides so
+a pinned value still wins, through the ramp so it is a fade. The tests pin
+the option to that seam exactly — hiding the network moves that one path
+and nothing else, the other modes ignore the flag, and a config predating
+it draws the network.
+
+### What step 4 actually did
+
+**The modulation layer is a pure function with three tested properties.**
+`audio.modulate` takes the ramped `Params` and the current features and
+returns the frame's effective parameters: identity at the zero record (the
+same object, so the silence contract of §16.1 is an `is`, not an
+approximation); a diff against its input that is `MODULATED_PATHS` exactly
+— the whitelist test walks every numeric leaf of `Params`, so a hidden
+lever or a dead entry both fail; and bounded — the luminance-set
+intersection is asserted empty with the luminance set *collected from the
+brightness and glow macro tables* rather than written out by hand, `c_max`
+approaches its ceiling and never passes it, and the motion arithmetic is
+pinned to the step 2 sweep: resonance's tempo tops times (1 + the
+`audio.motion_gain` ceiling of 2.0) is 12.0 against the certificate's
+12.6, and the test that holds it fails any retune past the sweep until
+`tempo_sweep.py` is re-run. The gains live on `Params` (`audio.*`) with
+ceilings in `SAFETY_CEILINGS`, so overrides can tune them, `validate`
+clamps them, and the ramp smooths them like everything else.
+
+**The event door is drive-side judgement, scheduler-side authority.**
+`AudioDrive.event_request` decides *whether* (onset strength over a
+threshold, asks spaced by stream-time seconds — sample count, never wall
+clock) and *which kind* (bass breathes a `bloom`, mids shift the
+`current`, highs `tint`; never `dieback` or `rift` — a beat is not a
+catastrophe); everything about what the event then *is* stays `trigger`'s,
+exactly as with the panel's buttons. The app checks the concurrency cap
+before asking, so a busy track reads as a full sky rather than a log of
+refusals — the §4.3 fast-end framing, reached from outside.
+
+**The slam test found nothing, and that is the record.** The feature-slam
+twin of the §14.8 step 1 test alternates, un-ramped and every frame,
+between the plain resolved parameters and `modulate` under full-scale
+features with every gain at its ceiling — with the filament seam stepped
+between shown and hidden in the same frame, strictly more movement than
+the ramped fade the toggle actually gets. The per-pixel bound held on the
+first run, which is what §16.6(1) predicted: the drive's whole reach is
+parameter movement of kinds the safety stage was already tested against.
+The wiring itself follows §16.4's letter: features are polled and applied
+after the ramp to a frame-local copy (the ramp's state is never written
+through), the drive starts and stops on the mode's own edges
+(`Application._sync_audio`, including backend switches), its status line
+is in the telemetry log and the stall report (§16.6(5)), and with the
+drive off the frame loop is exactly what it was.

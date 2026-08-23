@@ -27,9 +27,10 @@ import dataclasses
 import logging
 import math
 import statistics
-import sys
 
 import numpy as np
+
+from . import config as config_module
 
 log = logging.getLogger(__name__)
 
@@ -165,6 +166,16 @@ class FeatureExtractor:
     @property
     def features(self) -> AudioFeatures:
         return self._features
+
+    @property
+    def stream_seconds(self) -> float:
+        """How much audio has been consumed, in seconds of *stream* time.
+
+        Sample count over sample rate, so it advances only when audio does --
+        the clock-free timebase everything drive-side that needs "how long
+        since" measures against (§3, extended by §16.3).
+        """
+        return self.hops * self._dt
 
     def push(self, samples: np.ndarray) -> AudioFeatures:
         """Consume any amount of audio; return the latest features.
@@ -315,6 +326,106 @@ def _unit(x: float) -> float:
 
 
 # --------------------------------------------------------------------------
+# Modulation — §16.4's first door, over a whitelist
+# --------------------------------------------------------------------------
+
+# Every parameter the audio drive may move, and the *only* parameters it may
+# move. §14.1's channels, verbatim: motion (the flow the pigment rides and
+# the network is sheared by), colour (chroma-budget spend, luminance-free by
+# Oklab construction), and material (how fertile the weather is). What is
+# absent is the point -- no agent parameter (§16.1: the organism keeps its
+# autonomy), no luminance-architecture path, nothing in `safety.*` -- and
+# test_the_whitelist_excludes_the_luminance_architecture holds the absence.
+MODULATED_PATHS: tuple[str, ...] = (
+    "flow.psi_gain",
+    "flow.field_gain",
+    "pigment.inject_rate",
+    "render.chroma_activity_gain",
+    "render.c_max",
+    "render.hue_turns_per_hour",
+)
+
+# What an onset asks the scheduler for, by the band carrying the moment: the
+# low end breathes structure, the mids shift the current the structure rides,
+# the highs recolour. All three are the constructive kinds -- a beat should
+# never be a dieback, and a rift on a drop is a §16.8 step 5 judgement for
+# eyes, not a default.
+ONSET_EVENT_KINDS = ("bloom", "current", "tint")
+
+
+def modulate(
+    params: "config_module.Params", features: AudioFeatures
+) -> "config_module.Params":
+    """The effective parameters for one frame, under what the room is doing.
+
+    A pure function, applied after the ramp (its own speed limit is the
+    §16.3 followers, which are allowed to be faster than the 8 s ramp) and
+    before the engine. Three properties the tests hold it to:
+
+    * **Identity at zero.** Features at the zero record return ``params``
+      unchanged -- silence under resonance is the plain instrument (§16.1).
+    * **The whitelist is the reach.** Only :data:`MODULATED_PATHS` differ
+      between input and output, whatever the features say.
+    * **Bounded by the standing arguments.** Multiplicative levers are capped
+      by the gain ceilings in ``SAFETY_CEILINGS`` (the motion product stays
+      inside the §14.8 step 2 sweep certificate), ``c_max`` approaches its
+      own ceiling and never passes it, and the flash limiter is downstream
+      of all of it as ever.
+
+    ``params`` is not mutated: the touched sub-blocks are replaced, so the
+    ramp's own state -- which is what the caller usually hands in -- is never
+    written through.
+    """
+    audio = params.audio
+    # Bass leads the motion and treble leads the colour, with overall level
+    # behind both, so a bass-heavy passage surges more than it saturates and
+    # a bright one saturates more than it surges.
+    motion_drive = min(1.0, 0.6 * features.bass + 0.4 * features.level)
+    colour_drive = min(1.0, 0.55 * features.treble + 0.45 * features.level)
+    if (
+        motion_drive <= 0.0
+        and colour_drive <= 0.0
+        and features.mid <= 0.0
+        and features.treble <= 0.0
+        and features.flux <= 0.0
+    ):
+        return params
+
+    motion = 1.0 + audio.motion_gain * motion_drive
+    flow = dataclasses.replace(
+        params.flow,
+        psi_gain=params.flow.psi_gain * motion,
+        field_gain=params.flow.field_gain * motion,
+    )
+    pigment = dataclasses.replace(
+        params.pigment,
+        # A mixing fraction, so its own ceiling is 1 whatever the gain says.
+        inject_rate=min(
+            params.pigment.inject_rate * (1.0 + audio.material_gain * features.mid),
+            1.0,
+        ),
+    )
+    c_ceiling = config_module.SAFETY_CEILINGS["render.c_max"][1]
+    render = dataclasses.replace(
+        params.render,
+        chroma_activity_gain=params.render.chroma_activity_gain
+        * (1.0 + audio.colour_gain * colour_drive),
+        # Toward the ceiling, never past it: the same "approach, don't
+        # reach" posture the activation curve takes (§14.8 step 3).
+        c_max=min(
+            params.render.c_max
+            + (c_ceiling - params.render.c_max)
+            * min(audio.colour_gain, 1.0)
+            * features.treble,
+            c_ceiling,
+        ),
+        hue_turns_per_hour=params.render.hue_turns_per_hour
+        * (1.0 + audio.hue_gain * features.flux),
+    )
+    return dataclasses.replace(params, flow=flow, pigment=pigment, render=render)
+
+
+# --------------------------------------------------------------------------
 # Device choice — §16.2, as a pure function so the order is testable
 # --------------------------------------------------------------------------
 
@@ -392,6 +503,7 @@ class AudioDrive:
         self._stream = None
         self._status = "not started"
         self._callback_faults = 0
+        self._last_event_ask = -math.inf  # stream seconds, not wall clock
         self.extractor = FeatureExtractor(sample_rate)
 
     # -- lifecycle ----------------------------------------------------------
@@ -507,6 +619,31 @@ class AudioDrive:
         if stream is not None and not getattr(stream, "active", True):
             self._status = "capture stream stopped; the field is on its own"
         return self.extractor.features
+
+    def event_request(self, audio: "config_module.AudioParams") -> str | None:
+        """The event kind an onset is asking for right now, if any.
+
+        §16.4's second door, drive-side half: decides *whether* to ask and
+        *which* kind (by the band carrying the moment); everything about what
+        the event then is belongs to the scheduler's ``trigger``, exactly as
+        with the panel's buttons. Asks are spaced by ``onset_spacing``
+        seconds of stream time -- sample count, never wall clock -- so a
+        140 BPM track asks a few times a minute and lets the concurrency cap
+        do the rest, instead of producing a per-beat queue of refusals.
+        """
+        features = self.extractor.features
+        if features.onset < audio.onset_threshold:
+            return None
+        now = self.extractor.stream_seconds
+        if now - self._last_event_ask < audio.onset_spacing:
+            return None
+        self._last_event_ask = now
+        bloom, current, tint = ONSET_EVENT_KINDS
+        if features.bass >= features.mid and features.bass >= features.treble:
+            return bloom
+        if features.treble >= features.mid:
+            return tint
+        return current
 
     # -- reporting ----------------------------------------------------------
 

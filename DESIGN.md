@@ -141,8 +141,11 @@ and the tests — resolves via the table below, and means the file listed agains
   the fungal field (ramification, gravity, matrix), succession as the
   never-settles mechanism, its safety analysis, and its build order.
 
-- **§16 — [docs/audio-mode.md](docs/audio-mode.md)** *(built: step 1 of
-  §16.8 — the audio front end; steps 2–6 are proposal)*
+- **§16 — [docs/audio-mode.md](docs/audio-mode.md)** *(built: steps 1, 3
+  and 4 of §16.8 — the front end, the mode plumbing with the filament
+  option, and the modulation layer with the event door. Step 2, the
+  real-hardware capture and latency pass, and steps 5–6, tuning by eyes
+  and bands-into-depth, are open.)*
   Resonance: a third mode on a third *driver* — the machine's own audio
   output, captured and reduced to slow bounded features, wired into the
   seams the endogenous drivers (OU walks, Poisson events) already use, so
