@@ -20,6 +20,10 @@ dependencies = [
 [project.optional-dependencies]
 # The control panel and the render window share one Qt event loop.
 ui = ["PySide6>=6.6"]
+# Capture for the resonance mode (DESIGN.md §16). Optional in the same
+# spirit as [ui]: without it the mode still opens, with a status line
+# saying the field is on its own.
+audio = ["sounddevice>=0.4.6"]
 dev = ["pytest>=8.0", "pytest-xdist>=3.5"]
 
 [project.scripts]
