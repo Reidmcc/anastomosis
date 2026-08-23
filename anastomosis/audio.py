@@ -7,9 +7,11 @@ Three pieces, split exactly where §16.2–§16.3 splits them:
   reads anywhere, every time constant advanced by sample count, so the same
   stream produces the same features whatever the chunking (§3's discipline,
   extended — audio is an input, not a clock).
-* :func:`pick_capture_device` — the loopback-preferring device heuristic of
-  §16.2, a pure function over a device list so the preference order is
-  testable without an audio backend in the room.
+* :func:`pick_capture_device` and :func:`pick_loopback_microphone` — the
+  loopback-preferring device choices of §16.2, pure functions over device
+  lists so the preference order is testable without an audio backend (or a
+  Windows machine) in the room. The first serves the PortAudio route, the
+  second the WASAPI-loopback route ``soundcard`` provides on Windows.
 * :class:`AudioDrive` — owns the capture stream, the callback thread's
   bounded queue, and every degradation path. `sounddevice` is an optional
   extra and is imported lazily; its absence, a missing device, or a failed
@@ -27,6 +29,8 @@ import dataclasses
 import logging
 import math
 import statistics
+import sys
+import threading
 
 import numpy as np
 
@@ -467,6 +471,40 @@ def pick_capture_device(
     return i, "first input device (microphone fallback)"
 
 
+def pick_loopback_microphone(mics, default_speaker_name, requested=None):
+    """Choose a WASAPI loopback source from ``soundcard``'s microphone list.
+
+    The Windows half of §16.2: PortAudio cannot capture what the machine is
+    playing there, and the ``soundcard`` package can — its
+    ``all_microphones(include_loopback=True)`` presents every output as a
+    recordable device flagged ``isloopback``, named after the speaker it
+    shadows. Pure over the ``name``/``isloopback`` attributes so the order
+    is testable without a Windows machine in the room.
+
+    Preference: a loopback matching ``requested`` (the config's
+    ``audio_device``) when one is named; else the loopback shadowing the
+    default speaker; else the first loopback. ``None`` — no loopbacks, or a
+    request nothing here matches — means fall through to the PortAudio path,
+    where the request gets its second chance against ordinary devices.
+    """
+    loopbacks = [m for m in mics if getattr(m, "isloopback", False)]
+    if requested is not None:
+        needle = str(requested).lower()
+        for mic in loopbacks:
+            if needle in str(getattr(mic, "name", "")).lower():
+                return mic
+        return None
+    if not loopbacks:
+        return None
+    wanted = str(default_speaker_name or "").lower()
+    if wanted:
+        for mic in loopbacks:
+            name = str(getattr(mic, "name", "")).lower()
+            if wanted in name or name in wanted:
+                return mic
+    return loopbacks[0]
+
+
 # --------------------------------------------------------------------------
 # Capture — §16.2, with every degradation path a status line
 # --------------------------------------------------------------------------
@@ -475,11 +513,21 @@ def pick_capture_device(
 class AudioDrive:
     """Owns capture and hands the render thread features on request.
 
-    The callback thread appends raw blocks to a bounded deque; ``poll()``,
-    on the render thread, drains it through the extractor. Between the two
+    A capture thread appends raw blocks to a bounded deque; ``poll()``, on
+    the render thread, drains it through the extractor. Between the two
     there is no lock the render thread can be made to wait on, so a wedged
     audio backend can starve the *features*, never the frame loop
     (§16.6(5)).
+
+    Two capture backends, tried in order (§16.2). On Windows, the
+    ``soundcard`` package first: it speaks WASAPI loopback directly, which
+    is the machine's own output and the thing PortAudio cannot record
+    there; its API is a blocking recorder rather than a callback, so this
+    class owns a pump thread for it. Everywhere — and on Windows when
+    ``soundcard`` is missing or finds no loopback — ``sounddevice``
+    (PortAudio) with the name-heuristic device pick: monitors on
+    PulseAudio/PipeWire, "Stereo Mix" where Windows drivers offer it,
+    BlackHole on a routed Mac, then the microphone.
 
     Every way capture can be unavailable — the ``[audio]`` extra not
     installed, no device, a failed open, a stream that died — resolves to
@@ -493,14 +541,20 @@ class AudioDrive:
         device: int | str | None = None,
         sample_rate: int = SAMPLE_RATE,
         _sd=None,
+        _sc=None,
+        _platform: str | None = None,
     ) -> None:
         self._requested_device = device
         self._sample_rate = sample_rate
         self._sd = _sd  # injected by tests; lazily imported otherwise
+        self._sc = _sc  # likewise, for the Windows loopback backend
+        self._platform = _platform or sys.platform
         self._blocks: collections.deque[np.ndarray] = collections.deque(
             maxlen=QUEUE_BLOCKS
         )
         self._stream = None
+        self._capture_thread: threading.Thread | None = None
+        self._capture_stop = threading.Event()
         self._status = "not started"
         self._callback_faults = 0
         self._last_event_ask = -math.inf  # stream seconds, not wall clock
@@ -509,7 +563,100 @@ class AudioDrive:
     # -- lifecycle ----------------------------------------------------------
 
     def start(self) -> bool:
-        """Open the best available capture device. Never raises."""
+        """Open the best available capture route. Never raises."""
+        if self._start_soundcard():
+            return True
+        return self._start_sounddevice()
+
+    def _start_soundcard(self) -> bool:
+        """The WASAPI loopback route, Windows only. False means fall through.
+
+        Falling through is this method's whole error handling: nothing here
+        writes a failure into ``describe()``, because the PortAudio route is
+        still to be tried and gets to say what finally happened.
+        """
+        if self._platform != "win32":
+            return False
+        sc = self._sc
+        if sc is None:
+            try:
+                import soundcard as sc  # type: ignore[no-redef]
+            except Exception:
+                log.info(
+                    "audio: the soundcard package is not importable; "
+                    "falling back to PortAudio capture"
+                )
+                return False
+            self._sc = sc
+        try:
+            try:
+                speaker_name = str(sc.default_speaker().name)
+            except Exception:  # no default output is not fatal to loopback
+                speaker_name = ""
+            mics = list(sc.all_microphones(include_loopback=True))
+            mic = pick_loopback_microphone(
+                mics, speaker_name, self._requested_device)
+            if mic is None:
+                log.info(
+                    "audio: no WASAPI loopback matched; falling back to "
+                    "PortAudio capture"
+                )
+                return False
+            rate = int(self._sample_rate)
+            self.extractor = FeatureExtractor(rate)
+            self._capture_stop.clear()
+            why = (
+                "configured audio.device"
+                if self._requested_device is not None
+                else "WASAPI loopback"
+            )
+            # Status before the thread: the pump reports its own death, and
+            # a recorder that dies on its very first pull must not have that
+            # report overwritten by this line landing second.
+            self._status = f"listening to {mic.name} — {why}"
+            self._capture_thread = threading.Thread(
+                target=self._pump_soundcard,
+                args=(mic, rate),
+                name="anastomosis-audio",
+                daemon=True,
+            )
+            self._capture_thread.start()
+            log.info("audio: %s at %d Hz", self._status, rate)
+            return True
+        except Exception as exc:
+            self._teardown()
+            log.info(
+                "audio: WASAPI loopback capture failed (%s); falling back "
+                "to PortAudio capture", exc,
+            )
+            return False
+
+    def _pump_soundcard(self, mic, rate: int) -> None:
+        """The loopback recorder loop, on its own thread.
+
+        ``soundcard`` records by blocking pull rather than callback, so this
+        thread does what PortAudio's callback thread does for the other
+        route: copy blocks into the bounded deque and nothing else. It holds
+        no lock the render thread takes; a wedged recorder starves the
+        features, never the frame loop (§16.6(5)).
+        """
+        try:
+            channels = max(1, min(2, int(getattr(mic, "channels", 2) or 2)))
+            with mic.recorder(
+                samplerate=rate, channels=channels, blocksize=HOP
+            ) as recorder:
+                while not self._capture_stop.is_set():
+                    block = recorder.record(numframes=HOP)
+                    self._blocks.append(np.asarray(block, dtype=np.float32))
+        except Exception as exc:
+            if not self._capture_stop.is_set():
+                self._status = (
+                    f"capture stream stopped ({exc}); the field is on its own"
+                )
+                log.warning("audio: %s", self._status)
+
+    def _start_sounddevice(self) -> bool:
+        """The PortAudio route — every platform's fallback, most's first."""
         sd = self._sd
         if sd is None:
             try:
@@ -584,6 +731,13 @@ class AudioDrive:
         self._status = "stopped"
 
     def _teardown(self) -> None:
+        self._capture_stop.set()
+        thread, self._capture_thread = self._capture_thread, None
+        if thread is not None and thread.is_alive():
+            # The recorder blocks for at most a hop (~21 ms) per pull, so
+            # this join is short; the timeout is for a wedged driver, which
+            # a daemon thread must not let hold up shutdown.
+            thread.join(timeout=2.0)
         stream, self._stream = self._stream, None
         if stream is not None:
             for step in (stream.stop, stream.close):
@@ -617,6 +771,16 @@ class AudioDrive:
             self.extractor.push(block)
         stream = self._stream
         if stream is not None and not getattr(stream, "active", True):
+            self._status = "capture stream stopped; the field is on its own"
+        # The loopback pump reports its own death with the exception that
+        # caused it; this covers only a thread that ended without one.
+        thread = self._capture_thread
+        if (
+            thread is not None
+            and not thread.is_alive()
+            and not self._capture_stop.is_set()
+            and self._status.startswith("listening")
+        ):
             self._status = "capture stream stopped; the field is on its own"
         return self.extractor.features
 

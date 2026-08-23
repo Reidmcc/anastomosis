@@ -206,13 +206,17 @@ Capture needs the optional extra:
 pip install -e ".[audio]"
 ```
 
-It prefers a device that is the machine's own output — PulseAudio/PipeWire
-monitors on Linux, "Stereo Mix" where Windows drivers offer it, BlackHole
-on macOS if you have routed through it — and falls back to the microphone,
-which still works with speakers playing. The panel shows what it is
-actually listening to; `audio_device = "name"` in the config picks one by
-hand. Without the extra, a device, or any sound, the mode runs as a plain
-activation-tuned field and the status line says why.
+It prefers a device that is the machine's own output. On Windows that is
+the real thing: the system output is captured directly (WASAPI loopback,
+via the `soundcard` package the extra brings in there), whatever is
+playing and whatever it is playing through, with "Stereo Mix" as the
+fallback where a driver offers it. On Linux it is the PulseAudio/PipeWire
+monitor; on macOS, BlackHole if you have routed through it. Failing all of
+those it falls back to the microphone, which still works with speakers
+playing. The panel shows what it is actually listening to;
+`audio_device = "name"` in the config picks one by hand. Without the
+extra, a device, or any sound, the mode runs as a plain activation-tuned
+field and the status line says why.
 
 Under Resonance the Mode box also grows a checkbox: **Draw the filament
 network**. Untick it and the network fades out of the image while the

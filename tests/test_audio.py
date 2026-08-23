@@ -513,3 +513,181 @@ def test_event_requests_are_spaced_in_stream_time_and_typed_by_band():
     # No onset, no ask, however long the stream runs.
     drive.extractor.push(_sine(6000.0, 3.0, amplitude=0.9, rate=rate))
     assert drive.event_request(gains) is None
+
+
+# ---------------------------------------------------------------------------
+# The Windows route -- WASAPI loopback through `soundcard`, without Windows
+# ---------------------------------------------------------------------------
+
+
+class _Mic:
+    def __init__(self, name, isloopback=True, channels=2):
+        self.name = name
+        self.isloopback = isloopback
+        self.channels = channels
+
+    def recorder(self, samplerate, channels=None, blocksize=None):
+        return _Recorder(samplerate)
+
+
+class _Recorder:
+    """A blocking recorder that plays an endless 100 Hz tone."""
+
+    def __init__(self, samplerate):
+        self._rate = samplerate
+        self._phase = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def record(self, numframes):
+        import time
+
+        time.sleep(0.001)  # a real recorder blocks; a spinning stub would lie
+        t = np.arange(self._phase, self._phase + numframes, dtype=np.float64)
+        self._phase += numframes
+        mono = 0.6 * np.sin(2.0 * np.pi * 100.0 * t / self._rate)
+        return np.stack([mono, mono], axis=1).astype(np.float32)
+
+
+def _stub_sc(mics, speaker="Speakers (Realtek High Definition Audio)"):
+    sc = types.SimpleNamespace()
+    sc.default_speaker = lambda: types.SimpleNamespace(name=speaker)
+    sc.all_microphones = lambda include_loopback=False: (
+        list(mics) if include_loopback
+        else [m for m in mics if not m.isloopback]
+    )
+    return sc
+
+
+def test_the_loopback_picker_prefers_the_default_speakers_shadow():
+    mics = [
+        _Mic("Microphone (USB Audio)", isloopback=False),
+        _Mic("Headphones (2- Arctis)", isloopback=True),
+        _Mic("Speakers (Realtek High Definition Audio)", isloopback=True),
+    ]
+    mic = audio.pick_loopback_microphone(
+        mics, "Speakers (Realtek High Definition Audio)")
+    assert mic is mics[2]
+
+
+def test_the_loopback_picker_honours_a_requested_name_or_stands_aside():
+    mics = [
+        _Mic("Speakers (Realtek)", isloopback=True),
+        _Mic("Headphones (Arctis)", isloopback=True),
+    ]
+    assert audio.pick_loopback_microphone(
+        mics, "Speakers (Realtek)", requested="arctis") is mics[1]
+    # A request nothing here matches falls through to the PortAudio route,
+    # where it gets its second chance -- rather than being second-guessed.
+    assert audio.pick_loopback_microphone(
+        mics, "Speakers (Realtek)", requested="usb turntable") is None
+
+
+def test_the_loopback_picker_returns_none_when_nothing_loops_back():
+    mics = [_Mic("Microphone (USB Audio)", isloopback=False)]
+    assert audio.pick_loopback_microphone(mics, "Speakers") is None
+
+
+def test_on_windows_the_loopback_route_wins_and_features_flow():
+    """End to end through the pump thread: start picks the default
+    speaker's loopback, blocks reach the extractor, stop joins the thread."""
+    import time
+
+    mics = [
+        _Mic("Microphone (USB Audio)", isloopback=False),
+        _Mic("Speakers (Realtek High Definition Audio)", isloopback=True),
+    ]
+    drive = audio.AudioDrive(_sc=_stub_sc(mics), _platform="win32")
+    assert drive.start() is True
+    assert "Speakers (Realtek" in drive.describe()
+    assert "loopback" in drive.describe()
+
+    features = drive.poll()
+    deadline = time.monotonic() + 5.0
+    while features.level == 0.0 and time.monotonic() < deadline:
+        time.sleep(0.02)
+        features = drive.poll()
+    assert features.bass > 0.3
+    assert not features.silent
+
+    drive.stop()
+    assert drive._capture_thread is None
+    assert drive.describe() == "stopped"
+
+
+def test_off_windows_the_portaudio_route_is_used_even_with_soundcard_present():
+    """The soundcard route is Windows-only by design: monitors already serve
+    Linux through PortAudio, and gating on the platform keeps one machine
+    from walking two capture stacks."""
+    mics = [_Mic("Monitor of Built-in Audio", isloopback=True)]
+    devices = [{"name": "Monitor of Built-in Audio", "max_input_channels": 2,
+                "default_samplerate": 48_000.0}]
+    sd = _stub_sd(devices)
+    drive = audio.AudioDrive(
+        _sc=_stub_sc(mics), _sd=sd, _platform="linux")
+    assert drive.start() is True
+    assert len(sd.created) == 1, "PortAudio was not the route taken"
+    assert drive._capture_thread is None
+    drive.stop()
+
+
+def test_on_windows_without_loopbacks_stereo_mix_is_the_fallback():
+    """soundcard finding nothing must fall through, not fail: the PortAudio
+    heuristic still knows 'Stereo Mix' when a driver offers it."""
+    devices = [
+        {"name": "Microphone (Realtek)", "max_input_channels": 1,
+         "default_samplerate": 48_000.0},
+        {"name": "Stereo Mix (Realtek)", "max_input_channels": 2,
+         "default_samplerate": 48_000.0},
+    ]
+    sd = _stub_sd(devices)
+    drive = audio.AudioDrive(
+        _sc=_stub_sc([_Mic("Microphone", isloopback=False)]),
+        _sd=sd, _platform="win32")
+    assert drive.start() is True
+    assert "Stereo Mix" in drive.describe()
+    drive.stop()
+
+
+def test_a_broken_soundcard_backend_still_reaches_portaudio():
+    """An exception inside the loopback route is a fall-through with a log
+    line, never the drive's final word."""
+    sc = types.SimpleNamespace()
+
+    def explode(*a, **k):
+        raise RuntimeError("COM said no")
+
+    sc.default_speaker = explode
+    sc.all_microphones = explode
+    devices = [{"name": "Microphone", "max_input_channels": 1,
+                "default_samplerate": 44_100.0}]
+    drive = audio.AudioDrive(_sc=sc, _sd=_stub_sd(devices), _platform="win32")
+    assert drive.start() is True
+    assert "Microphone" in drive.describe()
+    drive.stop()
+
+
+def test_a_dead_pump_thread_becomes_a_status_line():
+    """A recorder that dies mid-session (§16.6(5)): the pump writes what
+    happened into the status the panel and the stall report read."""
+    import time
+
+    class _DyingMic(_Mic):
+        def recorder(self, samplerate, channels=None, blocksize=None):
+            raise RuntimeError("device invalidated")
+
+    drive = audio.AudioDrive(
+        _sc=_stub_sc([_DyingMic("Speakers (Realtek)", isloopback=True)]),
+        _platform="win32")
+    assert drive.start() is True  # the open is asynchronous; death is later
+    deadline = time.monotonic() + 5.0
+    while "stopped" not in drive.describe() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    drive.poll()
+    assert "stopped" in drive.describe()
+    assert "device invalidated" in drive.describe()
+    drive.stop()

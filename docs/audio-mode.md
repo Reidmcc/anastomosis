@@ -102,16 +102,21 @@ platforms are not equally willing:
 | Platform | Route to the machine's own output | Honesty |
 |---|---|---|
 | Linux (PulseAudio / PipeWire) | Every output sink has a `.monitor` source; any recording API sees it as an ordinary input device. | Solid. Works out of the box on essentially every desktop distribution. |
-| Windows (WASAPI) | Loopback capture exists in the OS, but PortAudio as shipped (and therefore `sounddevice`) does not expose it. Some drivers expose a "Stereo Mix" input device that is the same thing. | Partial. "Stereo Mix" when present; otherwise a dedicated backend (the `soundcard` package speaks WASAPI loopback directly) is the likely step-2 answer. |
+| Windows (WASAPI) | Loopback capture exists in the OS, but PortAudio as shipped (and therefore `sounddevice`) does not expose it. The `soundcard` package speaks WASAPI loopback directly — every output appears as a recordable device flagged `isloopback` — and rides the `[audio]` extra on Windows only (`sys_platform == 'win32'`). Some drivers also expose a "Stereo Mix" input that is the same thing, which stays as the fallback. | Solid in design, shipped, awaiting the step-2 hardware pass: `soundcard` first, "Stereo Mix" second, microphone third. |
 | macOS (CoreAudio) | No public loopback API. The established route is a user-installed virtual output device (BlackHole) set as the system output, which then appears as an input. | Requires one manual setup step, documented, or the fallback below. |
 
 The strategy that follows from the table, in order:
 
-1. **Prefer a device that is the machine's own output**: an input whose name
-   marks it as a monitor/loopback (`monitor`, `loopback`, `blackhole`,
-   `soundflower`, `stereo mix`, `what u hear` — the vocabulary is small and
-   stable), chosen by heuristic, overridable by an explicit `audio.device`
-   in the config for the cases the heuristic cannot see.
+1. **Prefer a device that is the machine's own output.** On Windows, the
+   real thing: `soundcard`'s WASAPI loopback of the default speaker, tried
+   first and falling through to the next route if the package is missing or
+   finds nothing. Everywhere (Windows included, as that fall-through): an
+   input whose name marks it as a monitor/loopback (`monitor`, `loopback`,
+   `blackhole`, `soundflower`, `stereo mix`, `what u hear` — the vocabulary
+   is small and stable), chosen by heuristic. Both routes are overridable
+   by an explicit `audio_device` in the config for the cases the
+   heuristics cannot see; a request the loopback route cannot match falls
+   through to the device list, where it gets its second chance.
 2. **Fall back to the default input** — the microphone. A laptop playing
    through its speakers with the mic listening is still a music visualizer,
    room-coupled; the AGC of §16.3 exists partly so that this path produces
@@ -372,12 +377,14 @@ exactly as activation's was:
    **Built**; see below.
 2. **The two load-bearing measurements, on real hardware** (the development
    environment has neither GPU nor sound): the platform capture inventory —
-   which of §16.2's routes actually opens on each machine, and whether
-   Windows needs the `soundcard` backend — and the end-to-end latency of
-   §16.5's budget, hop to visible surge, measured rather than summed.
-   *Still open — steps 3 and 4 were built ahead of it, with the certificate
-   arithmetic standing in for what it can (see the step 4 record) and the
-   capture-side automatic reopen still parked here with the hardware.*
+   which of §16.2's routes actually opens on each machine — and the
+   end-to-end latency of §16.5's budget, hop to visible surge, measured
+   rather than summed. *Partially built: the "does Windows need the
+   `soundcard` backend" question was answered in the affirmative by
+   inspection rather than waiting for hardware, and the backend is shipped
+   (see the record below); what remains here is running the inventory and
+   the latency measurement on real machines, and the capture-side automatic
+   reopen, still parked with the hardware.*
 3. ~~**Mode plumbing.** `resonance` in `MODES` with its table a copy of
    activation's, panel selector entry plus the drive's status line, preset
    mode-tagging, the three-way switch-slam test.~~ **Built**, together with
@@ -481,6 +488,46 @@ catastrophe); everything about what the event then *is* stays `trigger`'s,
 exactly as with the panel's buttons. The app checks the concurrency cap
 before asking, so a busy track reads as a full sky rather than a log of
 refusals — the §4.3 fast-end framing, reached from outside.
+
+### What the Windows backend actually did (step 2's shipped half)
+
+**Windows gets the real loopback, as a second capture route in front of
+the first.** The `soundcard` package joins the `[audio]` extra behind a
+`sys_platform == 'win32'` marker — it is the one platform that needs it,
+and the one platform PortAudio cannot serve — and `AudioDrive.start()`
+becomes a two-rung ladder: `_start_soundcard` (Windows only), then the
+existing `_start_sounddevice` everywhere. The loopback route picks by a
+new pure function, `pick_loopback_microphone`: the loopback shadowing the
+default speaker by name, or the one matching a configured `audio_device`;
+a request it cannot match returns None *by design*, so the config's device
+name gets its second chance against PortAudio's ordinary device list
+rather than being second-guessed.
+
+**Falling through is the route's whole error handling.** Nothing in
+`_start_soundcard` writes a failure into `describe()` — a missing package,
+a COM error, an empty loopback list are each one log line and a `return
+False`, because the PortAudio route is still to be tried and gets to say
+what finally happened. Only the ladder's end states stick: listening (to
+either route), "Stereo Mix" as the driver-provided fallback the §16.2
+heuristic already knew, the microphone, or the honest nothing.
+
+**The blocking recorder needed the thread the callback route never did.**
+`soundcard` records by blocking pull, so the drive now owns a pump thread
+that does exactly what PortAudio's callback thread does — copy blocks into
+the bounded deque, touch nothing else — with the same §16.6(5) contract: no
+lock the render thread takes, death reported into the status line the
+panel, telemetry and stall report read. Building it surfaced one real
+race worth recording: the "listening to …" status was originally written
+*after* the thread started, so a recorder dying on its very first pull had
+its report overwritten by the success line landing second. The status now
+lands before the thread starts, and the test that caught it
+(`test_a_dead_pump_thread_becomes_a_status_line`) pins the order. The
+whole ladder is tested off-Windows through injected stubs: route
+preference per platform, loopback-to-features end to end through a real
+pump thread, no-loopback and broken-backend fall-throughs, and the
+platform gate itself (on Linux, PortAudio is used even with `soundcard`
+importable — monitors already serve there, and one machine should walk one
+capture stack).
 
 **The slam test found nothing, and that is the record.** The feature-slam
 twin of the §14.8 step 1 test alternates, un-ramped and every frame,
