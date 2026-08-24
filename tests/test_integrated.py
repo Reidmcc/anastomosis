@@ -426,6 +426,66 @@ def test_the_governor_never_presents_faster_than_the_configured_cap():
     assert pacing._present_fps <= pacing.params.max_fps
 
 
+def test_the_flash_bound_holds_at_every_rate_the_governor_can_produce():
+    """The arithmetic, done against the rate actually presented. §7, §8.3.
+
+    `config.validate` sizes the per-frame lightness allowance as
+    `MAX_LUMA_PER_SECOND / max_fps` -- against the cap, not the rate achieved
+    -- so the guarantee survives a lowered rate only because lowering it can
+    never raise the product. Asserted rather than reasoned about, because the
+    governor and the battery backoff both move that rate now and §7's bound is
+    the one thing here that is not allowed to be approximately right.
+    """
+    for max_fps in (24, 30, 60):
+        params = config_module.Config().resolve()
+        params.max_fps = max_fps
+        params = config_module.validate(params)
+        per_frame = params.safety.max_luma_delta
+
+        pacing = _Pacing(max_fps=max_fps)
+        pacing.params = params
+        rates = {max_fps, pacing._uncapped_fps()}
+        for scale in (1.0, 0.8, app_module.FPS_SCALE_FLOOR, 0.0):
+            pacing._fps_scale = scale
+            rates.add(min(pacing._target_fps(), pacing._uncapped_fps()))
+        pacing.power.on_battery = True
+        pacing._battery = True
+        for scale in (1.0, app_module.FPS_SCALE_FLOOR):
+            pacing._fps_scale = scale
+            rates.add(min(pacing._target_fps(), pacing._uncapped_fps()))
+
+        for rate in rates:
+            assert rate <= max_fps
+            assert per_frame * rate <= config_module.MAX_LUMA_PER_SECOND + 1e-9
+
+
+def test_the_new_settings_survive_the_config_file():
+    """They are documented in the header as things to reach for on a laptop,
+    so the dotted paths have to work and the types have to come back intact --
+    an int ceiling that returned as a float would ramp instead of snapping."""
+    import tempfile
+
+    written = config_module.Config()
+    written.overrides = {
+        "render.cell_budget": config_module.INTEGRATED_CELL_BUDGET,
+        "render.base_scale": 0.7,
+        "power.battery_backoff": 0,
+        "power.battery_sim_scale": 0.5,
+        "power.battery_max_fps": 15,
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        path = pathlib.Path(directory) / "config.toml"
+        config_module.save(written, path)
+        params = config_module.load(path).resolve()
+
+    assert params.render.cell_budget == config_module.INTEGRATED_CELL_BUDGET
+    assert isinstance(params.render.cell_budget, int)
+    assert params.render.base_scale == pytest.approx(0.7)
+    assert params.power.battery_backoff is False
+    assert params.power.battery_sim_scale == pytest.approx(0.5)
+    assert params.power.battery_max_fps == 15
+
+
 def test_nothing_presents_below_the_floor():
     pacing = _Pacing()
     pacing._fps_scale = 0.0
