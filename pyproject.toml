@@ -20,6 +20,16 @@ dependencies = [
 [project.optional-dependencies]
 # The control panel and the render window share one Qt event loop.
 ui = ["PySide6>=6.6"]
+# Capture for the resonance mode (DESIGN.md §16). Optional in the same
+# spirit as [ui]: without it the mode still opens, with a status line
+# saying the field is on its own. On Windows the soundcard package rides
+# along, because "whatever the machine is playing" is a WASAPI loopback
+# there and PortAudio (sounddevice) cannot record one; everywhere else
+# PortAudio alone covers the table in §16.2.
+audio = [
+    "sounddevice>=0.4.6",
+    "soundcard>=0.4.3; sys_platform == 'win32'",
+]
 dev = ["pytest>=8.0", "pytest-xdist>=3.5"]
 
 [project.scripts]

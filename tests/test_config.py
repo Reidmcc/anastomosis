@@ -377,13 +377,14 @@ def test_the_event_rate_moves_nothing_but_the_rate(mode):
     assert low.render == high.render and low.agents == high.agents
 
 
-def test_only_activation_shortens_the_event_envelope():
-    """§14.6: the envelope rides the *tempo* macro, in activation only.
+def test_regulation_pins_the_event_envelope_and_activation_shortens_it():
+    """§14.6: the envelope rides the *tempo* macro, never regulation's.
 
     Regulation events take the §4.3 minute-or-two to come up at any tempo;
     activation's build to ~15 s at the fast end, with the slow end shared, so
-    the bottom of the travel is the same instrument. The concurrency cap is
-    per mode and off every knob's travel.
+    the bottom of the travel is the same instrument. (Resonance shortens
+    harder still -- its own test above.) The concurrency cap is per mode and
+    off every knob's travel.
     """
     for tempo in (0.0, 1.0):
         reg = config.Config(
@@ -1035,3 +1036,154 @@ def test_every_preset_names_every_macro(name):
         assert field.name in named, (
             f"preset {name} does not name {field.name}, so choosing it would "
             "silently reset that knob")
+
+
+# ---------------------------------------------------------------------------
+# The resonance mode's plumbing -- DESIGN.md §16
+# ---------------------------------------------------------------------------
+
+
+def test_resonance_diverges_from_activation_only_where_the_events_ride():
+    """§16: resonance is activation's tuning except for its events, which
+    are musical gestures rather than weather -- the whole envelope shortens
+    and the concurrency cap rises to the GPU's 8. Everything else must stay
+    activation's verbatim (and a deep copy, so a retune of one table cannot
+    silently move the other): a divergence anywhere else is a tuning nobody
+    proposed, and fails here by name."""
+    diverging = {
+        "tempo": {
+            "events.attack_seconds", "events.hold_seconds",
+            "events.release_seconds",
+        },
+        "event_rate": {"events.max_concurrent"},
+    }
+    assert config.RESONANCE_CURVES is not config.ACTIVATION_CURVES
+    for macro, act_rows in config.ACTIVATION_CURVES.items():
+        res_rows = config.RESONANCE_CURVES[macro]
+        assert res_rows is not act_rows, f"{macro}: shared row list"
+        assert len(res_rows) == len(act_rows)
+        for act, res in zip(act_rows, res_rows):
+            assert act[0] == res[0], f"{macro}: paths diverged"
+            if act[0] in diverging.get(macro, ()):
+                assert act != res, f"{macro}: {act[0]} was meant to diverge"
+            else:
+                assert act == res, f"{macro}: {act[0]} diverged unrequested"
+
+    fast = config.Config(
+        macros=config.Macros(tempo=1.0), mode="resonance").resolve()
+    assert fast.events.attack_seconds == pytest.approx(5.0)
+    assert fast.events.hold_seconds == pytest.approx(8.0)
+    assert fast.events.release_seconds == pytest.approx(12.0)
+    slow = config.Config(
+        macros=config.Macros(tempo=0.0), mode="resonance").resolve()
+    assert slow.events.attack_seconds == pytest.approx(20.0)
+    assert slow.events.hold_seconds == pytest.approx(25.0)
+    assert slow.events.release_seconds == pytest.approx(45.0)
+
+
+def test_the_shaping_floors_are_the_resonance_fast_ends():
+    """Audio pace-shaping lerps envelopes toward `events`' floor constants,
+    and the resonance tempo curve reaches exactly those floors at its top --
+    one certificate covers both, so neither may be retuned alone."""
+    from anastomosis import events as events_module
+
+    tops = {p: hi for p, _lo, hi, _g in config.RESONANCE_CURVES["tempo"]}
+    assert events_module.ATTACK_FLOOR_SECONDS == tops["events.attack_seconds"]
+    assert events_module.HOLD_FLOOR_SECONDS == tops["events.hold_seconds"]
+    assert events_module.RELEASE_FLOOR_SECONDS == tops["events.release_seconds"]
+
+
+def test_resonance_raises_the_cap_to_the_gpu_ceiling_and_no_higher():
+    """Eight is the event buffer's capacity and `validate`'s ceiling, so the
+    resonance constant is the honest maximum -- and anything asking for more
+    is clamped back to it, in every mode."""
+    for rate in (0.0, 1.0):
+        params = config.Config(
+            macros=config.Macros(event_rate=rate), mode="resonance").resolve()
+        assert params.events.max_concurrent == 8
+    clamped = config.Config(
+        mode="resonance", overrides={"events.max_concurrent": 99}).resolve()
+    assert clamped.events.max_concurrent == 8
+
+
+def test_the_filament_option_belongs_to_resonance_alone():
+    """§16: `filaments = false` removes the network's rendered contribution
+    -- the `density_from_trail` seam -- under resonance, and is inert
+    everywhere else, the rhizotron (which resolves through regulation
+    whatever the mode key says) included."""
+    default = config.PigmentParams().density_from_trail
+    assert default > 0.0
+
+    hidden = config.Config(mode="resonance", filaments=False).resolve()
+    assert hidden.pigment.density_from_trail == 0.0
+
+    shown = config.Config(mode="resonance", filaments=True).resolve()
+    assert shown.pigment.density_from_trail == pytest.approx(default)
+
+    for mode in ("regulation", "activation"):
+        params = config.Config(mode=mode, filaments=False).resolve()
+        assert params.pigment.density_from_trail == pytest.approx(default), mode
+
+    rhizotron = config.Config(
+        mode="resonance", backend="rhizotron", filaments=False).resolve()
+    assert rhizotron.pigment.density_from_trail == pytest.approx(default)
+
+
+def test_hiding_the_filaments_touches_nothing_else():
+    """The option is one seam, not a mode of its own: every other resolved
+    parameter is identical with the network shown or hidden."""
+    shown = config.Config(mode="resonance", filaments=True).resolve()
+    hidden = config.Config(mode="resonance", filaments=False).resolve()
+    hidden.pigment.density_from_trail = shown.pigment.density_from_trail
+    assert shown == hidden
+
+
+def test_a_pinned_override_beats_the_filament_option():
+    """Overrides win over the option exactly as they win over macros."""
+    params = config.Config(
+        mode="resonance", filaments=False,
+        overrides={"pigment.density_from_trail": 0.7},
+    ).resolve()
+    assert params.pigment.density_from_trail == pytest.approx(0.7)
+
+
+def test_filaments_and_audio_device_survive_a_toml_roundtrip(tmp_path):
+    path = tmp_path / "config.toml"
+    config.save(
+        config.Config(
+            mode="resonance", filaments=False, audio_device="blackhole"),
+        path,
+    )
+    loaded = config.load(path)
+    assert loaded.mode == "resonance"
+    assert loaded.filaments is False
+    assert loaded.audio_device == "blackhole"
+
+
+def test_a_file_predating_resonance_draws_the_network(tmp_path):
+    """Absence means the defaults: the network drawn, the capture heuristic
+    choosing -- the same posture every earlier new key took."""
+    path = tmp_path / "config.toml"
+    path.write_text('mode = "activation"\n[macros]\nintensity = 0.5\n')
+    loaded = config.load(path)
+    assert loaded.filaments is True
+    assert loaded.audio_device == ""
+
+
+def test_active_mode_is_what_resolve_actually_uses():
+    """`active_mode` answers "which table" for callers outside resolve --
+    the audio drive keys off it -- so the two must never disagree."""
+    for mode in config.MODES:
+        for backend in config.BACKENDS:
+            cfg = config.Config(mode=mode, backend=backend)
+            expected = "regulation" if backend == "rhizotron" else mode
+            assert config.active_mode(cfg) == expected
+            # The tempo attack seconds separate the tables regulation/others
+            # at the fast end; resolving must agree with the name.
+            resolved = config.Config(
+                mode=mode, backend=backend,
+                macros=config.Macros(tempo=1.0)).resolve()
+            via_table = config.MODE_CURVES[expected]["tempo"]
+            attack = {p: hi for p, _lo, hi, _g in via_table}[
+                "events.attack_seconds"]
+            assert resolved.events.attack_seconds == pytest.approx(attack)

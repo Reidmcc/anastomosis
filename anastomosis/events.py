@@ -132,6 +132,27 @@ class ActiveEvent:
         return self.peak * self.envelope()
 
 
+# The fastest envelope any event may take, shaped or drawn (DESIGN.md §16.4):
+# the resonance tempo curve's fast end, whose 0.75-jitter floor at a 30 Hz
+# tick moves the raised cosine by at most ~0.014 of its range per tick --
+# pi / (2 * 3.75 s * 30 Hz) -- inside the 0.02 bound
+# test_event_envelope_never_steps asserts. Audio pace-shaping lerps envelopes
+# *toward* these floors and never below them, so the certified worst case
+# stays the worst case; test_config pins the floors to the curve's fast end
+# so neither can be retuned without the other.
+ATTACK_FLOOR_SECONDS = 5.0
+HOLD_FLOOR_SECONDS = 8.0
+RELEASE_FLOOR_SECONDS = 12.0
+
+
+def _toward_floor(value: float, floor: float, pace: float) -> float:
+    """Shorten toward the floor, never below it -- and never lengthen: a
+    resolved value already at or under the floor is left exactly alone."""
+    if value <= floor:
+        return value
+    return value + (floor - value) * pace
+
+
 # Each kind perturbs a different combination of climate channels, so events are
 # recognisably different in character rather than being one effect at varying
 # amplitude.
@@ -203,7 +224,13 @@ class EventScheduler:
 
         return self.active
 
-    def trigger(self, kind: str, params: EventParams) -> ActiveEvent | None:
+    def trigger(
+        self,
+        kind: str,
+        params: EventParams,
+        vigor: float | None = None,
+        pace: float | None = None,
+    ) -> ActiveEvent | None:
         """Start one event of `kind` now, or return None if there is no room.
 
         Asking for an event is the same act as the scheduler drawing one: it
@@ -212,6 +239,18 @@ class EventScheduler:
         the same code and expires the same way. There is no such thing as a
         manual event once it exists -- only an event whose arrival time was
         chosen rather than sampled.
+
+        ``vigor`` and ``pace`` (DESIGN.md §16.4) extend that sentence to the
+        event's shape, under the same discipline: they *choose within the
+        ranges the RNG already samples* rather than reaching outside them.
+        Vigor places the peak on the exact interval the amplitude draw spans
+        (0.6-1.0 x `strength`), so the strongest shaped event is precisely
+        the strongest random one; pace shortens the envelope from the
+        resolved values toward the module's certified floors and never below
+        them, so the fastest shaped envelope is the fastest one
+        test_event_envelope_never_steps already walks. Omitted, the draws
+        happen exactly as they always have -- the panel's buttons pass
+        nothing and are untouched.
 
         Two consequences of that are worth being explicit about, because both
         are the point rather than oversights:
@@ -243,11 +282,17 @@ class EventScheduler:
                 kind, len(self.active), params.max_concurrent,
             )
             return None
-        event = self._spawn(params, kind=kind)
+        event = self._spawn(params, kind=kind, vigor=vigor, pace=pace)
         self.active.append(event)
         return event
 
-    def _spawn(self, params: EventParams, kind: str | None = None) -> ActiveEvent:
+    def _spawn(
+        self,
+        params: EventParams,
+        kind: str | None = None,
+        vigor: float | None = None,
+        pace: float | None = None,
+    ) -> ActiveEvent:
         if kind is None:
             kind = self._rng.choice(list(EVENT_KINDS))
         base = EVENT_KINDS[kind]
@@ -257,16 +302,37 @@ class EventScheduler:
         radius = params.max_radius_frac * self._rng.uniform(0.45, 1.0)
         jitter = lambda: self._rng.uniform(0.75, 1.25)  # noqa: E731
 
+        # The peak: sampled, or -- shaped -- chosen on the sampled interval.
+        if vigor is None:
+            peak = params.strength * self._rng.uniform(0.6, 1.0)
+        else:
+            vigor = min(max(float(vigor), 0.0), 1.0)
+            peak = params.strength * (0.6 + 0.4 * vigor)
+
+        # The envelope: the resolved values, shortened toward the certified
+        # floors by pace when the ask carries one. The jitter stays on top in
+        # both cases -- shaped events are no more identical to each other
+        # than drawn ones are -- and the floors' own jitter floor is exactly
+        # the worst case the envelope-step test walks.
+        attack = params.attack_seconds
+        hold = params.hold_seconds
+        release = params.release_seconds
+        if pace is not None:
+            pace = min(max(float(pace), 0.0), 1.0)
+            attack = _toward_floor(attack, ATTACK_FLOOR_SECONDS, pace)
+            hold = _toward_floor(hold, HOLD_FLOOR_SECONDS, pace)
+            release = _toward_floor(release, RELEASE_FLOOR_SECONDS, pace)
+
         event = ActiveEvent(
             x=self._rng.random(),
             y=self._rng.random(),
             z=self._rng.random(),
             radius=radius,
-            peak=params.strength * self._rng.uniform(0.6, 1.0),
+            peak=peak,
             channels=Channels(*(c * jitter() for c in base)),
-            attack=params.attack_seconds * jitter(),
-            hold=params.hold_seconds * jitter(),
-            release=params.release_seconds * jitter(),
+            attack=attack * jitter(),
+            hold=hold * jitter(),
+            release=release * jitter(),
             kind=kind,
         )
         self.spawned += 1

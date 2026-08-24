@@ -141,6 +141,23 @@ and the tests — resolves via the table below, and means the file listed agains
   the fungal field (ramification, gravity, matrix), succession as the
   never-settles mechanism, its safety analysis, and its build order.
 
+- **§16 — [docs/audio-mode.md](docs/audio-mode.md)** *(built: steps 1, 3
+  and 4 of §16.8 — the front end, the mode plumbing with the filament
+  option, and the modulation layer with the event door. Step 2, the
+  real-hardware capture and latency pass, and steps 5–6, tuning by eyes
+  and bands-into-depth, are open.)*
+  Resonance: a third mode on a third *driver* — the machine's own audio
+  output, captured and reduced to slow bounded features, wired into the
+  seams the endogenous drivers (OU walks, Poisson events) already use, so
+  the non-agent half of the field becomes a music visualizer while the
+  network keeps its autonomy and rides the audio-driven weather. Why it is
+  a drive source rather than a tuning or a backend, the per-platform
+  loopback-capture reality, the two-path front end (AGC'd continuous
+  features, log-domain onsets), the latency budget and what "with the
+  music" can honestly mean under an unchanged flash bound — luminance is
+  closed to audio by whitelist, so the field dances and never strobes —
+  and the build order.
+
 ## Where to look first
 
 - Changing **agent behaviour** (`agents.wgsl`, `vol_agents.wgsl`): §2, §4.7,
@@ -153,5 +170,7 @@ and the tests — resolves via the table below, and means the file listed agains
 - Changing the **volumetric slab**: §5, §13 (its open questions).
 - Adding **state that persists between ticks**: the checkpointing rules in
   §4.6.
+- Wiring an **external signal** into the field (`audio.py`, the resonance
+  mode): §16, and §14.1 for which channels may carry it.
 - Wondering **why a test asserts what it does**: §10, then the section the
   test's docstring names.

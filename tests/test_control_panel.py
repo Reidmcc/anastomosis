@@ -520,3 +520,73 @@ def test_the_parallax_readout_stops_where_the_slab_does(monkeypatch):
     assert other_panel._parallax_reach(1.0) == pytest.approx(asked)
     panel.close()
     other_panel.close()
+
+
+# ---------------------------------------------------------------------------
+# The resonance extras -- DESIGN.md §16
+# ---------------------------------------------------------------------------
+
+
+def test_the_resonance_extras_appear_only_under_resonance(monkeypatch):
+    """The filament option and the capture status are not settings the other
+    modes have, so they are hidden -- not greyed -- outside resonance, and
+    under the rhizotron, which resolves through regulation whatever the mode
+    key says."""
+    app, panel = _mode_panel(monkeypatch)
+    assert panel.filaments_check.isHidden()
+    assert panel.audio_status.isHidden()
+
+    panel.mode_combo.setCurrentIndex(panel.mode_combo.findData("resonance"))
+    panel._on_mode()
+    assert app.config.mode == "resonance"
+    assert not panel.filaments_check.isHidden()
+    assert not panel.audio_status.isHidden()
+    # The status line says something true about the drive rather than
+    # sitting empty -- here, that it has not been started.
+    assert panel.audio_status.text() == app.audio.describe()
+    assert panel.audio_status.text()
+
+    panel.mode_combo.setCurrentIndex(panel.mode_combo.findData("regulation"))
+    panel._on_mode()
+    assert panel.filaments_check.isHidden()
+    assert panel.audio_status.isHidden()
+    panel.close()
+
+
+def test_the_filament_checkbox_reaches_the_app_and_reads_back(monkeypatch):
+    app, panel = _mode_panel(monkeypatch)
+    panel.mode_combo.setCurrentIndex(panel.mode_combo.findData("resonance"))
+    panel._on_mode()
+
+    assert app.config.filaments is True
+    assert panel.filaments_check.isChecked()
+    panel.filaments_check.setChecked(False)
+    assert app.config.filaments is False
+    panel.filaments_check.setChecked(True)
+    assert app.config.filaments is True
+
+    # And the sync direction: state arriving from the app (a config reload)
+    # lands on the checkbox without echoing back as a second toggle.
+    app.config.filaments = False
+    calls = []
+    original = app.set_filaments
+    app.set_filaments = lambda on: calls.append(on) or original(on)
+    panel._load_from_app()
+    assert not panel.filaments_check.isChecked()
+    assert calls == [], "syncing from the app echoed back into it"
+    panel.close()
+
+
+def test_the_rhizotron_hides_the_resonance_extras_too(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+
+    import panelstub
+
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app = panelstub.PanelApp(backend="rhizotron")
+    app.config.mode = "resonance"
+    panel = control_panel.ControlPanel(app)
+    assert panel.filaments_check.isHidden()
+    assert panel.audio_status.isHidden()
+    panel.close()

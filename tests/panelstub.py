@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 
+from anastomosis import audio as audio_module
 from anastomosis import config as config_module
 from anastomosis import events as events_module
 from anastomosis import gpu_params
@@ -66,6 +67,10 @@ class PanelApp:
         self.volume_detail = config_module.normalise_volume_detail(volume_detail)
         self.scheduler = events_module.EventScheduler(seed=1)
         self.engine = None
+        # Never started: the panel only ever reads `describe()` from it, and
+        # a stub that opened a real capture stream would make these tests
+        # hostage to the machine's sound hardware.
+        self.audio = audio_module.AudioDrive()
         self._frame_times = [0.01]
         self._sim_hz_scale = 1.0
         self._size = SIZE
@@ -80,6 +85,13 @@ class PanelApp:
         if wanted == config_module.normalise_mode(self.config.mode):
             return False
         self.config.mode = wanted
+        return True
+
+    def set_filaments(self, on: bool) -> bool:
+        on = bool(on)
+        if self.config.filaments == on:
+            return False
+        self.config.filaments = on
         return True
 
     def save_config(self) -> None:

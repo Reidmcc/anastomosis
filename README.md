@@ -153,16 +153,17 @@ changes while it happens.
 A new field, whether from a reset or a first run, comes up through the same
 slew limiter as everything else, so it grows in rather than cutting.
 
-## Two tunings
+## Three tunings
 
 At the top of the control panel, **Mode** chooses which tuning the eight
 knobs move through: **Regulation** — calm and slow, the original, built for
-settling — or **Activation**, the same instrument tuned for sensory seeking:
-more motion, more colour, more happening. Switching is nothing like the
-Depth choice below it: no reset, no dialog — the field on screen keeps
-everything it has grown and changes character over a few seconds, and
-switching back is just as smooth. The flash-safety bound is identical in
-both modes; neither can flash — see [Safety](#safety).
+settling — **Activation**, the same instrument tuned for sensory seeking:
+more motion, more colour, more happening — or **Resonance**, activation's
+tuning driven by whatever your computer is playing (below). Switching is
+nothing like the Depth choice below it: no reset, no dialog — the field on
+screen keeps everything it has grown and changes character over a few
+seconds, and switching back is just as smooth. The flash-safety bound is
+identical in all modes; none can flash — see [Safety](#safety).
 
 What activation changes is where the knobs *reach*, never what they mean:
 the same slider goes further — faster flow and agents, quicker weather, a
@@ -180,9 +181,68 @@ families drift and hand over the way regimes already do, rather than the
 whole image shifting at once. **Palette** still says where on the circle
 the whole arrangement sits.
 
+### Resonance: a music visualizer that cannot strobe
+
+**Resonance** wires the field to whatever audio the machine is playing.
+The current surges with the bass and the network is sheared by it, colour
+saturates with the highs, the palette wheels faster when the music is busy,
+and the field's own tempo — how quickly the weather changes its mind, how
+fast regimes migrate — follows the music's, estimated from the beat
+itself.
+
+While the music plays, **every event is the music's**: the field's own
+random weather stands aside (and returns in silence), so nothing happens
+on screen that the sound did not ask for. Each musical gesture has its
+event, *shaped by the moment that asked for it* — a harder hit is a
+stronger event, a faster track gets brisker envelopes. A strong onset — a
+downbeat, a drop, a phrase starting — blooms; a song **fading out**, a
+breakdown, a long decrescendo draws a **dieback**, the field thinning as
+the music goes; a **hard cut** — a DJ cut, an abrupt ending — tears a
+**rift**, the network severed the way the music was. In this mode events
+are short gestures (seconds, not minutes) with up to eight in flight, so
+the field stays reactive through a busy passage instead of saturating.
+Everything an event can be shaped into is something the scheduler could
+have drawn by chance — the music chooses within the same ranges, it never
+exceeds them. The filaments themselves are never driven by the music: the
+organism keeps its own behaviour and rides audio-driven weather, which is
+what keeps this anastomosis rather than a spectrum display. When the
+music stops, the field is simply itself again — silence is a first-class
+state, not an error.
+
+One thing this mode will never be: a strobe. The flash-safety bound of
+[Safety](#safety) is identical here, and the music is deliberately not
+allowed to touch brightness at all — its energy goes to motion, colour and
+incident, the channels the safety argument leaves free. The field dances
+with the music; it cannot flash with it.
+
+Capture needs the optional extra:
+
+```bash
+pip install -e ".[audio]"
+```
+
+It prefers a device that is the machine's own output. On Windows that is
+the real thing: the system output is captured directly (WASAPI loopback,
+via the `soundcard` package the extra brings in there), whatever is
+playing and whatever it is playing through, with "Stereo Mix" as the
+fallback where a driver offers it. On Linux it is the PulseAudio/PipeWire
+monitor; on macOS, BlackHole if you have routed through it. Failing all of
+those it falls back to the microphone, which still works with speakers
+playing. The panel shows what it is actually listening to;
+`audio_device = "name"` in the config picks one by hand. Without the
+extra, a device, or any sound, the mode runs as a plain activation-tuned
+field and the status line says why.
+
+Under Resonance the Mode box also grows a checkbox: **Draw the filament
+network**. Untick it and the network fades out of the image while the
+organism keeps running underneath — the medium alone carries the picture,
+still structured by the invisible network the reaction grows on. It is a
+fade, never a cut, and the setting is saved (`filaments = false`).
+
 The preset list follows the mode — and the world. `prism` (colour first),
 `cascade` (motion first, events every few minutes) and `spark` (fine,
-dense, brisk) are activation's; `loam` (the balanced default), `meadow`
+dense, brisk) are activation's; `pulse` (motion-forward, headroom left for
+the drive) is resonance's; `loam` (the balanced default), `meadow`
 (fine, fibrous, eager) and `taproot` (sparse, deep, austere) are the
 rhizotron's. Choosing one — including with `--preset` — brings its tuning
 and its world with it: `--preset meadow` opens the rhizotron.
@@ -533,6 +593,15 @@ unrecoverable:
 - `test_shutdown.py` — that closing the window saves the field and really ends
   the process, the last part in a subprocess with a live Qt loop, because a
   session left running behind a closed window leaves no other trace.
+- `test_audio.py` — the resonance mode's front end and drive (§16): that the
+  feature extractor is deterministic in the sample stream whatever the
+  chunking, bounded under hostile input, and treats silence as zeros; that
+  the modulation layer is the identity at silence, touches exactly its
+  whitelist — which is asserted to exclude every brightness and glow path —
+  and stays inside the motion envelope §14's sweep certified; and that every
+  way capture can be unavailable is a status line rather than an exception.
+  The flash suite additionally slams the drive's whole reach, un-ramped,
+  against the per-pixel bound.
 - `test_rhizotron.py` — the plant-root backend (§15, steps 1–3): that the
   descent really is an exact integer translation, bit for bit, with fresh
   soil generated below; that the soil is deterministic in its seed and
@@ -561,6 +630,7 @@ unrecoverable:
 ```
 anastomosis/
   app.py          window, frame pacing, hot reload, budget governor
+  audio.py        the resonance mode's ears: capture, features, modulation (§16)
   backend.py      what every backend shares: output chain, safety, plumbing
   engine.py       the layered 2.5D backend
   volume.py       the volumetric slab backend

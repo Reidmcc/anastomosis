@@ -274,3 +274,87 @@ def test_the_buttons_go_quiet_when_the_cap_is_reached(monkeypatch):
     app.scheduler.trigger = lambda *a, **k: None
     panel._on_trigger("tint")
     assert "Not now" in panel.event_note.text()
+
+
+# ---------------------------------------------------------------------------
+# Audio-shaped requests -- DESIGN.md §16.4
+# ---------------------------------------------------------------------------
+
+
+def test_vigor_chooses_within_the_sampled_peak_range():
+    """The shaped peak lands on exactly the interval the RNG draws from
+    (0.6-1.0 x strength): the strongest shaped event is precisely the
+    strongest random one, and the gentlest shaped one is the floor of the
+    draw, not zero -- an onset asked for an event, however soft."""
+    params = _params()
+    scheduler = events.EventScheduler(seed=7)
+    soft = scheduler.trigger("bloom", params, vigor=0.0, pace=0.0)
+    hard = scheduler.trigger("bloom", params, vigor=1.0, pace=0.0)
+    assert soft.peak == pytest.approx(0.6 * params.strength)
+    assert hard.peak == pytest.approx(1.0 * params.strength)
+    # And hostile hints clamp rather than escape the interval.
+    scheduler.active.clear()
+    wild = scheduler.trigger("bloom", params, vigor=7.0, pace=-3.0)
+    assert wild.peak == pytest.approx(1.0 * params.strength)
+    assert 0.75 * params.attack_seconds <= wild.attack <= 1.25 * params.attack_seconds
+
+
+def test_pace_shortens_toward_the_certified_floor_and_no_further():
+    """Full pace takes the default minute-scale envelope to the floors --
+    within the same 0.75-1.25 jitter every drawn event gets -- and never
+    below them, whatever the resolved values were."""
+    params = _params()  # regulation defaults: 45 / 60 / 90
+    scheduler = events.EventScheduler(seed=9)
+    brisk = scheduler.trigger("current", params, vigor=0.5, pace=1.0)
+    assert 0.75 * events.ATTACK_FLOOR_SECONDS <= brisk.attack \
+        <= 1.25 * events.ATTACK_FLOOR_SECONDS
+    assert 0.75 * events.HOLD_FLOOR_SECONDS <= brisk.hold \
+        <= 1.25 * events.HOLD_FLOOR_SECONDS
+    assert 0.75 * events.RELEASE_FLOOR_SECONDS <= brisk.release \
+        <= 1.25 * events.RELEASE_FLOOR_SECONDS
+
+    scheduler.active.clear()
+    unhurried = scheduler.trigger("current", params, vigor=0.5, pace=0.0)
+    assert unhurried.attack >= 0.75 * params.attack_seconds
+
+
+def test_a_resolved_envelope_under_the_floor_is_left_alone():
+    """Shaping shortens; it never lengthens. A hand-overridden envelope
+    already under the floor keeps exactly what its owner asked for."""
+    params = _params(attack_seconds=3.0, hold_seconds=2.0, release_seconds=4.0)
+    scheduler = events.EventScheduler(seed=11)
+    event = scheduler.trigger("tint", params, vigor=1.0, pace=1.0)
+    assert 0.75 * 3.0 <= event.attack <= 1.25 * 3.0
+    assert 0.75 * 2.0 <= event.hold <= 1.25 * 2.0
+    assert 0.75 * 4.0 <= event.release <= 1.25 * 4.0
+
+
+def test_an_unshaped_request_is_exactly_what_it_always_was():
+    """The panel's buttons pass no hints; their draws must be untouched --
+    same RNG stream, same distributions, bit for bit."""
+    before = events.EventScheduler(seed=13)._spawn(_params(), kind="bloom")
+    after = events.EventScheduler(seed=13)._spawn(
+        _params(), kind="bloom", vigor=None, pace=None)
+    assert before == after
+
+
+def test_the_floors_cannot_step_the_envelope():
+    """The certified worst case, walked directly: every floor at its 0.75
+    jitter, ticked at the fastest rate any mode reaches, moves the raised
+    cosine well under the bound the per-mode soak test asserts."""
+    scheduler = events.EventScheduler(seed=15)
+    event = scheduler._spawn(_params(), kind="bloom", vigor=1.0, pace=1.0)
+    event.attack = events.ATTACK_FLOOR_SECONDS * 0.75
+    event.hold = events.HOLD_FLOOR_SECONDS * 0.75
+    event.release = events.RELEASE_FLOOR_SECONDS * 0.75
+    event.elapsed = 0.0
+
+    dt = 1.0 / 30.0
+    previous = event.envelope()
+    largest = 0.0
+    while not event.finished:
+        event.elapsed += dt
+        current = event.envelope()
+        largest = max(largest, abs(current - previous))
+        previous = current
+    assert largest < 0.02, f"floored envelope stepped by {largest:.4f}"

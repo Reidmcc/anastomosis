@@ -29,8 +29,9 @@ table of the mode it was tuned in -- `dense` at `intensity=0.78` describes a
 regulation field, and the same numbers through the activation table would
 describe a different picture nobody has judged. The seven originals are
 regulation presets; `prism`, `cascade` and `spark` are activation's
-(:data:`ACTIVATION_PRESETS`), which is why :func:`names` can filter by mode
-and the panel shows the active mode's list.
+(:data:`ACTIVATION_PRESETS`); `pulse` is resonance's
+(:data:`RESONANCE_PRESETS`, DESIGN.md §16). That is why :func:`names` can
+filter by mode and the panel shows the active mode's list.
 """
 
 from __future__ import annotations
@@ -124,6 +125,24 @@ ACTIVATION_PRESETS: dict[str, Macros] = {
 
 PRESETS.update(ACTIVATION_PRESETS)
 
+# The resonance preset (DESIGN.md §16). One to start: the mode's character
+# comes from the audio drive rather than from the knobs, so what a preset
+# contributes here is a sensible *ground state* for the drive to modulate --
+# motion-forward, since the ~100 ms path that reads as "with the music" is
+# the flow, with tempo short of the top so the drive has headroom to surge
+# into rather than a ceiling to press against. A first cut for §16.8 step 5's
+# judgement by eyes, like activation's three were for §14's.
+RESONANCE_PRESETS: dict[str, Macros] = {
+    "pulse": Macros(
+        intensity=0.60, scale=0.40, tempo=0.65, palette=0.45,
+        brightness=0.38, filament_glow=0.50, depth=0.50, stability=0.0,
+        parallax=0.65,
+        event_rate=0.55,
+    ),
+}
+
+PRESETS.update(RESONANCE_PRESETS)
+
 # The rhizotron's presets (DESIGN.md §15). A preset here is macro positions
 # through the *regulation* table -- the root world has one tuning -- plus the
 # world it describes: `meadow` at scale 0.25 is a fibrous root community, and
@@ -166,7 +185,11 @@ DEFAULT_PRESET = "default"
 # must appear here; `mode_of` treats absence as an error rather than guessing.
 # The rhizotron presets are regulation presets: that world has one tuning.
 PRESET_MODES: dict[str, str] = {
-    name: ("activation" if name in ACTIVATION_PRESETS else "regulation")
+    name: (
+        "activation" if name in ACTIVATION_PRESETS
+        else "resonance" if name in RESONANCE_PRESETS
+        else "regulation"
+    )
     for name in PRESETS
 }
 
