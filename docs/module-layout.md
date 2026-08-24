@@ -19,6 +19,7 @@ anastomosis/
   backend.py            shared: output chain, safety stage, parameter mapping
   volume.py             the volumetric slab backend (§5.1)
   device.py             adapter selection, feature detection, device-lost recovery
+  power.py              mains or battery, polled off a thread (§8.3)
   config.py             dataclasses, TOML load/save, validation, safety ceilings
   macros.py             macro → primitive curves, parameter ramping
   sim/

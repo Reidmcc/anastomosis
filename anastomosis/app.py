@@ -387,6 +387,18 @@ class Application:
 
         return RenderCanvas(**kwargs), loop, False
 
+    def _listen_for_device_loss(self) -> None:
+        """Install the error and device-lost listeners on the current device.
+
+        The device is captured in the closure rather than read back off `self`
+        when the event fires, so `_on_device_lost` can tell an event about the
+        device it is holding from one about a device it has already thrown
+        away -- see there.
+        """
+        device = self.device
+        device_module.install_error_handler(
+            device, lambda event: self._on_device_lost(event, device))
+
     def _configure_surface(self) -> None:
         """Point the canvas at the current device.
 
@@ -412,7 +424,7 @@ class Application:
 
         self.device, self.device_info = device_module.request_device(
             gpu=self.options.gpu)
-        device_module.install_error_handler(self.device, self._on_device_lost)
+        self._listen_for_device_loss()
         self._configure_surface()
 
         # Between the adapter and the first geometry, because it decides what
@@ -1167,21 +1179,24 @@ class Application:
         of the machine the session is running on, and a config carried to
         another one must not arrive already sized for this one.
         """
-        overrides = self.config.overrides
         if self.device_info is None or not self.device_info.is_integrated:
             return
-        for reason, key in (
-            ("--scale was given", None),
-            ("render.base_scale is set in the config", "render.base_scale"),
-            ("render.cell_budget is set in the config", "render.cell_budget"),
-        ):
-            pinned = self.options.scale is not None if key is None else key in overrides
-            if pinned:
-                log.info(
-                    "integrated GPU, but %s; leaving the simulation size alone",
-                    reason,
-                )
-                return
+
+        overrides = self.config.overrides
+        if self.options.scale is not None:
+            answered = "--scale was given"
+        elif "render.base_scale" in overrides:
+            answered = "render.base_scale is set in the config"
+        elif "render.cell_budget" in overrides:
+            answered = "render.cell_budget is set in the config"
+        else:
+            answered = None
+        if answered is not None:
+            log.info(
+                "integrated GPU, but %s; leaving the simulation size alone",
+                answered,
+            )
+            return
 
         self._cell_budget = config_module.INTEGRATED_CELL_BUDGET
         self.params = self._retarget()
@@ -1822,10 +1837,15 @@ class Application:
 
         Never fatal, and never a reason not to open: a machine that will not
         say reads as mains, which is the state that changes nothing.
+
+        Started whether or not the backoff is switched on, and the config gates
+        the *effect* rather than the reading -- `_on_battery` is what consults
+        it, live. Two reasons. Switching the backoff on in a running session
+        has to work, and a watch that was never started would leave it reading
+        mains forever. And the answer is worth having anyway: a session running
+        slowly on a laptop is a different report when the stall file can say it
+        was unplugged.
         """
-        if not self.params.power.battery_backoff:
-            log.debug("battery backoff is switched off in the config")
-            return
         try:
             self.power.start()
         except Exception as exc:  # pragma: no cover - a platform quirk
@@ -2160,7 +2180,7 @@ class Application:
         here may touch the GPU -- the readback it would queue is very possibly
         the thing that is stuck -- take a lock, or call into wgpu or Qt.
 
-        The two calls that do run code, rather than read an attribute, are each
+        The calls that do run code, rather than read an attribute, are each
         contained: losing one line of context is a much smaller loss than
         losing the report, which is what an exception here would cost.
         """
@@ -2180,6 +2200,14 @@ class Application:
                 f"no (recovered {self._device_losses}x)"
                 if self._device_losses else "no"
             ),
+            # Two plain attribute reads, within this method's constraints, and
+            # the pair that separates "this laptop is slow" from "this laptop
+            # is unplugged and doing exactly what it was told to" (§8.3).
+            "power": safe("power", self.power.describe),
+            "rates": safe("rates", lambda: (
+                f"{self.effective_sim_hz():.1f} Hz sim, "
+                f"{self._present_fps} fps presented"
+            )),
             "tick": getattr(engine, "tick_count", "<no engine>"),
             "geometry": safe(
                 "geometry",
@@ -2223,7 +2251,7 @@ class Application:
             "hot reload": self._watcher is not None,
         }
 
-    def _on_device_lost(self, event) -> None:
+    def _on_device_lost(self, event, device=None) -> None:
         """The GPU went away underneath a running session.
 
         Worth a report of its own rather than only a log line. A lost device
@@ -2236,7 +2264,17 @@ class Application:
         and rebuilding a device from one is how a bad afternoon starts; the
         frame loop notices the flag on its next pass and does the work there,
         where it already owns everything it would have to replace.
+
+        ``device`` is which device the listener was installed on, bound at
+        install time, so an event arriving from one that has already been
+        replaced can be recognised as such and dropped.
         """
+        if device is not None and device is not self.device:
+            # A device we have already replaced, saying goodbye. Dropping the
+            # old one can itself raise this, and acting on it would take the
+            # session straight back into the rebuild it just came out of.
+            log.debug("ignoring a lost event from a replaced device")
+            return
         reason = str(getattr(event, "reason", None) or event)
         self._device_lost = reason
         if self._stopped or self._stop_requested:
@@ -2294,7 +2332,7 @@ class Application:
         try:
             self.device, self.device_info = device_module.request_device(
                 gpu=self.options.gpu)
-            device_module.install_error_handler(self.device, self._on_device_lost)
+            self._listen_for_device_loss()
             self._configure_surface()
         except Exception as exc:
             # The GPU is not back yet -- a driver still resetting, a laptop

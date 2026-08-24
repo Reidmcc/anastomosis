@@ -38,3 +38,12 @@ Conventional unit tests cover little of the risk here. The real QA is:
   colour clips every one of them.
 - **No-allocation check.** Assert steady-state buffer/texture count and process RSS
   are flat over a long run.
+- **Core-limits check** (`test_integrated.py`, §8.3). Every binding, workgroup
+  shape and byte of workgroup memory counted out of the WGSL and asserted
+  against core WebGPU's guaranteed minima. This one is unusual in that it
+  cannot be written against a device at all: the property it protects — that
+  the application builds on an adapter reporting only the specification's
+  minima — is invisible from every adapter available to anyone working on it,
+  since the software adapter and every discrete card report far higher. A
+  single extra storage texture in a single pass would stop it opening on
+  integrated GPUs and pass every other test in this file.

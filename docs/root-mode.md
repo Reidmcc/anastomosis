@@ -438,7 +438,8 @@ against the fungal backend's trail/reaction/flow/pigment — with W and N
 comfortably at half resolution. The agent pass drops from ~10⁶ walkers to a
 few thousand tips. The one addition, ring-buffer row generation, costs a few
 rows of hashing per scroll step — noise against the budget. Memory sits near
-the layered stack's ~90 MB, nowhere near the slab's gigabytes. No new
+the layered stack's (~480 MB at 1440p — see §8.3 on that figure), nowhere near
+the slab's gigabytes. No new
 resolution, no new frame-pacing questions; §8 applies as written.
 
 ### 15.10 Libraries

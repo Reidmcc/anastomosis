@@ -635,10 +635,13 @@ class VolumeParams:
 
     Memory is the one place the slab is genuinely more expensive than the
     layers: at the default size a field is about 650 MB of rgba16float, against
-    roughly 90 MB for the 1440p layered stack. That is comfortable on the
-    target card (DESIGN.md §8.1), and it is also why ``depth`` -- the knob the
-    control panel exposes -- is the parameter that decides what this backend
-    costs. Everything below that is calibrated against a *filament*, in voxels,
+    about 480 MB of field state for the 1440p layered stack (see
+    :mod:`anastomosis.volume`, which carried the same figure and had it wrong
+    by a factor of five). That is comfortable on the target card (DESIGN.md
+    §8.1) and not comfortable at all on an integrated one, which is why §8.3
+    keeps the laptop guidance on the layered backend; it is also why ``depth``
+    -- the knob the control panel exposes -- is the parameter that decides
+    what this backend costs. Everything below that is calibrated against a *filament*, in voxels,
     rather than against the slab's thickness, so that moving it changes how
     much material a ray passes through and nothing else.
     """
@@ -2419,6 +2422,19 @@ _HEADER = """\
 # [overrides] pins individual primitive parameters by dotted path, e.g.
 #   "render.filament_luma" = 0.42
 # Overrides take precedence over macros.
+#
+# Four overrides matter on a laptop (DESIGN.md §8.3), and all four are
+# already set to something sensible from the GPU the session found:
+#   "render.cell_budget" -- the ceiling on total simulation cells across the
+#     whole layer stack. 0 is no ceiling, which is the default and what a
+#     discrete card keeps; an integrated GPU gets 3000000 unless this or
+#     "render.base_scale" is set here, or --scale was passed. Structural, so
+#     it applies to a field grown from now on.
+#   "render.base_scale" -- what fraction of the window to simulate at, if you
+#     would rather say it directly. Also structural.
+#   "power.battery_backoff" -- 0 to keep the full rates on battery.
+#   "power.battery_sim_scale" / "power.battery_max_fps" -- what those rates
+#     become when it does back off.
 #
 # Safety-relevant values are clamped to hard ceilings on load (see
 # DESIGN.md §7); an out-of-range value is corrected with a warning rather

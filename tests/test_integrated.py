@@ -493,6 +493,13 @@ def test_linux_reads_an_online_mains_supply(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+class _SilentWatchdog:
+    """The stall watchdog's one method `_on_device_lost` reaches for."""
+
+    def dump(self, why):
+        return None
+
+
 class _Rebuildable:
     """An Application with the collaborators `_rebuild_device` replaces."""
 
@@ -518,11 +525,16 @@ class _Rebuildable:
         self._fail_times = fail_times
         self.engines_started = 0
         self.surfaces_configured = 0
+        self.lost_events = []
+        self._stopped = False
+        self._stop_requested = False
+        self.watchdog = _SilentWatchdog()
 
     _rebuild_device = app_module.Application._rebuild_device
+    _listen_for_device_loss = app_module.Application._listen_for_device_loss
 
-    def _on_device_lost(self, event):
-        pass
+    def _on_device_lost(self, event, device=None):
+        self.lost_events.append(device)
 
     def _configure_surface(self):
         self.surfaces_configured += 1
@@ -557,6 +569,27 @@ def test_a_lost_device_is_replaced_rather_than_reported(fake_device):
     assert app.engines_started == 1
     assert app.surfaces_configured == 1
     assert app.device_info is fake_device
+
+
+def test_a_replaced_device_saying_goodbye_does_not_restart_the_cycle(fake_device):
+    """Dropping the old device can itself raise a lost event.
+
+    Acted on, it would take the session straight back into the rebuild it had
+    just come out of, every two seconds, for as long as it was left running.
+    So the listener is bound to the device it was installed on and an event
+    from any other one is dropped.
+    """
+    app = _Rebuildable()
+    stale = app.device
+    app._rebuild_device()
+    assert app.device is not stale
+
+    handler = app_module.Application._on_device_lost
+    handler(app, object(), stale)
+    assert app._device_lost is None  # ignored: not the device we are holding
+
+    handler(app, "the real thing", app.device)
+    assert app._device_lost == "the real thing"
 
 
 def test_the_rebuild_clears_pacing_measured_against_the_dead_device(fake_device):
@@ -645,3 +678,35 @@ def test_saving_a_checkpoint_is_what_makes_a_reset_session_resumable(monkeypatch
 
     assert app.save_checkpoint() is True
     assert app._resume is True
+
+
+# ---------------------------------------------------------------------------
+# What a stall report says about all of it
+# ---------------------------------------------------------------------------
+
+
+def test_the_stall_report_separates_a_slow_laptop_from_an_unplugged_one(tmp_path):
+    """Otherwise the two look identical from outside: a window moving less.
+
+    §8.2's whole argument is that a freeze has to leave evidence taken while
+    it is still happening. A session that is merely doing what it was told to
+    on battery produces the same symptom -- and, without these lines, the same
+    report.
+    """
+    app = app_module.Application(app_module.AppOptions(
+        width=96, height=72, ui=False, checkpoint=False, stall_seconds=0.0,
+        config_path=tmp_path / "config.toml",
+        diagnostics_dir=tmp_path / "diagnostics",
+    ))
+    try:
+        app.power.mains = False
+        app.power.on_battery = True
+
+        snapshot = app.diagnostic_snapshot()
+
+        assert snapshot["power"] == "battery"
+        assert "Hz sim" in snapshot["rates"]
+        assert "fps presented" in snapshot["rates"]
+        assert snapshot["device lost"] == "no"
+    finally:
+        app.power.stop()
