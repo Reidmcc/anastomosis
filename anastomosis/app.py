@@ -47,6 +47,7 @@ from . import device as device_module
 from . import diagnostics as diagnostics_module
 from . import engine as engine_module
 from . import events as events_module
+from . import power as power_module
 from . import rhizotron as rhizotron_module
 from . import volume as volume_module
 from . import window as window_module
@@ -107,6 +108,40 @@ UNASKED_SECONDS = 3.0
 # until the scheduler comes back -- see `_start_carrying`.
 KICKS_BEFORE_A_REPORT = 3
 
+# How long to leave a lost device alone before asking for another. A driver
+# reset takes seconds, and a laptop switching graphics can take longer; what
+# this bounds is the retry, not the wait, so the cost of it being generous is
+# at most this much extra black screen and the cost of it being small is a log
+# nobody can read.
+DEVICE_RETRY_SECONDS = 2.0
+
+# --------------------------------------------------------------------------
+# The budget governor's two levers. DESIGN.md §8, §8.3.
+# --------------------------------------------------------------------------
+
+# The tick rate is the first lever and the cheap one: the motion-compensated
+# interpolator hides a change in it completely, so it may be moved freely. The
+# floor is where the interpolator starts extrapolating far enough to matter.
+SIM_SCALE_FLOOR = 0.35
+
+# The presented frame rate is the second lever, reached only once the first is
+# spent. It exists because §8's original governor assumed the simulation was
+# what cost -- true on the card of §8.1, and not true on an integrated GPU,
+# where the per-frame render work is at least as likely to be what is over
+# budget. Lowering the tick rate against a render-bound frame degrades motion
+# quality and recovers nothing at all (§8.3).
+#
+# Unlike the tick rate this one is visible, which is why it is second and why
+# it is restored first. It is never a safety question in the other direction:
+# the flash bound's per-frame lightness allowance is sized against `max_fps`
+# rather than against the rate achieved, so presenting *fewer* frames only
+# slows the worst case -- see `config.validate`. Presenting more is forbidden,
+# and `_uncapped_fps` is where that is enforced.
+FPS_SCALE_FLOOR = 0.5
+# Below this a pan reads as a sequence of steps rather than as motion, which is
+# the artefact all of §8's pacing exists to avoid. Nothing may present slower.
+MIN_PRESENT_FPS = 12
+
 # Signals that mean "stop", handled so that a `kill` or a session logout ends
 # the same way closing the window does -- with the field on disk. SIGINT is in
 # the list for symmetry; the render loop installs its own handler for that one
@@ -133,6 +168,17 @@ class AppOptions:
     # way -- it decides the shape a field is grown in. Ignored under the
     # layered backend, which has no slab.
     volume_detail: str | None = None
+    # Which class of GPU to ask the platform for, from `device.GPU_CHOICES`.
+    # A property of the launch rather than of the config, like ``backend``:
+    # which card a session runs on is a fact about the machine it was started
+    # on, and hot-reloading it would mean rebuilding the world.
+    gpu: str = device_module.DEFAULT_GPU_CHOICE
+    # ``render.base_scale``, pinned from the command line. ``None`` leaves the
+    # config's, which is the normal case; the flag is for trying a cheaper
+    # simulation without editing a file. Structural, so it takes effect when a
+    # field is grown -- and, being an explicit answer to the question the cell
+    # ceiling exists to answer, it turns the automatic ceiling off (§8.3).
+    scale: float | None = None
     ui: bool = True
     telemetry_seconds: float = 60.0
     # Stall diagnostics. On by default, because the freeze it exists to catch
@@ -157,15 +203,19 @@ class Application:
     # tripping on attributes ``__init__`` has not set yet.
     audio: audio_module.AudioDrive | None = None
     _audio_started = False
+    # Same reasoning: `_session_limits` is reached from every `_retarget`, and
+    # the cell ceiling is settled later than the first one of those (it needs
+    # the adapter). Zero is "no ceiling", which is what a session on a discrete
+    # card keeps.
+    _cell_budget = 0
+    device_info: device_module.DeviceInfo | None = None
 
     def __init__(self, options: AppOptions) -> None:
         self.options = options
         self.config_path = options.config_path or config_module.default_config_path()
         self.config = config_module.load(self.config_path)
         self._pin_volume_detail()
-        resolved = self.config.resolve()
-        # Cap the canvas rate from the config, but never above the requested max.
-        resolved.max_fps = min(resolved.max_fps, options.max_fps)
+        resolved = self._session_limits(self.config.resolve())
 
         self.ramp = config_module.ParamRamp(resolved)
         self.params = resolved
@@ -196,7 +246,15 @@ class Application:
             snapshot=self.diagnostic_snapshot,
         )
         self._started_at = time.time()
+        # The pending flag the frame loop acts on, and a record for the stall
+        # report: once a rebuild has succeeded the flag is cleared, and a
+        # session that survived a device loss should still say that it did.
         self._device_lost: str | None = None
+        self._device_losses = 0
+        # When a rebuild was last attempted, so a driver that is still coming
+        # back is asked again on a human timescale rather than every frame.
+        self._device_retry_at = float("-inf")
+        self._resume = bool(options.resume)
         self._saver = checkpoint_module.BackgroundSaver()
         self._last_checkpoint = time.perf_counter()
         self._checkpoint_saved_at: float | None = None
@@ -204,6 +262,7 @@ class Application:
 
         self.canvas = None
         self.device = None
+        self.device_info = None
         self.engine = None
         self.present_context = None
         self.target_format = None
@@ -227,6 +286,18 @@ class Application:
         self._last_frame_time = 0.0
         self._frame_times: list[float] = []
         self._sim_hz_scale = 1.0
+        # The governor's second lever, and the rate currently being asked for.
+        # `_present_fps` starts at the launch's cap so the first governor
+        # window has a real slot to measure against rather than a zero.
+        self._fps_scale = 1.0
+        self._present_fps = max(int(options.max_fps), 1)
+        # Where the electricity is coming from (DESIGN.md §8.3). Built here and
+        # started with the window, so a partially built application -- and the
+        # whole of the test suite -- can read `on_battery` without a thread
+        # ever having run.
+        self.power = power_module.PowerSource(
+            poll_seconds=self.params.power.poll_seconds)
+        self._battery = False
         self._last_telemetry = time.perf_counter()
         self._watcher = None
         self._size = (0, 0)
@@ -316,15 +387,14 @@ class Application:
 
         return RenderCanvas(**kwargs), loop, False
 
-    def setup(self) -> None:
-        # First, and before the GPU is touched: a driver that crashes on
-        # device creation should leave stacks behind too.
-        diagnostics_module.install_crash_handler(self.options.diagnostics_dir)
+    def _configure_surface(self) -> None:
+        """Point the canvas at the current device.
 
-        self.canvas, self.loop, self.have_qt = self._make_canvas()
-
-        self.device, self.device_info = device_module.request_device()
-        device_module.install_error_handler(self.device, self._on_device_lost)
+        Its own method because it happens twice: once at startup, and again
+        every time a lost device is replaced (`_rebuild_device`). The context
+        object survives, but everything it holds is bound to a device that no
+        longer exists, so all of it is asked again.
+        """
         self.present_context = self.canvas.get_context("wgpu")
         self.target_format = self.present_context.get_preferred_format(
             self.device.adapter
@@ -332,6 +402,25 @@ class Application:
         self.present_context.configure(
             device=self.device, format=self.target_format
         )
+
+    def setup(self) -> None:
+        # First, and before the GPU is touched: a driver that crashes on
+        # device creation should leave stacks behind too.
+        diagnostics_module.install_crash_handler(self.options.diagnostics_dir)
+
+        self.canvas, self.loop, self.have_qt = self._make_canvas()
+
+        self.device, self.device_info = device_module.request_device(
+            gpu=self.options.gpu)
+        device_module.install_error_handler(self.device, self._on_device_lost)
+        self._configure_surface()
+
+        # Between the adapter and the first geometry, because it decides what
+        # shape that geometry is.
+        self._settle_cell_budget()
+        # And before the first frame, so a session started on battery is
+        # already backed off rather than backing off a minute in.
+        self._start_power_watch()
 
         width, height = self.canvas.get_physical_size()
         self._start_engine(width, height)
@@ -1023,11 +1112,90 @@ class Application:
         macro curves, the overrides and the session's frame cap are combined,
         and one place a change becomes a ramp target rather than a step.
         """
-        resolved = self.config.resolve()
-        resolved.max_fps = min(resolved.max_fps, self.options.max_fps)
+        resolved = self._session_limits(resolved=self.config.resolve())
         self.ramp.set_target(resolved)
         self._sync_audio()
         return resolved
+
+    def _session_limits(self, resolved: config_module.Params):
+        """Apply what the *launch* decides, on top of what the file says.
+
+        Three things, and they have the same shape: each is a fact about the
+        machine or the command line rather than about the configuration, so
+        none of them may be written back to the file, and all of them have to
+        be reapplied every time the file is re-read. Putting them here rather
+        than at each call site is what keeps a hot reload from quietly undoing
+        a flag the session was started with.
+
+        ``max_fps`` is capped, never raised: the flash arithmetic in
+        `config.validate` sized the per-frame lightness allowance against the
+        cap, so this is a safety-relevant direction.
+
+        ``base_scale`` takes ``--scale`` if the launch gave one.
+
+        ``cell_budget`` takes the integrated-GPU ceiling if this session found
+        an integrated GPU and nothing has already answered the question --
+        which `_settle_cell_budget` decides once, when the adapter is known.
+        """
+        options = self.options
+        resolved.max_fps = min(resolved.max_fps, options.max_fps)
+        if options.scale is not None:
+            resolved.render.base_scale = float(options.scale)
+        if self._cell_budget > 0 and "render.cell_budget" not in self.config.overrides:
+            resolved.render.cell_budget = self._cell_budget
+        return config_module.validate(resolved)
+
+    def _settle_cell_budget(self) -> None:
+        """Decide whether this session simulates under a ceiling. §8.3.
+
+        Called once, with the adapter in hand. The ceiling exists because an
+        integrated GPU's memory bandwidth is the *machine's*, shared with the
+        CPU and the compositor, so a fullscreen stack on a modern laptop panel
+        would take a share of it that the "leave the machine usable"
+        requirement (§1) does not have to give.
+
+        Three ways to opt out, and all of them are somebody having already
+        answered the question this would answer for them:
+
+        * ``--scale``, which sets the resolution directly;
+        * ``render.base_scale`` pinned in the config's overrides, likewise;
+        * ``render.cell_budget`` pinned there, which is the ceiling itself --
+          honoured whatever it says, including zero for "no ceiling, I know
+          what this card is".
+
+        Nothing here is written to the config file. The ceiling is a property
+        of the machine the session is running on, and a config carried to
+        another one must not arrive already sized for this one.
+        """
+        overrides = self.config.overrides
+        if self.device_info is None or not self.device_info.is_integrated:
+            return
+        for reason, key in (
+            ("--scale was given", None),
+            ("render.base_scale is set in the config", "render.base_scale"),
+            ("render.cell_budget is set in the config", "render.cell_budget"),
+        ):
+            pinned = self.options.scale is not None if key is None else key in overrides
+            if pinned:
+                log.info(
+                    "integrated GPU, but %s; leaving the simulation size alone",
+                    reason,
+                )
+                return
+
+        self._cell_budget = config_module.INTEGRATED_CELL_BUDGET
+        self.params = self._retarget()
+        # Structural and never ramped, so the ramp is snapped to it: the very
+        # next thing this launch does is derive a geometry from `self.params`,
+        # and deriving it from a value that is still on its way to the target
+        # would build the field at a size nobody chose.
+        self.ramp.snap(self.params)
+        log.info(
+            "sizing the simulation for an integrated GPU: at most %.1f M "
+            "cells across the stack (DESIGN.md §8.3). Override with --scale, "
+            "or with render.cell_budget in the config.",
+            self._cell_budget / 1e6,
+        )
 
     def set_filaments(self, on: bool) -> bool:
         """Show or hide the filament network under resonance. DESIGN.md §16.
@@ -1168,8 +1336,16 @@ class Application:
         )
 
     def _saved_checkpoint(self) -> checkpoint_module.Checkpoint | None:
-        """The checkpoint on disk, if there is one and this launch wants it."""
-        if not (self.options.checkpoint and self.options.resume):
+        """The checkpoint on disk, if there is one and this launch wants it.
+
+        ``--reset`` is a statement about the *launch* -- start me a new field
+        rather than the old one -- and `_resume` is where it stops being one.
+        Once this session has written a field of its own, that field is what a
+        later rebuild comes back to: a device lost an hour into a `--reset`
+        session must not discard the hour, which is exactly what re-reading the
+        launch flag would do.
+        """
+        if not (self.options.checkpoint and self._resume):
             return None
         saved = checkpoint_module.load(self.checkpoint_path)
         if saved is None:
@@ -1214,10 +1390,14 @@ class Application:
             log.error("could not checkpoint: %s", exc)
             return False
         self._checkpoint_saved_at = time.time()
+        # There is now a field of this session's own on disk, so anything that
+        # rebuilds the engine from here should come back to it -- see
+        # `_saved_checkpoint`.
+        self._resume = True
         # The readback stalls this frame. Restart the clock so the stall is not
         # charged to the pacing accumulator, which would otherwise produce a
         # burst of catch-up ticks, or to the governor, which would throttle the
-        # tick rate over a cost that recurs once every five minutes.
+        # tick rate over a cost that recurs once every fifteen minutes.
         self._last_time = time.perf_counter()
         return True
 
@@ -1585,6 +1765,7 @@ class Application:
         self._saver.join()
         if self.audio is not None:
             self.audio.stop()
+        self.power.stop()
         self._stop_window_poll()
         self._stop_hot_reload()
         self._close_panel()
@@ -1634,11 +1815,125 @@ class Application:
 
     # -- frame --------------------------------------------------------------
 
-    def _governor(self, frame_time: float) -> None:
-        """Throttle the sim tick rate if frames are running long.
+    # -- power ---------------------------------------------------------------
 
-        Only the tick rate is adjusted. The interpolator hides that completely,
-        whereas changing resolution would be plainly visible.
+    def _start_power_watch(self) -> None:
+        """Begin asking where the machine's power is coming from. §8.3.
+
+        Never fatal, and never a reason not to open: a machine that will not
+        say reads as mains, which is the state that changes nothing.
+        """
+        if not self.params.power.battery_backoff:
+            log.debug("battery backoff is switched off in the config")
+            return
+        try:
+            self.power.start()
+        except Exception as exc:  # pragma: no cover - a platform quirk
+            log.debug("could not watch the power source: %s", exc)
+            return
+        self._battery = self.power.on_battery
+        log.info("power source: %s", self.power.describe())
+
+    def _on_battery(self) -> bool:
+        """Whether to be running in the cheap register right now.
+
+        The config's switch is read live rather than latched, so turning the
+        backoff off in a running session takes effect at the next frame -- and
+        turning it on while unplugged takes effect just as fast.
+        """
+        return bool(self.params.power.battery_backoff and self.power.on_battery)
+
+    def _note_power_change(self) -> None:
+        """Log the transition, once, when it happens."""
+        battery = self._on_battery()
+        if battery == self._battery:
+            return
+        self._battery = battery
+        if battery:
+            log.info(
+                "on battery: simulating at x%.2f and presenting at %d fps "
+                "(DESIGN.md §8.3)",
+                self.params.power.battery_sim_scale,
+                self.params.power.battery_max_fps,
+            )
+        else:
+            log.info("on mains: back to the full rate")
+
+    # -- pacing --------------------------------------------------------------
+
+    def effective_sim_hz(self) -> float:
+        """The tick rate actually in force, after both things that lower it.
+
+        The governor's scale and the battery backoff, in one place, because
+        two callers need the same answer and would otherwise each apply half
+        of it: the frame loop, which paces off it, and the control panel,
+        which reports it -- and a panel reading 20 Hz beside a session ticking
+        at 12 is a panel saying something untrue about the only number there
+        that the user can act on.
+        """
+        hz = self.params.sim_hz * self._sim_hz_scale
+        if self._on_battery():
+            hz *= self.params.power.battery_sim_scale
+        return max(hz, 2.0)
+
+    def _uncapped_fps(self) -> int:
+        """The rate this session would present at with the governor idle.
+
+        The config's cap, lowered on battery and never raised: `max_fps` is the
+        number the flash arithmetic was done against (`config.validate`), so
+        nothing here may exceed it.
+        """
+        cap = max(int(self.params.max_fps), 1)
+        if self._on_battery():
+            cap = min(cap, max(int(self.params.power.battery_max_fps), 1))
+        return cap
+
+    def _target_fps(self) -> int:
+        """And what it should present at now, with the governor's lever in."""
+        return max(
+            int(round(self._uncapped_fps() * self._fps_scale)), MIN_PRESENT_FPS
+        )
+
+    def _apply_frame_rate(self) -> None:
+        """Push the rate at the canvas, when it has changed.
+
+        The scheduler owns the frame clock, so a rate the application has
+        decided on is not in force until the canvas has been told. Pushed only
+        on a change, because this runs every frame; never raised past
+        `_uncapped_fps`, which is the safety-relevant direction.
+        """
+        wanted = min(self._target_fps(), self._uncapped_fps())
+        if wanted == self._present_fps:
+            return
+        previous, self._present_fps = self._present_fps, wanted
+        try:
+            self.canvas.set_update_mode("continuous", max_fps=float(wanted))
+        except Exception as exc:  # pragma: no cover - a canvas without one
+            log.debug("could not change the frame rate: %s", exc)
+            return
+        log.info("presenting at %d fps (was %d)", wanted, previous)
+
+    def _governor(self, frame_time: float) -> None:
+        """Keep the frame inside its budget, with the two levers of §8.3.
+
+        The tick rate first, because the motion-compensated interpolator hides
+        it completely; the presented frame rate only once the tick rate is at
+        its floor and frames are *still* long. That order is the whole point of
+        the second lever: on the card of §8.1 the simulation is what costs and
+        the first lever is enough, while on an integrated GPU the per-frame
+        render work is at least as likely to be what is over budget -- and
+        against a render-bound frame, lowering the tick rate degrades motion
+        and recovers nothing.
+
+        Recovery runs in the opposite order, giving back the visible
+        degradation before the invisible one, and it is tested against the
+        budget at the *full* rate rather than the reduced one. Otherwise the
+        two levers would chase each other: dropping to 20 fps makes the slot
+        half again as long, which would read as headroom and put the rate
+        straight back.
+
+        Resolution is never touched, at any point. That would be a visible
+        discontinuity, and is decided once when the field is grown (§8.3).
         """
         self._frame_times.append(frame_time)
         if len(self._frame_times) < 30:
@@ -1646,12 +1941,21 @@ class Application:
         window = self._frame_times[-30:]
         self._frame_times = window
         median = sorted(window)[len(window) // 2]
-        budget = 1.0 / max(self.params.max_fps, 1)
 
-        if median > budget * 0.92:
-            self._sim_hz_scale = max(0.35, self._sim_hz_scale * 0.97)
-        elif median < budget * 0.55:
-            self._sim_hz_scale = min(1.0, self._sim_hz_scale * 1.01)
+        slot = 1.0 / max(self._present_fps, 1)
+        full = 1.0 / max(self._uncapped_fps(), 1)
+
+        if median > slot * 0.92:
+            if self._sim_hz_scale > SIM_SCALE_FLOOR:
+                self._sim_hz_scale = max(
+                    SIM_SCALE_FLOOR, self._sim_hz_scale * 0.97)
+            else:
+                self._fps_scale = max(FPS_SCALE_FLOOR, self._fps_scale * 0.97)
+        elif median < full * 0.55:
+            if self._fps_scale < 1.0:
+                self._fps_scale = min(1.0, self._fps_scale * 1.01)
+            else:
+                self._sim_hz_scale = min(1.0, self._sim_hz_scale * 1.01)
 
     def _follow_canvas_size(self, now: float) -> None:
         """Track the window size without ever restarting the simulation.
@@ -1688,6 +1992,14 @@ class Application:
         if self._stop_requested:
             self.shutdown()
             return
+        # Before the watchdog is told a frame happened, and before anything
+        # touches the engine: on a lost device every call below would fail or
+        # quietly do nothing, and this is the one thread allowed to replace it.
+        # A rebuild that does not take leaves the flag set and is retried on
+        # the next frame; nothing is drawn in between, which is honest -- there
+        # is no device to draw with.
+        if self._device_lost is not None and not self._rebuild_device():
+            return
         self.watchdog.frame()
         now = time.perf_counter()
         frame_dt = min(now - self._last_time, 0.25)  # clamp after a stall
@@ -1695,6 +2007,11 @@ class Application:
 
         self.params = self.ramp.update(frame_dt)
         self._follow_canvas_size(now)
+        # Both cheap and both level-triggered: the power watch's answer is a
+        # plain attribute written by another thread, and the rate is only
+        # pushed at the canvas when it has actually changed.
+        self._note_power_change()
+        self._apply_frame_rate()
 
         # The audio drive (DESIGN.md §16.4): features in, an effective
         # parameter set out. Applied after the ramp -- the drive is allowed
@@ -1733,7 +2050,7 @@ class Application:
                         "(%.2f, %.2f)",
                         event.kind, ask.vigor, ask.pace, event.x, event.y)
 
-        sim_hz = max(params.sim_hz * self._sim_hz_scale, 2.0)
+        sim_hz = self.effective_sim_hz()
         tick_interval = 1.0 / sim_hz
 
         self._accumulator += frame_dt
@@ -1796,8 +2113,8 @@ class Application:
         window = self._frame_times[-30:] or [0.0]
         log.info(
             "tick=%d  mean_v=%.4f var=%.5f activity=%.5f  ell=%.2f (%+.3f)  "
-            "cap=%.2f  exposure=%.2f  sim=%.1fHz (x%.2f)  frame=%.1fms  "
-            "events=[%s]",
+            "cap=%.2f  exposure=%.2f  sim=%.1fHz (x%.2f)  %dfps%s  "
+            "frame=%.1fms  events=[%s]",
             self.engine.tick_count,
             stats["mean_v"], stats["var_v"], stats["mean_activity"],
             # Feature size and the correction the loop is holding to get it.
@@ -1810,7 +2127,12 @@ class Application:
             # capacity has become a deposit sink; see AgentParams.deposit_cap.
             stats["cap_return"],
             stats["exposure"],
-            self.params.sim_hz * self._sim_hz_scale, self._sim_hz_scale,
+            self.effective_sim_hz(), self._sim_hz_scale,
+            # The presented rate is here because it is now a thing the
+            # governor moves (§8.3): a session running at 20 fps because the
+            # frames were long looks, in a log that only quotes the tick rate,
+            # exactly like one running at 30.
+            self._present_fps, " on battery" if self._on_battery() else "",
             1000.0 * (sum(window) / len(window)),
             self.scheduler.describe(),
         )
@@ -1854,7 +2176,10 @@ class Application:
             "uptime": f"{time.time() - self._started_at:.0f}s",
             "backend": self.backend,
             "device": safe("device", lambda: self.device_info.describe()),
-            "device lost": self._device_lost or "no",
+            "device lost": self._device_lost or (
+                f"no (recovered {self._device_losses}x)"
+                if self._device_losses else "no"
+            ),
             "tick": getattr(engine, "tick_count", "<no engine>"),
             "geometry": safe(
                 "geometry",
@@ -1906,6 +2231,11 @@ class Application:
         does nothing -- so what the user sees is a window that has stopped
         moving, which is indistinguishable from the freeze the watchdog is
         looking for and is not one. The report says which it was.
+
+        Nothing is rebuilt here. This can be called from a driver's own thread,
+        and rebuilding a device from one is how a bad afternoon starts; the
+        frame loop notices the flag on its next pass and does the work there,
+        where it already owns everything it would have to replace.
         """
         reason = str(getattr(event, "reason", None) or event)
         self._device_lost = reason
@@ -1919,6 +2249,93 @@ class Application:
         path = self.watchdog.dump(f"device lost: {reason}")
         if path is not None:
             log.error("wrote %s", path)
+
+    def _rebuild_device(self) -> bool:
+        """Replace a lost device and everything that was built on it. §8.3.
+
+        A device loss used to be scaffolding: noticed, reported, and then
+        nothing, which left a live process showing a still image. That was a
+        defensible place to stop while the target was one desktop card, where
+        losing a device means a driver reset somebody is already looking at.
+        It is not defensible on a laptop, where the same event is a lid
+        closing, a dock being pulled, or a hybrid-graphics switch -- routine
+        things, happening nightly, to a session explicitly meant to survive
+        days.
+
+        Everything on the far side of the device goes: the engine and every
+        texture and buffer in it, the bind-group caches, the surface
+        configuration. So everything is asked for again, in the same order the
+        launch asks for it, and the field comes back from the checkpoint on
+        disk. That last part is the cost and it is not recoverable: the field
+        in memory died with the device, and reading it back was never possible
+        -- the readback would have needed the device that went away. What
+        returns is the last save, which at the default interval is up to
+        fifteen minutes old, and the log says so rather than letting a
+        silently younger field look like a successful recovery.
+
+        Returns True if the session is running again.
+        """
+        now = time.perf_counter()
+        if now - self._device_retry_at < DEVICE_RETRY_SECONDS:
+            # A driver that is still resetting will refuse for as long as it
+            # takes, and asking it thirty times a second produces a log nobody
+            # can read and a window that is busy rather than waiting.
+            return False
+        self._device_retry_at = now
+        reason, self._device_lost = self._device_lost, None
+        log.warning("rebuilding after device loss (%s)", reason)
+
+        engine, self.engine = self.engine, None
+        self.device = None
+        self.device_info = None
+        self.present_context = None
+        del engine  # its resources belong to a device that no longer exists
+
+        try:
+            self.device, self.device_info = device_module.request_device(
+                gpu=self.options.gpu)
+            device_module.install_error_handler(self.device, self._on_device_lost)
+            self._configure_surface()
+        except Exception as exc:
+            # The GPU is not back yet -- a driver still resetting, a laptop
+            # mid-switch. Put the flag back so the next frame tries again, and
+            # say so once per attempt rather than thirty times a second.
+            self._device_lost = reason
+            log.error("could not reacquire a GPU device: %s", exc)
+            return False
+
+        width, height = self._size
+        if width <= 0 or height <= 0:
+            width, height = self.options.width, self.options.height
+        self.resumed_from = None
+        try:
+            # Exactly the launch path, including its own degrade-to-fresh:
+            # a checkpoint that cannot be built at is a fresh field, not a
+            # dead session.
+            self._start_engine(width, height)
+        except Exception as exc:
+            self._device_lost = reason
+            log.error("could not rebuild the simulation: %s", exc)
+            return False
+
+        self._size = (width, height)
+        # Pacing state describes a device that is gone: the frame times were
+        # measured against it, and the accumulator holds however long the loss
+        # took to notice.
+        self._accumulator = 0.0
+        self._sim_hz_scale = 1.0
+        self._fps_scale = 1.0
+        self._frame_times.clear()
+        self._last_time = time.perf_counter()
+        self._last_checkpoint = time.perf_counter()
+        self._device_losses += 1
+        log.warning(
+            "recovered on %s; the field is %s",
+            self.device_info.describe(),
+            f"the one saved at {self.resumed_from}" if self.resumed_from
+            else "freshly seeded (there was no usable checkpoint to return to)",
+        )
+        return True
 
     # -- run ----------------------------------------------------------------
 
@@ -1950,7 +2367,7 @@ class Application:
             self.loop.run()
         finally:
             # Closing the window is the commonest way a session ends, so it has
-            # to checkpoint just like a five-minute tick would. By this point
+            # to checkpoint just like an interval tick would. By this point
             # that has usually already happened, from the close event; this is
             # the backstop for the loop ending some other way.
             self.shutdown()

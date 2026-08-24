@@ -117,7 +117,7 @@ anastomosis --write-config           # write a config file and exit
 ## Picking up where you left off
 
 Closing the window doesn't throw the field away. The simulation state is saved
-every five minutes and again on exit, and **the next launch continues from it**
+every fifteen minutes and again on exit, and **the next launch continues from it**
 — you come back to the network you left rather than to fresh noise. A field
 that has been running for hours looks materially different from one that
 started a minute ago, and growing that back takes a while.
@@ -128,7 +128,7 @@ the old field is gone once the saved state is), or:
 ```bash
 anastomosis --reset                  # ignore the saved state this launch
 anastomosis --no-checkpoint          # don't save or resume at all
-anastomosis --checkpoint-interval 60 # save more often than every 5 minutes
+anastomosis --checkpoint-interval 60 # save more often than every 15 minutes
 ```
 
 The state lives in `~/.local/state/anastomosis/checkpoint.npz` — about 150 MB at

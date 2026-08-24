@@ -185,7 +185,7 @@ Long runs fail in specific, known ways. Each gets an explicit countermeasure:
   materially different from a fresh one; this is worth the small complexity.
 
   What is *not* in the snapshot is not there on purpose — at 1440p the fields add
-  up to ~230 MB and this is written every five minutes for days. `velocity` and
+  up to ~230 MB and this is written every fifteen minutes for days. `velocity` and
   `reaction_prev` are rewritten unconditionally at the start of every tick, before
   anything reads them, so they carry nothing between ticks; skipping them takes the
   file to ~150 MB. The deposit accumulator is drained by `atomicExchange` every

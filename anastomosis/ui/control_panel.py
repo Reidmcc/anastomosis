@@ -1111,10 +1111,17 @@ class ControlPanel(QtWidgets.QWidget):
         )
         window = self.app._frame_times[-30:] or [0.0]
         frame_ms = 1000.0 * sum(window) / len(window)
-        self.status_labels["rate"].setText(
-            f"{self.app.params.sim_hz * self.app._sim_hz_scale:.1f} Hz   "
-            f"{frame_ms:.1f} ms/frame"
+        # The rates in force rather than the ones configured. Both are moved
+        # by the budget governor and by the battery backoff (DESIGN.md §8.3),
+        # and a panel quoting the configured pair beside a session running the
+        # reduced one would hide the only symptom either produces.
+        rate = (
+            f"{self.app.effective_sim_hz():.1f} Hz   "
+            f"{self.app._present_fps} fps   {frame_ms:.1f} ms/frame"
         )
+        if self.app._on_battery():
+            rate += "   (on battery)"
+        self.status_labels["rate"].setText(rate)
         self.status_labels["events"].setText(self.app.scheduler.describe())
         self.status_labels["checkpoint"].setText(self.app.checkpoint_status())
 

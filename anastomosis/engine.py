@@ -61,6 +61,75 @@ AGENT_STRIDE = 24  # vec2 pos, f32 heading, u32 rng, f32 recent, f32 age
 MAX_AGENTS_PER_CELL = 8
 
 
+def layer_cells(
+    width: int, height: int, scale: float, count: int, falloff: float
+) -> int:
+    """Total simulation cells the stack would hold at this scale.
+
+    The same rounding :meth:`Geometry.derive` does, because a ceiling checked
+    against an estimate is a ceiling that is wrong by exactly the amount the
+    rounding adds -- and the rounding is not small on the back layers, where
+    the floors (64x32) do most of the deciding.
+    """
+    total = 0
+    for i in range(count):
+        shrink = falloff**i
+        total += (
+            round_up(max(int(width * scale * shrink), 64), 32)
+            * max(int(height * scale * shrink), 32)
+        )
+    return total
+
+
+def fit_cell_budget(
+    width: int,
+    height: int,
+    scale: float,
+    count: int,
+    falloff: float,
+    budget: int,
+) -> float:
+    """Shrink ``scale`` until the stack fits ``budget`` cells. DESIGN.md §8.3.
+
+    Returns ``scale`` unchanged when there is no ceiling (``budget <= 0``) or
+    when the stack already fits, which is every case on the target card of
+    §8.1 and most cases anywhere else -- the ceiling is meant to be invisible
+    until the window gets big.
+
+    It only ever shrinks. A ceiling that *raised* the resolution of a small
+    window would be spending an integrated GPU's bandwidth on detail nobody
+    asked for, and `base_scale` would have stopped meaning what it says.
+
+    The first guess is closed form -- cells go as the square of the scale, so
+    the scale that fits is the square root of the ratio -- and then it walks
+    down, because the rounding and the per-layer floors mean the closed form
+    is an estimate rather than an answer. The walk is bounded and stops early
+    once shrinking has stopped removing cells, which is what happens when
+    every layer has hit its floor and the ceiling simply cannot be met.
+    """
+    if budget <= 0:
+        return scale
+    cells = layer_cells(width, height, scale, count, falloff)
+    if cells <= budget:
+        return scale
+
+    area = max(width * height, 1)
+    spread = sum((falloff**i) ** 2 for i in range(count)) or 1.0
+    scale = min(scale, math.sqrt(budget / (area * spread)))
+
+    for _ in range(64):
+        cells = layer_cells(width, height, scale, count, falloff)
+        if cells <= budget:
+            break
+        smaller = scale * 0.97
+        if layer_cells(width, height, smaller, count, falloff) >= cells:
+            # Every layer is on its floor; shrinking further buys nothing and
+            # the ceiling is simply unreachable at this layer count.
+            break
+        scale = smaller
+    return scale
+
+
 @dataclass(frozen=True)
 class LayerGeometry:
     """The allocation sizes of one layer.
@@ -146,11 +215,15 @@ class Geometry:
         """The geometry a fresh field of this size and configuration would have."""
         render = params.render
         count = max(1, min(render.layers, MAX_LAYERS))
+        scale = fit_cell_budget(
+            width, height, render.base_scale, count,
+            render.scale_falloff, int(render.cell_budget),
+        )
         layers = []
         for i in range(count):
             shrink = render.scale_falloff**i
-            w = round_up(max(int(width * render.base_scale * shrink), 64), 32)
-            h = max(int(height * render.base_scale * shrink), 32)
+            w = round_up(max(int(width * scale * shrink), 64), 32)
+            h = max(int(height * scale * shrink), 32)
             layers.append(LayerGeometry(
                 index=i,
                 width=w,

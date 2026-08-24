@@ -73,7 +73,21 @@ class PanelApp:
         self.audio = audio_module.AudioDrive()
         self._frame_times = [0.01]
         self._sim_hz_scale = 1.0
+        # The pacing the status row reports (DESIGN.md §8.3): the rate in
+        # force, the rate being presented, and whether the machine is on a
+        # battery. A desktop is the stub's default, since that is the case
+        # where the row says nothing extra.
+        self._present_fps = self.params.max_fps
+        self._battery = False
         self._size = SIZE
+
+    # -- pacing -------------------------------------------------------------
+
+    def effective_sim_hz(self) -> float:
+        return self.params.sim_hz * self._sim_hz_scale
+
+    def _on_battery(self) -> bool:
+        return self._battery
 
     # -- parameters ---------------------------------------------------------
 
