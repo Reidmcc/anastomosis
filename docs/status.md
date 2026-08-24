@@ -51,8 +51,8 @@ and that is now decided from the adapter instead: which GPU is asked for at
 all, a cell ceiling that holds the stack to what shared memory bandwidth can
 carry, a second lever for the budget governor for when the render rather than
 the simulation is what is late, a battery backoff, and the device-loss rebuild
-above. Layered only; the slab's shared-memory footprint is discussed in §8.3
-and not solved there.
+above. The ceiling covers the layered stack and the rhizotron; the slab's
+shared-memory footprint is discussed in §8.3 and not solved there.
 
 None of it has been watched on an integrated GPU, which is the same caveat
 this section makes about everything else -- the arithmetic says the sizing is

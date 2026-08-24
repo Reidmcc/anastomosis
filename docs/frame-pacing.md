@@ -275,6 +275,11 @@ feature-size apparatus is calibrated in *cells*, so a smaller grid gives the sam
 morphology at slightly larger on-screen features rather than a blurrier version of
 the same picture.
 
+The rhizotron (§15) is under the same ceiling. Its soil pane is one layer rather
+than three, but it is a *full-window* layer, so at 1600p it is 4.1 M cells —
+more than the stack's front sheet — and its passes read the same shared memory.
+Sizing two backends of three would have been an odd place to stop.
+
 Three million is one 1080p stack (1920×1080 + 960×540 + 480×270 = 2.72 M), so the
 commonest laptop panel is untouched. Where it bites is the panels that arrived
 after §8.1 was written:

@@ -523,10 +523,9 @@ Four things happen by themselves:
   switch takes the GPU away; the device, the surface and the whole simulation
   are rebuilt and the field comes back from its last save.
 
-Use the layered backend, which is the default. The volumetric slab wants
-650 MB and a heavy raymarch, and on shared memory that's a different
-proposition — nothing stops you selecting it, but it isn't what this is
-sized for.
+The cap covers the layered stack and the rhizotron. The volumetric slab is a
+different proposition — 650 MB of shared memory and a heavy raymarch — and
+nothing stops you selecting it, but it isn't what this is sized for.
 
 The control panel's **Sim / frame** line shows the rates actually in force, so
 you can see when any of the above is happening.

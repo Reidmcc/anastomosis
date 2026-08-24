@@ -2012,15 +2012,22 @@ class Application:
         if self._stop_requested:
             self.shutdown()
             return
-        # Before the watchdog is told a frame happened, and before anything
-        # touches the engine: on a lost device every call below would fail or
-        # quietly do nothing, and this is the one thread allowed to replace it.
-        # A rebuild that does not take leaves the flag set and is retried on
-        # the next frame; nothing is drawn in between, which is honest -- there
-        # is no device to draw with.
-        if self._device_lost is not None and not self._rebuild_device():
-            return
         self.watchdog.frame()
+        # Before anything touches the engine: on a lost device every call below
+        # would fail or quietly do nothing, and this is the one thread allowed
+        # to replace it. A rebuild that does not take leaves the flag set and
+        # is retried on the next frame; nothing is drawn in between, which is
+        # honest -- there is no device to draw with.
+        #
+        # The frame is marked *first*, and the phase left at idle on the way
+        # out, so a driver taking a minute to come back does not also read as
+        # a wedged loop. It is not one: the loop is running and knows exactly
+        # what it is waiting for, it said so in the log, and a stall report
+        # every thirty seconds for the duration is the report-nobody-reads
+        # failure §8.2 is built to avoid.
+        if self._device_lost is not None and not self._rebuild_device():
+            self.watchdog.mark(diagnostics_module.IDLE)
+            return
         now = time.perf_counter()
         frame_dt = min(now - self._last_time, 0.25)  # clamp after a stall
         self._last_time = now

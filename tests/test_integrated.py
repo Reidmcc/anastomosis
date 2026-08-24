@@ -242,6 +242,30 @@ def test_the_ceiling_binds_on_the_panels_it_is_for(width, height):
     assert len(capped.layers) == config_module.RenderParams().layers
 
 
+def test_the_ceiling_applies_to_the_rhizotron_too():
+    """It is one layer rather than three, and a full-window one.
+
+    On a 1600p panel the soil pane is more cells than the stack's front sheet,
+    and its passes read the same shared memory, so leaving it at native would
+    have sized two of the three backends and not the third.
+    """
+    from anastomosis import rhizotron as rhizotron_module
+
+    params = config_module.Config().resolve()
+    plain = rhizotron_module.RhizotronGeometry.derive(2560, 1600, params)
+    params.render.cell_budget = config_module.INTEGRATED_CELL_BUDGET
+    capped = rhizotron_module.RhizotronGeometry.derive(2560, 1600, params)
+
+    assert plain.width * plain.height > config_module.INTEGRATED_CELL_BUDGET
+    assert capped.width * capped.height <= config_module.INTEGRATED_CELL_BUDGET
+    assert capped.problems() == []
+
+    # And leaves a window that already fits alone, as everywhere else.
+    small = rhizotron_module.RhizotronGeometry.derive(1920, 1080, params)
+    params.render.cell_budget = 0
+    assert small == rhizotron_module.RhizotronGeometry.derive(1920, 1080, params)
+
+
 def test_the_ceiling_composes_with_base_scale_rather_than_replacing_it():
     """`base_scale` is applied first and still means what it says.
 
@@ -678,6 +702,37 @@ def test_saving_a_checkpoint_is_what_makes_a_reset_session_resumable(monkeypatch
 
     assert app.save_checkpoint() is True
     assert app._resume is True
+
+
+def test_waiting_for_a_driver_is_not_reported_as_a_wedged_loop(tmp_path, monkeypatch):
+    """A rebuild that has not taken yet must not also read as a freeze.
+
+    The loop is running and knows exactly what it is waiting for, and it said
+    so in the log. A stall report every thirty seconds for the duration is the
+    report-nobody-reads failure §8.2 is built to avoid, on the one occasion the
+    application already knows what is wrong.
+    """
+    monkeypatch.setattr(
+        device_module, "request_device",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("still resetting")))
+
+    app = app_module.Application(app_module.AppOptions(
+        width=96, height=72, ui=False, checkpoint=False, stall_seconds=0.0,
+        config_path=tmp_path / "config.toml",
+        diagnostics_dir=tmp_path / "diagnostics",
+    ))
+    try:
+        app._size = (96, 72)
+        app._device_lost = "driver reset"
+        before = app.watchdog.frames
+
+        app.draw_frame()
+
+        assert app.watchdog.frames == before + 1  # the loop is alive
+        assert app.watchdog.phase == "idle"       # and not stuck in a phase
+        assert app._device_lost == "driver reset"  # still pending
+    finally:
+        app.power.stop()
 
 
 # ---------------------------------------------------------------------------
