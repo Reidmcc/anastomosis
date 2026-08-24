@@ -29,6 +29,10 @@ from __future__ import annotations
 import logging
 import platform
 import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -39,16 +43,23 @@ log = logging.getLogger(__name__)
 DEFAULT_POLL_SECONDS = 60.0
 
 
-def _linux_on_mains() -> bool | None:
+LINUX_SUPPLY_ROOT = "/sys/class/power_supply"
+
+
+def _linux_on_mains(root: "Path | str" = LINUX_SUPPLY_ROOT) -> bool | None:
     """Read ``/sys/class/power_supply``.
 
     A machine with no mains supply listed is a machine with no battery to be
     on -- a desktop -- which is "cannot say" rather than "on battery": the
     kernel is not reporting a state, there simply is not one.
+
+    ``root`` is a parameter so the tests can hand it a directory rather than
+    reaching into `pathlib` to intercept one path out of every path the
+    process opens.
     """
     from pathlib import Path
 
-    root = Path("/sys/class/power_supply")
+    root = Path(root)
     if not root.is_dir():
         return None
     answer: bool | None = None
