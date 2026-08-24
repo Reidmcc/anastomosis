@@ -428,7 +428,7 @@ def test_the_audio_drive_cannot_defeat_the_bound(gpu_device, offscreen_target):
         config.set_path(base, path, config.SAFETY_CEILINGS[path][1])
     loud = audio_module.AudioFeatures(
         level=1.0, bass=1.0, mid=1.0, treble=1.0, flux=1.0, onset=1.0,
-        silent=False)
+        pace=1.0, silent=False)
     ends = [audio_module.modulate(base, loud), base]
     trail_shown = config.PigmentParams().density_from_trail
 

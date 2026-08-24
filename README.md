@@ -186,13 +186,21 @@ the whole arrangement sits.
 **Resonance** wires the field to whatever audio the machine is playing.
 The current surges with the bass and the network is sheared by it, colour
 saturates with the highs, the palette wheels faster when the music is busy,
-and a strong onset — a downbeat, a drop, a phrase starting — blooms one of
-the same slow events the other modes get by chance, through the same
-envelopes and the same caps. The filaments themselves are never driven by
-the music: the organism keeps its own behaviour and rides audio-driven
-weather, which is what keeps this anastomosis rather than a spectrum
-display. When the music stops, the field is simply itself again — silence
-is a first-class state, not an error.
+and the field's own tempo — how quickly the weather changes its mind, how
+fast regimes migrate — follows the music's, estimated from the beat
+itself. A strong onset — a downbeat, a drop, a phrase starting — blooms
+one of the same events the other modes get by chance, *shaped by the
+moment that asked for it*: a harder hit is a stronger event, a faster
+track gets brisker envelopes, and in this mode events are short gestures
+(seconds, not minutes) with up to eight in flight, so the field stays
+reactive through a busy passage instead of saturating. Everything an event
+can be shaped into is something the scheduler could have drawn by chance —
+the music chooses within the same ranges, it never exceeds them. The
+filaments themselves are never driven by the music: the organism keeps its
+own behaviour and rides audio-driven weather, which is what keeps this
+anastomosis rather than a spectrum display. When the music stops, the
+field is simply itself again — silence is a first-class state, not an
+error.
 
 One thing this mode will never be: a strobe. The flash-safety bound of
 [Safety](#safety) is identical here, and the music is deliberately not

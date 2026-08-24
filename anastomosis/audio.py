@@ -83,6 +83,20 @@ FLUX_THRESHOLD_RATIO = 1.5
 FLUX_THRESHOLD_BIAS = 0.05        # in compressed flux units; see _squash_flux
 ONSET_REFRACTORY_SECONDS = 0.15
 
+# -- the tempo estimate (§16.4: pace from the beat, in stream time) ---------
+
+# An EMA over inter-onset intervals is the tempo proxy: honest (it is
+# literally how often the music is hitting), cheap, and deterministic in the
+# stream. The mapping to [0, 1]: one onset every two seconds or slower reads
+# as 0, four a second -- a busy track counting fills and subdivisions -- as
+# 1. A gap longer than this says nothing about tempo (a pause is not a slow
+# song) and is left out of the average; the *current* gap still pulls the
+# live estimate down, so a lull reads as slower immediately.
+PACE_SLOW_HZ = 0.5
+PACE_FAST_HZ = 4.0
+PACE_EMA_ALPHA = 0.3
+PACE_GAP_CAP_SECONDS = 30.0
+
 # The capture queue is bounded because the render thread can stall
 # (checkpoint readback, a wedged compositor) and audio must never back
 # memory up behind it; overflow drops the oldest blocks, which for a
@@ -118,6 +132,11 @@ class AudioFeatures:
     treble: float = 0.0
     flux: float = 0.0
     onset: float = 0.0
+    # The music's tempo, as the smoothed onset rate mapped onto [0, 1]
+    # (PACE_SLOW_HZ..PACE_FAST_HZ). What the drive paces the simulation's
+    # own tempo -- the weather's reversion, the regimes' migration, an
+    # event's envelope -- against (§16.4).
+    pace: float = 0.0
     silent: bool = True
 
 
@@ -158,6 +177,8 @@ class FeatureExtractor:
         )
         self._quiet_seconds = SILENCE_SECONDS  # born silent, not born loud
         self._hops_since_onset = 10**9
+        self._onset_interval = math.inf  # EMA of seconds between onsets
+        self._pace_env = 0.0
         self._refractory_hops = max(
             1, math.ceil(ONSET_REFRACTORY_SECONDS / self._dt)
         )
@@ -280,6 +301,17 @@ class FeatureExtractor:
             )
             if flux > threshold:
                 fired = min(1.0, flux / threshold - 1.0)
+                # The gap since the previous onset feeds the tempo estimate
+                # -- unless it is long enough to be a pause rather than a
+                # beat interval, which says nothing about tempo.
+                gap = self._hops_since_onset * self._dt
+                if gap < PACE_GAP_CAP_SECONDS:
+                    if math.isfinite(self._onset_interval):
+                        self._onset_interval += PACE_EMA_ALPHA * (
+                            gap - self._onset_interval
+                        )
+                    else:
+                        self._onset_interval = gap
                 self._hops_since_onset = 0
                 self.onsets += 1
 
@@ -289,6 +321,25 @@ class FeatureExtractor:
         self._flux_env = _follow(
             self._flux_env, 0.0 if under_gate else flux, self._dt
         )
+        # The tempo estimate. The live gap is folded in through max(), so a
+        # lull reads as slower immediately rather than when the next onset
+        # finally lands; the gate uses the *sustained* silence clock rather
+        # than one quiet hop, because the space between beats is not
+        # silence.
+        gap = self._hops_since_onset * self._dt
+        effective = max(self._onset_interval, gap)
+        if (
+            not math.isfinite(effective)
+            or self._quiet_seconds >= SILENCE_SECONDS
+        ):
+            pace_target = 0.0
+        else:
+            rate = 1.0 / max(effective, 1e-3)
+            pace_target = min(
+                1.0,
+                max(0.0, (rate - PACE_SLOW_HZ) / (PACE_FAST_HZ - PACE_SLOW_HZ)),
+            )
+        self._pace_env = _follow(self._pace_env, pace_target, self._dt)
         # Instant attack, exponential release: a consumer polling slower
         # than the hop rate still sees the pulse.
         self._onset_env = max(
@@ -303,6 +354,7 @@ class FeatureExtractor:
             treble=_unit(self._env[3]),
             flux=_unit(self._flux_env),
             onset=_unit(self._onset_env),
+            pace=_unit(self._pace_env),
             silent=self._quiet_seconds >= SILENCE_SECONDS,
         )
 
@@ -343,6 +395,15 @@ def _unit(x: float) -> float:
 MODULATED_PATHS: tuple[str, ...] = (
     "flow.psi_gain",
     "flow.field_gain",
+    # The simulation's own tempo, paced by the music's (the `pace` feature):
+    # how fast the weather changes its mind and how fast regimes migrate.
+    # Both are stable-form updates -- an EMA coefficient and a backward
+    # semi-Lagrangian sample -- so the bound on their modulation is
+    # perceptual, not numerical. `sim_hz` is deliberately not here (it is
+    # frame pacing, owned by the budget governor), and neither is anything
+    # of the agents'.
+    "flow.psi_theta",
+    "climate.advect_gain",
     "pigment.inject_rate",
     "render.chroma_activity_gain",
     "render.c_max",
@@ -355,6 +416,21 @@ MODULATED_PATHS: tuple[str, ...] = (
 # never be a dieback, and a rift on a drop is a §16.8 step 5 judgement for
 # eyes, not a default.
 ONSET_EVENT_KINDS = ("bloom", "current", "tint")
+
+
+@dataclasses.dataclass(frozen=True)
+class EventAsk:
+    """One onset's request: which kind, and how the music shapes it.
+
+    ``vigor`` and ``pace`` are hints in [0, 1] that the scheduler's
+    ``trigger`` honours strictly inside the ranges its own RNG samples --
+    a shaped event is never bigger, stronger, or faster-building than a
+    randomly drawn one could have been (§16.4).
+    """
+
+    kind: str
+    vigor: float
+    pace: float
 
 
 def modulate(
@@ -392,14 +468,21 @@ def modulate(
         and features.mid <= 0.0
         and features.treble <= 0.0
         and features.flux <= 0.0
+        and features.pace <= 0.0
     ):
         return params
 
     motion = 1.0 + audio.motion_gain * motion_drive
+    tempo = 1.0 + audio.tempo_gain * features.pace
     flow = dataclasses.replace(
         params.flow,
         psi_gain=params.flow.psi_gain * motion,
         field_gain=params.flow.field_gain * motion,
+        psi_theta=params.flow.psi_theta * tempo,
+    )
+    climate = dataclasses.replace(
+        params.climate,
+        advect_gain=params.climate.advect_gain * tempo,
     )
     pigment = dataclasses.replace(
         params.pigment,
@@ -426,7 +509,9 @@ def modulate(
         hue_turns_per_hour=params.render.hue_turns_per_hour
         * (1.0 + audio.hue_gain * features.flux),
     )
-    return dataclasses.replace(params, flow=flow, pigment=pigment, render=render)
+    return dataclasses.replace(
+        params, flow=flow, climate=climate, pigment=pigment, render=render
+    )
 
 
 # --------------------------------------------------------------------------
@@ -784,16 +869,20 @@ class AudioDrive:
             self._status = "capture stream stopped; the field is on its own"
         return self.extractor.features
 
-    def event_request(self, audio: "config_module.AudioParams") -> str | None:
-        """The event kind an onset is asking for right now, if any.
+    def event_request(self, audio: "config_module.AudioParams") -> "EventAsk | None":
+        """The event an onset is asking for right now, if any.
 
-        §16.4's second door, drive-side half: decides *whether* to ask and
-        *which* kind (by the band carrying the moment); everything about what
-        the event then is belongs to the scheduler's ``trigger``, exactly as
-        with the panel's buttons. Asks are spaced by ``onset_spacing``
-        seconds of stream time -- sample count, never wall clock -- so a
-        140 BPM track asks a few times a minute and lets the concurrency cap
-        do the rest, instead of producing a per-beat queue of refusals.
+        §16.4's second door, drive-side half: decides *whether* to ask,
+        *which* kind (by the band carrying the moment), and how the music
+        wants it *shaped* -- ``vigor`` from the onset's own strength with the
+        level behind it, so a harder hit is a stronger event, and ``pace``
+        from the tempo estimate, so a faster track gets brisker envelopes.
+        Everything about what the event then is belongs to the scheduler's
+        ``trigger``, which honours the shape only inside the ranges its own
+        RNG already samples. Asks are spaced by ``onset_spacing`` seconds of
+        stream time -- sample count, never wall clock -- so a 140 BPM track
+        asks a few times a minute and lets the concurrency cap do the rest,
+        instead of producing a per-beat queue of refusals.
         """
         features = self.extractor.features
         if features.onset < audio.onset_threshold:
@@ -804,10 +893,16 @@ class AudioDrive:
         self._last_event_ask = now
         bloom, current, tint = ONSET_EVENT_KINDS
         if features.bass >= features.mid and features.bass >= features.treble:
-            return bloom
-        if features.treble >= features.mid:
-            return tint
-        return current
+            kind = bloom
+        elif features.treble >= features.mid:
+            kind = tint
+        else:
+            kind = current
+        return EventAsk(
+            kind=kind,
+            vigor=min(1.0, 0.7 * features.onset + 0.3 * features.level),
+            pace=features.pace,
+        )
 
     # -- reporting ----------------------------------------------------------
 

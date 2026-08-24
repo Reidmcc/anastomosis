@@ -1708,18 +1708,24 @@ class Application:
             features = self.audio.poll()
             params = audio_module.modulate(params, features)
             # The second door: an onset may ask for an event, through the
-            # same `trigger` the panel's buttons use -- same envelopes, same
-            # caps, no privileged path. Checked against the cap here first so
-            # a busy track reads as a full sky, not a log of refusals.
-            kind = self.audio.event_request(params.audio)
+            # same `trigger` the panel's buttons use -- same caps, no
+            # privileged path -- shaped by the music inside the ranges the
+            # RNG already samples (§16.4): a harder hit is a stronger event,
+            # a faster track a brisker envelope. Checked against the cap
+            # here first so a busy track reads as a full sky, not a log of
+            # refusals.
+            ask = self.audio.event_request(params.audio)
             if (
-                kind is not None
+                ask is not None
                 and len(self.scheduler.active) < params.events.max_concurrent
             ):
-                event = self.scheduler.trigger(kind, params.events)
+                event = self.scheduler.trigger(
+                    ask.kind, params.events, vigor=ask.vigor, pace=ask.pace)
                 if event is not None:
-                    log.debug("onset -> %s event at (%.2f, %.2f)",
-                              event.kind, event.x, event.y)
+                    log.debug(
+                        "onset -> %s event (vigor %.2f, pace %.2f) at "
+                        "(%.2f, %.2f)",
+                        event.kind, ask.vigor, ask.pace, event.x, event.y)
 
         sim_hz = max(params.sim_hz * self._sim_hz_scale, 2.0)
         tick_interval = 1.0 / sim_hz

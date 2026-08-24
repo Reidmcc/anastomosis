@@ -601,6 +601,11 @@ class AudioParams:
     colour_gain: float = 0.8    # treble/level -> chroma activity, c_max
     material_gain: float = 0.5  # mids -> pigment injection
     hue_gain: float = 1.0       # flux -> hue rotation rate
+    # The music's tempo into the simulation's: the beat-rate estimate (the
+    # `pace` feature) scales how fast the weather changes its mind
+    # (flow.psi_theta) and how fast regimes migrate (climate.advect_gain).
+    # Both are stable-form updates, so the ceiling is perceptual.
+    tempo_gain: float = 0.6
     # An onset must reach this strength before the drive asks the scheduler
     # for an event, and asks are spaced by at least this many seconds of
     # *stream* time -- sample count, not wall clock (§3) -- so a busy track
@@ -1270,8 +1275,13 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("render.hue_turns_per_hour", 0.55, 2.60, 1.2),
         # Held flat here, driven by the activation table (§14.6): regulation
         # events take the §4.3 minute-or-two to come up whatever the tempo.
-        # Same paired-constant pattern as intensity's c_max above.
+        # Same paired-constant pattern as intensity's c_max above. The hold
+        # is a constant in this mode and activation both, and exists on the
+        # curve at all because *resonance* drives it (§16.4): its events are
+        # musical gestures rather than weather, and a minute at peak was
+        # what kept the concurrency cap pinned.
         ("events.attack_seconds", 45.0, 45.0, 1.0),
+        ("events.hold_seconds", 60.0, 60.0, 1.0),
         ("events.release_seconds", 90.0, 90.0, 1.0),
         # The structure rides the flow at the shipped rate whatever the tempo
         # (§4.7 step 6, measured on main): this is a *constant at the default*,
@@ -1476,8 +1486,10 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         # nothing else, and how briskly a perturbation builds is exactly a
         # tempo question. The heal claim is re-verified at this pace: the
         # rift recovery test has always run a 10 s attack, faster than this
-        # end's worst case (15 x 0.75 jitter).
+        # end's worst case (15 x 0.75 jitter). The hold is resonance's lever
+        # (see the regulation table's note) and stays a constant here.
         ("events.attack_seconds", 45.0, 15.0, 1.0),
+        ("events.hold_seconds", 60.0, 60.0, 1.0),
         ("events.release_seconds", 90.0, 40.0, 1.0),
         # §4.7 step 6 shipped on main at 0.5 while this branch was in flight,
         # so activation's contribution is no longer the mechanism but *more of
@@ -1533,17 +1545,46 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
     ],
 }
 
-# The resonance table (DESIGN.md §16). Activation's tuning verbatim, and a
-# *copy* on purpose rather than an alias: what makes resonance a different
-# mode is not where the knobs reach but where the variation comes from -- the
-# audio drive rides on top of what this table resolves -- and the copy is the
-# seam §16.8 step 5 will tune through when the mode's endpoints get their own
-# judgement by eyes. Until then, silence under resonance *is* activation, by
-# construction, which is the §16.1 degradation contract. (Deep-copied so a
-# future retune of one table cannot silently move the other.)
+# The resonance table (DESIGN.md §16). Activation's tuning, except where the
+# events ride: a copy on purpose rather than an alias -- what makes resonance
+# a different mode is not where the knobs reach but where the variation comes
+# from, and the audio drive rides on top of what this table resolves -- with
+# the copy as the seam tuning moves through. Deep-copied so a retune of one
+# table cannot silently move the other.
 RESONANCE_CURVES: dict[str, list[tuple[str, float, float, float]]] = copy.deepcopy(
     ACTIVATION_CURVES
 )
+
+
+def _retune_resonance(
+    macro: str, path: str, lo: float, hi: float, gamma: float = 1.0
+) -> None:
+    rows = RESONANCE_CURVES[macro]
+    for index, (entry, *_rest) in enumerate(rows):
+        if entry == path:
+            rows[index] = (path, lo, hi, gamma)
+            return
+    raise KeyError(f"{macro} does not drive {path}; a retune cannot add paths")
+
+
+# Where resonance genuinely diverges (§16.4, tuned against the first real
+# sessions rather than proposed in advance): its events are musical gestures,
+# not weather. Under the inherited envelopes -- tens of seconds of attack, a
+# minute of hold -- an event outlives many onsets, the concurrency cap
+# saturates within half a minute of any busy track, and every later onset is
+# refused: the mode reads as *less* reactive the more the music does. So the
+# whole envelope shortens (still raised-cosine, still through the climate's
+# diffusion; the §16.4 floors and test_event_envelope_never_steps hold the
+# fast end to the same per-tick bound as ever), and the cap rises to 8 --
+# which is the GPU event buffer's capacity and `validate`'s existing ceiling,
+# so this is the knob's honest maximum rather than a number with headroom.
+# The fast ends double as the floors audio pace-shaping may pull toward
+# (events.ATTACK_FLOOR_SECONDS and friends); a retune here must move those
+# floors and their certificate together, which test_config pins.
+_retune_resonance("tempo", "events.attack_seconds", 20.0, 5.0)
+_retune_resonance("tempo", "events.hold_seconds", 25.0, 8.0)
+_retune_resonance("tempo", "events.release_seconds", 45.0, 12.0)
+_retune_resonance("event_rate", "events.max_concurrent", 8.0, 8.0)
 
 MODE_CURVES: dict[str, dict[str, list[tuple[str, float, float, float]]]] = {
     "regulation": MACRO_CURVES,
@@ -1626,6 +1667,10 @@ SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
     "audio.colour_gain": (0.0, 2.0),
     "audio.material_gain": (0.0, 2.0),
     "audio.hue_gain": (0.0, 2.0),
+    # Lower than the others: at 1.0 a driving track doubles the weather's
+    # reversion and the regimes' migration beyond the curve top, which is
+    # already a different field; more is disorientation, not tempo.
+    "audio.tempo_gain": (0.0, 1.0),
 }
 
 # The lightness slew budget per *second* -- the quantity the WCAG arithmetic

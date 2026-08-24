@@ -217,6 +217,13 @@ safety argument leaves free, verbatim:
   and a still one lets it rest. All chroma-budget spend, per §14.1(2).
 - *Material*: `pigment.inject_rate` and the climate's range parameters
   breathing with the mids — louder passages are more fertile weather.
+- *Tempo*: the music's tempo into the simulation's. The front end estimates
+  beat rate from inter-onset intervals (the `pace` feature), and pace scales
+  how fast the weather changes its mind (`flow.psi_theta`) and how fast
+  regimes migrate (`climate.advect_gain`) — both stable-form updates (an EMA
+  coefficient, a backward semi-Lagrangian sample), so the bound is
+  perceptual. Deliberately *not* `sim_hz`, which is frame pacing and belongs
+  to the budget governor, and not anything of the agents'.
 
 And a hard rule enforced by the same construction: **the luminance
 architecture is not on the list.** `render.background_luma`, `l_max`,
@@ -543,3 +550,56 @@ through), the drive starts and stops on the mode's own edges
 (`Application._sync_audio`, including backend switches), its status line
 is in the telemetry log and the stall report (§16.6(5)), and with the
 drive off the frame loop is exactly what it was.
+
+### What event shaping actually did (the first hardware feedback)
+
+The first real sessions sent back exactly the class of finding §16.8
+step 5 exists for, and two of its items landed early as a result. The
+observation: under the inherited envelopes — tens of seconds of attack, a
+minute of hold, minutes of total life — an event outlives many onsets, the
+concurrency cap saturates within half a minute of any busy track, and
+every later onset is refused. The mode read as *less* reactive the more
+the music did. Three changes answer it, each inside a standing argument:
+
+**Resonance's events became musical gestures, which is the table's first
+real divergence.** The resonance tempo curve now shortens the whole
+envelope — attack 20 → 5 s, hold 25 → 8 s, release 45 → 12 s across the
+travel — with `hold_seconds` added to all three modes' tempo curves so the
+structure invariant holds (regulation and activation pin it at 60, the
+paired-constant pattern). The concurrency cap rises to **8**, which is the
+GPU event buffer's capacity and `validate`'s existing ceiling — the
+knob's honest maximum, not a number with headroom — and the divergence
+test was rewritten from "the table is a copy" to "the table diverges
+*only* where the events ride", so any further drift fails by name. The
+per-mode envelope-step test walks the new fast end unchanged: a 5 s
+attack at its 0.75 jitter floor, ticked at 30 Hz, moves the raised cosine
+π/(2·3.75·30) ≈ 0.014 of its range per tick, inside the standing 0.02
+bound.
+
+**Onsets now shape the event they ask for — strictly inside the ranges
+the RNG already samples.** `trigger` accepts two hints. *Vigor* (the
+onset's own strength, with the level behind it) chooses the peak on
+exactly the interval the amplitude draw spans, 0.6–1.0 × `strength`: a
+harder hit is a stronger event, and the strongest shaped event is
+precisely the strongest random one. *Pace* shortens the envelope from the
+resolved values toward floors pinned to the resonance curve's fast ends
+(5/8/12 s — `events.ATTACK_FLOOR_SECONDS` and friends, with a test
+holding the floors and the curve tops equal so neither retunes alone),
+and never below, and never *lengthens* — a hand-overridden envelope
+already under the floor is left exactly alone. The spawn jitter stays on
+top in both cases: shaped events are no more identical to each other than
+drawn ones are. The panel's buttons pass no hints and are bit-for-bit
+untouched, which a test asserts against the RNG stream.
+
+**The tempo estimate is the beat, in stream time.** A new `pace` feature:
+an EMA over inter-onset intervals (gaps longer than 30 s are a pause, not
+a slow song, and are left out), with the *current* gap folded in through a
+max so a lull reads as slower immediately rather than when the next onset
+finally lands, mapped onto [0, 1] between one onset per two seconds and
+four a second. Deterministic in the stream like everything else in the
+front end. Beyond the envelopes, pace also answers the request the
+proposal's *Tempo* bullet now records: it modulates `flow.psi_theta` and
+`climate.advect_gain` (whitelisted, gain-ceilinged at 1.0 — a driving
+track at most doubles the weather's own tempo beyond the curve top), so
+the simulation's pace of change tracks the music's without touching
+`sim_hz` or the agents.

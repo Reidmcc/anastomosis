@@ -35,7 +35,8 @@ def _float_paths(obj, prefix: str = ""):
 
 
 LOUD = audio.AudioFeatures(
-    level=1.0, bass=1.0, mid=1.0, treble=1.0, flux=1.0, onset=1.0, silent=False
+    level=1.0, bass=1.0, mid=1.0, treble=1.0, flux=1.0, onset=1.0, pace=1.0,
+    silent=False,
 )
 
 
@@ -66,7 +67,7 @@ def test_silence_stays_zero_and_flagged():
              * 1e-5).astype(np.float32)
     features = extractor.push(noise)
     assert features.silent
-    for name in ("level", "bass", "mid", "treble", "flux", "onset"):
+    for name in ("level", "bass", "mid", "treble", "flux", "onset", "pace"):
         assert getattr(features, name) == pytest.approx(0.0, abs=1e-3), name
 
 
@@ -79,7 +80,7 @@ def test_features_decay_to_zero_after_the_music_stops():
 
     features = extractor.push(np.zeros(audio.SAMPLE_RATE * 3, np.float32))
     assert features.silent
-    for name in ("level", "bass", "mid", "treble", "onset"):
+    for name in ("level", "bass", "mid", "treble", "onset", "pace"):
         assert getattr(features, name) < 0.05, name
 
 
@@ -202,7 +203,7 @@ def test_hostile_input_stays_bounded():
 
     for block in (hostile, square.astype(np.float32)):
         features = extractor.push(block)
-        for name in ("level", "bass", "mid", "treble", "flux", "onset"):
+        for name in ("level", "bass", "mid", "treble", "flux", "onset", "pace"):
             value = getattr(features, name)
             assert np.isfinite(value), name
             assert 0.0 <= value <= 1.0, name
@@ -498,17 +499,22 @@ def test_event_requests_are_spaced_in_stream_time_and_typed_by_band():
     drive = audio.AudioDrive()
     gains = config.AudioParams(onset_threshold=0.05, onset_spacing=2.0)
 
-    # A bass hit out of silence: one ask, of the structural kind.
+    # A bass hit out of silence: one ask, of the structural kind, carrying
+    # the hit's own strength as vigor.
     drive.extractor.push(np.zeros(rate, np.float32))
     drive.extractor.push(_sine(60.0, 0.4, amplitude=0.9, rate=rate))
-    assert drive.event_request(gains) == "bloom"
+    ask = drive.event_request(gains)
+    assert ask is not None and ask.kind == "bloom"
+    assert 0.0 < ask.vigor <= 1.0
+    assert 0.0 <= ask.pace <= 1.0
     # The onset envelope is still up, but the spacing gate holds.
     assert drive.event_request(gains) is None
 
     # Two stream-seconds later, a treble hit asks again, recoloured.
     drive.extractor.push(_sine(60.0, 2.1, amplitude=0.05, rate=rate))
     drive.extractor.push(_sine(6000.0, 0.4, amplitude=0.9, rate=rate))
-    assert drive.event_request(gains) == "tint"
+    ask = drive.event_request(gains)
+    assert ask is not None and ask.kind == "tint"
 
     # No onset, no ask, however long the stream runs.
     drive.extractor.push(_sine(6000.0, 3.0, amplitude=0.9, rate=rate))
@@ -691,3 +697,48 @@ def test_a_dead_pump_thread_becomes_a_status_line():
     assert "stopped" in drive.describe()
     assert "device invalidated" in drive.describe()
     drive.stop()
+
+
+# ---------------------------------------------------------------------------
+# The tempo estimate -- pace from the beat, in stream time (§16.4)
+# ---------------------------------------------------------------------------
+
+
+def _beat_train(period: float, seconds: float,
+                rate: int = audio.SAMPLE_RATE) -> np.ndarray:
+    """A 440 Hz carrier pulsing to 0.9 for 50 ms at each period start,
+    resting at 0.05 between -- beats over a quiet bed, not beats over
+    silence, so the silence gate stays out of the picture."""
+    t = np.arange(int(seconds * rate), dtype=np.float64)
+    carrier = np.sin(2.0 * np.pi * 440.0 * t / rate)
+    phase = np.mod(t / rate, period)
+    amplitude = np.where(phase < 0.05, 0.9, 0.05)
+    return (carrier * amplitude).astype(np.float32)
+
+
+def test_pace_tracks_the_beat_rate():
+    """A fast train reads fast, a slow one slow, and the mapping is
+    monotone between them -- the tempo estimate the envelopes ride."""
+    fast = audio.FeatureExtractor().push(_beat_train(0.3, 8.0))
+    slow = audio.FeatureExtractor().push(_beat_train(1.5, 8.0))
+    assert fast.pace > 0.5, fast
+    assert slow.pace < 0.25, slow
+    assert fast.pace > slow.pace
+
+
+def test_pace_subsides_in_a_lull_without_waiting_for_the_next_onset():
+    """The live gap pulls the estimate down: when the beat stops, pace
+    falls, even though no new onset ever arrives to update the average."""
+    extractor = audio.FeatureExtractor()
+    extractor.push(_beat_train(0.3, 8.0))
+    busy = extractor.features.pace
+    extractor.push(_sine(440.0, 10.0, amplitude=0.05))
+    assert extractor.features.pace < 0.5 * busy
+
+
+def test_pace_is_zero_before_any_second_onset():
+    """One onset is an arrival, not a tempo."""
+    extractor = audio.FeatureExtractor()
+    extractor.push(np.zeros(audio.SAMPLE_RATE, np.float32))
+    extractor.push(_sine(440.0, 1.0, amplitude=0.8))
+    assert extractor.features.pace == pytest.approx(0.0, abs=1e-6)
