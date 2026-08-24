@@ -1704,9 +1704,15 @@ class Application:
         # the room silent, `modulate` is the identity and `params` *is*
         # `self.params`.
         params = self.params
+        scheduler_events = params.events
         if self._audio_started:
             features = self.audio.poll()
             params = audio_module.modulate(params, features)
+            # While the room is playing, the arrivals are the music's: the
+            # scheduler's own drawing pauses (in-flight events finish) and
+            # returns in silence -- see `audio.autonomous_arrivals`.
+            scheduler_events = audio_module.autonomous_arrivals(
+                params.events, features)
             # The second door: an onset may ask for an event, through the
             # same `trigger` the panel's buttons use -- same caps, no
             # privileged path -- shaped by the music inside the ranges the
@@ -1740,7 +1746,7 @@ class Application:
             # are each merely slow should not add up to something that reads
             # as one tick that never returned.
             self.watchdog.mark("tick")
-            active = self.scheduler.update(tick_interval, params.events)
+            active = self.scheduler.update(tick_interval, scheduler_events)
             rows, _ = self.scheduler.pack(8)
             self.engine.tick(params, rows)
             self._accumulator -= tick_interval

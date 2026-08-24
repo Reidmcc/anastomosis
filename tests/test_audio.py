@@ -67,7 +67,8 @@ def test_silence_stays_zero_and_flagged():
              * 1e-5).astype(np.float32)
     features = extractor.push(noise)
     assert features.silent
-    for name in ("level", "bass", "mid", "treble", "flux", "onset", "pace"):
+    for name in ("level", "bass", "mid", "treble", "flux", "onset", "pace",
+                 "waning", "severed"):
         assert getattr(features, name) == pytest.approx(0.0, abs=1e-3), name
 
 
@@ -203,7 +204,8 @@ def test_hostile_input_stays_bounded():
 
     for block in (hostile, square.astype(np.float32)):
         features = extractor.push(block)
-        for name in ("level", "bass", "mid", "treble", "flux", "onset", "pace"):
+        for name in ("level", "bass", "mid", "treble", "flux", "onset", "pace",
+                 "waning", "severed"):
             value = getattr(features, name)
             assert np.isfinite(value), name
             assert 0.0 <= value <= 1.0, name
@@ -742,3 +744,118 @@ def test_pace_is_zero_before_any_second_onset():
     extractor.push(np.zeros(audio.SAMPLE_RATE, np.float32))
     extractor.push(_sine(440.0, 1.0, amplitude=0.8))
     assert extractor.features.pace == pytest.approx(0.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# The fade and cut doors -- diebacks and rifts with musical meaning (§16.4)
+# ---------------------------------------------------------------------------
+
+
+def _fading_song(rate: int = audio.SAMPLE_RATE) -> np.ndarray:
+    """Ten steady seconds at a healthy level, a six-second fade out, and the
+    silence a faded song actually ends in -- which is where the slow waning
+    follower finishes crossing the threshold."""
+    steady = _sine(220.0, 10.0, amplitude=0.6, rate=rate)
+    t = np.arange(int(6.0 * rate), dtype=np.float64)
+    envelope = 0.6 * (1.0 - t / t.size)
+    fade = (envelope * np.sin(2.0 * np.pi * 220.0 * t / rate)).astype(
+        np.float32
+    )
+    return np.concatenate([steady, fade, np.zeros(3 * rate, np.float32)])
+
+
+def test_a_fade_out_wanes_and_asks_for_a_dieback():
+    """The music receding is the dieback's moment: waning crosses the fade
+    threshold, the door asks once, and -- because the level arrived at the
+    gate already quiet -- nothing about a fade reads as severed."""
+    drive = audio.AudioDrive()
+    drive.extractor.push(_fading_song())
+    features = drive.extractor.features
+    assert features.waning >= config.AudioParams().fade_threshold
+    assert features.severed == pytest.approx(0.0, abs=1e-6)
+
+    ask = drive.event_request(config.AudioParams())
+    assert ask is not None and ask.kind == audio.FADE_EVENT_KIND
+    assert ask.vigor >= config.AudioParams().fade_threshold
+    # One fade is one gesture: the door stands down afterwards.
+    assert drive.event_request(config.AudioParams()) is None
+
+
+def test_steady_music_never_wanes():
+    """Waning is recession from the recent past, not quietness: a steady
+    level -- however modest -- is not a fade."""
+    extractor = audio.FeatureExtractor()
+    extractor.push(_sine(220.0, 15.0, amplitude=0.5))
+    assert extractor.features.waning < 0.1
+
+
+def test_a_hard_cut_reads_as_severed_and_asks_for_a_rift():
+    """The music severed is the rift's moment: the gate engaging while the
+    level was still loud confirms as a cut, the cut door asks before the
+    recession can read as a fade, and it stands the fade door down -- one
+    cut is one gesture, not a rift with a dieback on its heels."""
+    rate = audio.SAMPLE_RATE
+    drive = audio.AudioDrive()
+    drive.extractor.push(_sine(220.0, 10.0, amplitude=0.6, rate=rate))
+    drive.extractor.push(np.zeros(2 * rate, np.float32))
+
+    features = drive.extractor.features
+    assert features.severed >= audio.SEVERED_ASK_FLOOR
+
+    ask = drive.event_request(config.AudioParams())
+    assert ask is not None and ask.kind == audio.CUT_EVENT_KIND
+    assert ask.vigor >= audio.SEVERED_ASK_FLOOR
+    assert drive.event_request(config.AudioParams()) is None
+
+
+def test_a_rest_inside_a_phrase_is_not_a_cut():
+    """A beat of true silence shorter than the confirmation window -- a
+    caesura, a breath -- must not sever anything."""
+    rate = audio.SAMPLE_RATE
+    extractor = audio.FeatureExtractor(rate)
+    extractor.push(_sine(220.0, 5.0, amplitude=0.6, rate=rate))
+    extractor.push(np.zeros(int(0.4 * rate), np.float32))
+    extractor.push(_sine(220.0, 2.0, amplitude=0.6, rate=rate))
+    assert extractor.features.severed == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_cut_fires_once_per_silence():
+    """The detector latches: one silence is one cut, however long it runs."""
+    rate = audio.SAMPLE_RATE
+    extractor = audio.FeatureExtractor(rate)
+    extractor.push(_sine(220.0, 10.0, amplitude=0.6, rate=rate))
+    extractor.push(np.zeros(rate, np.float32))
+    first = extractor.onsets, extractor.features.severed
+    assert first[1] > 0.0
+    extractor.push(np.zeros(6 * rate, np.float32))
+    # The pulse decays rather than re-firing.
+    assert extractor.features.severed < first[1]
+
+
+def test_the_door_kinds_exist_and_stay_in_their_lanes():
+    """Each destructive kind has exactly one musical gesture, and the onset
+    door stays constructive."""
+    assert audio.FADE_EVENT_KIND in events.EVENT_KINDS
+    assert audio.CUT_EVENT_KIND in events.EVENT_KINDS
+    assert audio.FADE_EVENT_KIND not in audio.ONSET_EVENT_KINDS
+    assert audio.CUT_EVENT_KIND not in audio.ONSET_EVENT_KINDS
+
+
+# ---------------------------------------------------------------------------
+# The arrivals yield to the music (§16.4)
+# ---------------------------------------------------------------------------
+
+
+def test_the_scheduler_arrivals_yield_while_the_music_plays():
+    """Under sound, the scheduler's own drawing is gated off -- through the
+    documented `enabled` semantics, so in-flight events finish and asks
+    still land -- and in silence the field's own weather returns."""
+    params = config.EventParams()
+    playing = audio.AudioFeatures(level=0.5, silent=False)
+    gated = audio.autonomous_arrivals(params, playing)
+    assert gated.enabled is False
+    assert params.enabled is True, "the input was mutated"
+    assert dataclasses.replace(gated, enabled=True) == params
+
+    silent = audio.AudioFeatures()
+    assert audio.autonomous_arrivals(params, silent) is params

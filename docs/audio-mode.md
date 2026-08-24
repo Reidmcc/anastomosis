@@ -55,7 +55,11 @@ Two boundary decisions, both taken the strict way:
 
 **The drive is an overlay, not a replacement.** The OU walks, the climate,
 the homeostat and the scheduler all keep running underneath, exactly as in
-the other modes. Audio *adds* modulation on top of what they produce. This is
+the other modes — with one qualification the first shipped weeks earned
+(see the destructive-kinds record in §16.8): the scheduler's *own arrivals*
+yield while the music is playing, and return in silence, because two event
+streams reading as one made the field look like it was misreading the
+music. Audio *adds* modulation on top of what the rest produce. This is
 not timidity; it is what makes the mode degrade correctly. Music stops, the
 features decay to zero, the modulation becomes the identity — and the field
 is simply itself again, breathing on its endogenous drivers, rather than
@@ -603,3 +607,58 @@ proposal's *Tempo* bullet now records: it modulates `flow.psi_theta` and
 track at most doubles the weather's own tempo beyond the curve top), so
 the simulation's pace of change tracks the music's without touching
 `sim_hz` or the agents.
+
+### What the destructive kinds taught (third hardware feedback)
+
+A dieback arrived mid-track during testing, and the report of it was
+correct on both counts: the onset door had indeed never asked for one, and
+the autonomous §4.3 scheduler was indeed still drawing events of every
+kind underneath — the §16.1 overlay working as designed, and reading as a
+bug anyway, because with music playing, *any* event the music did not ask
+for looks like the visualizer misreading it. Two changes follow, one
+subtractive and one that gives the destructive kinds the musical meaning
+they were missing:
+
+**While the room is playing, the arrivals are the music's.**
+`audio.autonomous_arrivals` gates the scheduler's own drawing off under
+sound, through the documented `enabled` semantics — which stop exactly the
+right thing: the drive's asks still land through `trigger` (enabled gates
+arrivals the scheduler draws, not events themselves — the §4.3 docstring's
+own sentence), and events already in flight finish their envelopes rather
+than being stranded. In silence the field's own weather returns, which is
+the §16.1 overlay contract doing what it was for: a resonance session
+left running overnight is still anastomosis.
+
+**Each destructive kind now has exactly one musical gesture.** Fading is
+thinning; severance is severance:
+
+- *The fade door.* A new `waning` feature — the fast level measured
+  against a slow reference of itself (τ 12 s), scaled by how loud the
+  music actually was, so ordinary verse/chorus dynamics stay under the
+  threshold and a wobble in a quiet room is not a fade. A song fading
+  out, a breakdown, a long decrescendo crosses it, and the door asks for
+  a **dieback** with vigor equal to the fade's depth and pace whatever
+  tempo remains — as the music recedes, usually little, so the dieback
+  arrives long and slow, like the fade. The feature deliberately outlives
+  the sound by a few seconds: a fade's dieback lands *as* the music goes.
+- *The cut door.* A hard cut — a DJ cut, an abrupt ending, a caesura
+  before the last chorus — is not a fast fade, and the signal knows the
+  difference: a cut is the silence gate engaging **while the fast level
+  was still loud** (the follower's 0.5 s release carries the pre-cut
+  loudness onto that hop), where a fade arrives at the gate already
+  quiet. Confirmed over 0.75 s so an emphatic rest inside a phrase does
+  not count, fired once per silence, re-armed when sound returns — and it
+  asks for the **rift**, at the strength of what was cut. The two doors
+  cannot double-fire on one moment: the waning follower's attack is
+  deliberately slowed to 2 s so a cut confirms as a cut before its
+  recession can read as a fade, and a fired rift stands the fade door
+  down besides.
+
+The ask spacing forms a hierarchy — onsets at `onset_spacing`, fades at
+6×, rifts at 12× — because that is the order of the gestures' weight. The
+onset door stays constructive, so the drop is still a bloom. One §4.7
+note rides along for step 5's watch list: rift healing was measured with
+a 10 s attack and is envelope-length-independent in mechanism (founding
+heals bare ground whatever made it), but a pace-shaped rift can now
+arrive at the 5 s floor, so the first real cut on a mature field is worth
+watching heal.

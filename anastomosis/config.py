@@ -612,6 +612,10 @@ class AudioParams:
     # becomes "always inside weather" rather than a queue of refusals.
     onset_threshold: float = 0.25
     onset_spacing: float = 5.0
+    # How far the music must have receded from where it recently was (the
+    # `waning` feature) before the fade door asks for its dieback. Above
+    # ordinary verse/chorus dynamics (~0.3), below "only a full fade-out".
+    fade_threshold: float = 0.45
 
 
 @dataclass
@@ -2002,6 +2006,9 @@ def validate(params: Params) -> Params:
     audio = params.audio
     audio.onset_threshold = min(max(audio.onset_threshold, 0.05), 1.0)
     audio.onset_spacing = min(max(audio.onset_spacing, 1.0), 600.0)
+    # Under ordinary dynamics the fade door would fire on every verse; a
+    # floor keeps "fade" meaning fade.
+    audio.fade_threshold = min(max(audio.fade_threshold, 0.30), 1.0)
 
     # The viewpoint's drift has to stay a drift. The flash bound does not
     # depend on this -- the limiter is per-pixel and holds whatever the camera

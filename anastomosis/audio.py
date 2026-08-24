@@ -97,6 +97,43 @@ PACE_FAST_HZ = 4.0
 PACE_EMA_ALPHA = 0.3
 PACE_GAP_CAP_SECONDS = 30.0
 
+# -- the waning estimate (§16.4: the music receding) ------------------------
+
+# `waning` is how far the level has fallen from where it recently was: the
+# fast level follower measured against a slow reference of itself. A song
+# fading out, a breakdown, a long decrescendo all read as waning; ordinary
+# verse/chorus dynamics (a drop of a third or so) stay under the fade door's
+# threshold; a fade *in* reads as zero, because the fast level leads the
+# slow one there. Scaled by how loud the music actually was, so a wobble in
+# an already-quiet room is not a fade.
+WANE_REF_TAU = 12.0
+WANE_LOUDNESS_FLOOR = 0.3
+# The waning follower's own attack, much slower than the ordinary 80 ms: a
+# real fade develops over many seconds, so nothing musical is lost -- and a
+# *hard cut* must not reach the fade threshold before the cut detector below
+# has had its confirmation window, or every cut would draw a dieback ahead
+# of its rift. From a full-scale recession this crosses the default 0.45
+# threshold in ~1.2 s, after CUT_CONFIRM_SECONDS has settled the question.
+WANE_ATTACK_SECONDS = 2.0
+# Fade asks are spaced further apart than onset asks -- a fade is one
+# musical moment, not a stream of them.
+FADE_SPACING_FACTOR = 6.0
+
+# -- the cut estimate (§16.4: the music severed) ----------------------------
+
+# A hard cut -- a DJ cut, an abrupt ending, a caesura -- is not a fast fade:
+# it is the silence gate engaging while the fast level was still loud, where
+# a fade arrives at the gate already quiet. The level at the moment the gate
+# engages is the discriminator (the follower's 0.5 s release means it still
+# carries the pre-cut level on that hop), and a short confirmation window
+# keeps an emphatic rest inside a phrase from counting. One firing per
+# silence, re-armed when sound returns.
+CUT_CONFIRM_SECONDS = 0.75
+CUT_LOUDNESS_FLOOR = 0.3
+SEVERED_RELEASE_SECONDS = 2.0
+# Rifts are the heaviest gesture in the vocabulary, and are spaced like it.
+RIFT_SPACING_FACTOR = 12.0
+
 # The capture queue is bounded because the render thread can stall
 # (checkpoint readback, a wedged compositor) and audio must never back
 # memory up behind it; overflow drops the oldest blocks, which for a
@@ -137,6 +174,16 @@ class AudioFeatures:
     # own tempo -- the weather's reversion, the regimes' migration, an
     # event's envelope -- against (§16.4).
     pace: float = 0.0
+    # How far the music has receded from where it recently was (§16.4): a
+    # fade-out, a breakdown, a long decrescendo. The fade door's signal --
+    # the moment a *dieback* fits the music -- and a feature that
+    # deliberately outlives the sound for a few seconds: a fade's dieback
+    # arrives *as* the music goes, which is the point.
+    waning: float = 0.0
+    # The music severed rather than receding (§16.4): a hard cut from loud
+    # to silence, at the strength of what was cut. A pulse like `onset`,
+    # and the rift door's signal -- the one moment severance fits.
+    severed: float = 0.0
     silent: bool = True
 
 
@@ -179,6 +226,12 @@ class FeatureExtractor:
         self._hops_since_onset = 10**9
         self._onset_interval = math.inf  # EMA of seconds between onsets
         self._pace_env = 0.0
+        self._slow_level = 0.0  # the reference `waning` measures against
+        self._wane_env = 0.0
+        self._was_under_gate = True
+        self._cut_level = 0.0  # the fast level when the gate last engaged
+        self._cut_fired_this_quiet = False
+        self._severed_env = 0.0
         self._refractory_hops = max(
             1, math.ceil(ONSET_REFRACTORY_SECONDS / self._dt)
         )
@@ -347,6 +400,48 @@ class FeatureExtractor:
             fired,
         )
 
+        # The waning estimate: the fast level against a slow reference of
+        # itself. Not gated on silence -- the tail end of a fade *is* quiet,
+        # and the signal is meant to survive into it; what retires it is the
+        # reference itself decaying, over WANE_REF_TAU seconds, and the
+        # loudness scale falling away with it. Its follower rises at
+        # WANE_ATTACK_SECONDS, not the ordinary attack, so a hard cut
+        # resolves as a cut (below) before it can read as a fade.
+        alpha = 1.0 - math.exp(-self._dt / WANE_REF_TAU)
+        self._slow_level += alpha * (self._env[0] - self._slow_level)
+        slow = self._slow_level
+        receded = max(0.0, slow - self._env[0]) / slow if slow > 1e-6 else 0.0
+        wane_target = receded * min(1.0, slow / WANE_LOUDNESS_FLOOR)
+        tau = (
+            WANE_ATTACK_SECONDS
+            if wane_target > self._wane_env
+            else RELEASE_SECONDS
+        )
+        self._wane_env += (wane_target - self._wane_env) * (
+            1.0 - math.exp(-self._dt / tau)
+        )
+
+        # The cut estimate. The level follower's release lag means it still
+        # carries the pre-cut loudness on the hop the gate engages, which is
+        # what separates "the music was severed" from "the music arrived
+        # here quietly, fading". Confirmed by a short window of sustained
+        # silence so an emphatic rest inside a phrase does not count, fired
+        # once per silence, re-armed when sound returns.
+        if under_gate and not self._was_under_gate:
+            self._cut_level = self._env[0]
+        self._was_under_gate = under_gate
+        if not under_gate:
+            self._cut_fired_this_quiet = False
+        self._severed_env *= math.exp(-self._dt / SEVERED_RELEASE_SECONDS)
+        if (
+            not self._cut_fired_this_quiet
+            and self._quiet_seconds >= CUT_CONFIRM_SECONDS
+            and self._cut_level >= CUT_LOUDNESS_FLOOR
+            and slow >= CUT_LOUDNESS_FLOOR
+        ):
+            self._cut_fired_this_quiet = True
+            self._severed_env = max(self._severed_env, min(self._cut_level, 1.0))
+
         self._features = AudioFeatures(
             level=_unit(self._env[0]),
             bass=_unit(self._env[1]),
@@ -355,6 +450,8 @@ class FeatureExtractor:
             flux=_unit(self._flux_env),
             onset=_unit(self._onset_env),
             pace=_unit(self._pace_env),
+            waning=_unit(self._wane_env),
+            severed=_unit(self._severed_env),
             silent=self._quiet_seconds >= SILENCE_SECONDS,
         )
 
@@ -416,6 +513,18 @@ MODULATED_PATHS: tuple[str, ...] = (
 # never be a dieback, and a rift on a drop is a §16.8 step 5 judgement for
 # eyes, not a default.
 ONSET_EVENT_KINDS = ("bloom", "current", "tint")
+
+# What the *fade door* asks for (§16.4): the music receding is the moment a
+# dieback fits -- the field thinning as the song goes. Never through the
+# onset door.
+FADE_EVENT_KIND = "dieback"
+
+# And what the *cut door* asks for: a hard cut is the music being severed,
+# and severance is what a rift is. Each destructive kind has exactly one
+# musical gesture: fading -> thinning, severed -> torn. The drop stays
+# constructive (a bloom, through the onset door).
+CUT_EVENT_KIND = "rift"
+SEVERED_ASK_FLOOR = 0.3
 
 
 @dataclasses.dataclass(frozen=True)
@@ -512,6 +621,27 @@ def modulate(
     return dataclasses.replace(
         params, flow=flow, climate=climate, pigment=pigment, render=render
     )
+
+
+def autonomous_arrivals(
+    events: "config_module.EventParams", features: AudioFeatures
+) -> "config_module.EventParams":
+    """The event parameters the scheduler's *own* drawing should run under.
+
+    While the room is playing, the arrivals are the music's (§16.4): the
+    field's first shipped weeks taught this the direct way, when a §4.3
+    dieback of the scheduler's own arrived mid-track and read as the
+    visualizer misreading the music. So under sound this gates ``enabled``
+    off -- which by the scheduler's documented semantics stops only its own
+    drawing: onset, fade and cut asks still land through ``trigger``, and
+    events already in flight finish their envelopes rather than being
+    stranded. In silence it returns ``events`` untouched, and the field's
+    own weather comes back: the §16.1 overlay contract, now applied to the
+    one driver that would otherwise speak over the music.
+    """
+    if features.silent:
+        return events
+    return dataclasses.replace(events, enabled=False)
 
 
 # --------------------------------------------------------------------------
@@ -642,7 +772,10 @@ class AudioDrive:
         self._capture_stop = threading.Event()
         self._status = "not started"
         self._callback_faults = 0
-        self._last_event_ask = -math.inf  # stream seconds, not wall clock
+        # All in stream seconds, never wall clock.
+        self._last_event_ask = -math.inf
+        self._last_fade_ask = -math.inf
+        self._last_cut_ask = -math.inf
         self.extractor = FeatureExtractor(sample_rate)
 
     # -- lifecycle ----------------------------------------------------------
@@ -885,24 +1018,63 @@ class AudioDrive:
         instead of producing a per-beat queue of refusals.
         """
         features = self.extractor.features
-        if features.onset < audio.onset_threshold:
-            return None
         now = self.extractor.stream_seconds
-        if now - self._last_event_ask < audio.onset_spacing:
-            return None
-        self._last_event_ask = now
-        bloom, current, tint = ONSET_EVENT_KINDS
-        if features.bass >= features.mid and features.bass >= features.treble:
-            kind = bloom
-        elif features.treble >= features.mid:
-            kind = tint
-        else:
-            kind = current
-        return EventAsk(
-            kind=kind,
-            vigor=min(1.0, 0.7 * features.onset + 0.3 * features.level),
-            pace=features.pace,
-        )
+
+        if (
+            features.onset >= audio.onset_threshold
+            and now - self._last_event_ask >= audio.onset_spacing
+        ):
+            self._last_event_ask = now
+            bloom, current, tint = ONSET_EVENT_KINDS
+            if features.bass >= features.mid and features.bass >= features.treble:
+                kind = bloom
+            elif features.treble >= features.mid:
+                kind = tint
+            else:
+                kind = current
+            return EventAsk(
+                kind=kind,
+                vigor=min(1.0, 0.7 * features.onset + 0.3 * features.level),
+                pace=features.pace,
+            )
+
+        # The cut door: the music severed asks for the rift. Checked before
+        # the fade door, and the front end's slow waning attack guarantees
+        # the order at the signal level too -- a hard cut confirms here
+        # (CUT_CONFIRM_SECONDS) before its recession can read as a fade.
+        # Firing stands the fade door down as well: one cut is one gesture,
+        # not a rift with a dieback on its heels.
+        if (
+            features.severed >= SEVERED_ASK_FLOOR
+            and now - self._last_cut_ask
+            >= RIFT_SPACING_FACTOR * audio.onset_spacing
+        ):
+            self._last_cut_ask = now
+            self._last_fade_ask = now
+            return EventAsk(
+                kind=CUT_EVENT_KIND,
+                vigor=features.severed,
+                pace=features.pace,
+            )
+
+        # The fade door: the music receding asks for the dieback the onset
+        # door never may. Vigor is the depth of the fade -- a song going all
+        # the way out earns the full gesture -- and pace is whatever tempo
+        # remains, which as the music recedes is usually little: a fade's
+        # dieback arrives long and slow, like the fade. Spaced further apart
+        # than onset asks, because a fade is one musical moment.
+        if (
+            features.waning >= audio.fade_threshold
+            and now - self._last_fade_ask
+            >= FADE_SPACING_FACTOR * audio.onset_spacing
+        ):
+            self._last_fade_ask = now
+            return EventAsk(
+                kind=FADE_EVENT_KIND,
+                vigor=features.waning,
+                pace=features.pace,
+            )
+        return None
 
     # -- reporting ----------------------------------------------------------
 
