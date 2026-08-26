@@ -158,8 +158,11 @@ and the tests — resolves via the table below, and means the file listed agains
   closed to audio by whitelist, so the field dances and never strobes —
   and the build order.
 
-- **§17 — [docs/perennial.md](docs/perennial.md)** *(proposed; redesign of
-  §15 after the first sustained viewing)*
+- **§17 — [docs/perennial.md](docs/perennial.md)** *(built: steps 1–5 of
+  §17.11 — the fixed pane and visible earth, the record layer, the
+  re-run crispness certificate, seasons with interment and ghosts, and
+  the fossil gallery. Steps 6–7, grafts and the preset/eyes pass, are
+  open.)*
   Perennial: the rhizotron re-grounded. What watching the shipped mode
   found (invisible ground, no value hierarchy, the descent spending the
   metaphor's permanence), and the redesign: the pane holds still, the soil

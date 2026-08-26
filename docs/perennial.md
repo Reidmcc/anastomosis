@@ -367,6 +367,18 @@ the bit-identical resume covers the new field. Checkpoints from before the
 record exist are refused and regrow — the step 3 precedent, applied again
 while nothing has shipped.
 
+**And the record layer found a bug older than itself.** The biographical
+clock froze at 64.0 exactly, and the investigation generalised: an f16
+texel truncates a sub-ulp increment, so *any* per-tick accumulation of
+seconds stalls at increment × 1024 — about a minute — and the living
+layer's recency age had been silently capped there since §15 step 3. Every
+age-driven gradient in the mode was saturating at sixty seconds against
+scales set in hundreds; a large share of the §17.1 monotone-khaki finding
+was this one storage artefact. Ages now advance in 64-tick batches (a
+couple of seconds' step on minutes-long colour mappings, far below
+anything visible, keyed to the checkpointed tick counter so resumes
+replay identically), and the age scales were retuned against real time.
+
 ### What step 3 actually did
 
 `tests/crisp_sweep.py` re-run at the §17.5 endpoints, resolved as the
@@ -378,3 +390,50 @@ sizes**, worst per-pixel ΔL 0.026–0.035 against the §15 record's
 accumulation-and-slew discipline that made the dark build safe is what
 makes the bright one safe, unchanged. The shipped `root_edge` floor and
 elongation ceilings stand where §15.7(2) licensed them.
+
+### What step 4 actually did
+
+The structure pass reports living and wood mass beside the front words
+(two more integer atomics in the same buffer — order-independent, so the
+bit-identical discipline holds), and a season controller runs on the same
+rare readback: germination eases closed as the record approaches
+`wood_budget` (calibrated against a measured 40-minute run), the interment
+drive relaxes toward completion-times-quiet, the fossil moment is offered
+exactly once as the drive commits, and the burial transfers lignin into
+the ghost channel while the previous ghost fades a generation deeper
+under the same cover. Ghost strata shade the ground before the roots do —
+darker, quieter earth in the shape of the interred skeletons — and season
+state rides the checkpoint.
+
+Three controller lessons, each found by watching or tracing, none by
+design: **a burial must finish** (the drive would otherwise track the
+falling fill back down and stall the interment part-done — the latch
+releases by progress against the mass it committed, never by absolute
+fill, because a straggler plant laying fresh wood through the burial
+otherwise holds the pane in permanent half-interment); **the burial
+spares young wood** (a straggler's freshly-laid skeleton is not the
+completed season's record, and erasing it under its own living tips read
+as exactly the violation the mode exists to refuse); and **the renewal
+knee sits above the spared remnant** (below it, `fossil_taken` jammed and
+no season could ever offer a fossil again).
+
+Two honest narrowings. The §17.3 origin jump — new soil each season — is
+deliberately not built: renewal regrows the *same* ground, which is what
+a real rhizotron's glass does, and the ghosts plus the palette's own
+drift carry the between-season difference for now; if the fixed earth
+wallpapers over many seasons, the jump lands later under the interment's
+cover as §17.10(4) drew it. And the §17.10(2) interment-at-fastest
+adversarial test is still owed alongside step 6's worst-case graft test —
+the burial's rate at current defaults sits an order of magnitude inside
+the wetting front's already-certified pace.
+
+### What step 5 actually did
+
+The application shell consumes the backend's `fossil_due` flag between
+frames, reads the presented frame back, and writes it to
+`<state>/gallery/fossil-seed<seed>-season<n>-tick<t>.png` beside the
+checkpoint files — a stdlib PNG encoder (the application's dependencies
+are simulation dependencies; a once-per-season still is not worth an
+imaging library), the encode and write on a thread, an existing file
+never overwritten. The gallery inherits the checkpoint path's location,
+so tests and portable configs isolate it for free.
