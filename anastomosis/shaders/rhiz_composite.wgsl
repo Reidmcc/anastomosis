@@ -137,6 +137,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // inside stones, which are smoother material than the earth around them.
     l = l + soil.grain * rp.grain_amount * 0.009 * (1.0 - 0.8 * soil.stone);
 
+    // Ghost strata (§17.6): where past seasons stand in the ground --
+    // darker, quieter earth in the shape of the interred skeletons. Read
+    // before the roots so the living and the wood shade *over* their
+    // ancestors, at rungs measured from the haunted ground itself.
+    let ghost = max(finite_or(
+        textureSampleLevel(record_tex, samp, suv, 0.0).w, 0.0), 0.0);
+    let ghost_sat = ghost / (ghost + 0.12);
+    l = l - 0.055 * ghost_sat;
+    ab = ab * (1.0 - 0.30 * ghost_sat);
+
     // --- The roots: one silhouette, two materials (§17.5, §17.6) -----------
     // The living layer and the record are one organism, so they share one
     // coverage: combined mass through the saturating map, with the edge

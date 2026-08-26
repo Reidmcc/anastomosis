@@ -977,6 +977,29 @@ class RhizotronParams:
     wood_edge: float = 0.10
     wood_age_scale: float = 1500.0
 
+    # --- Seasons (§17.6) ---------------------------------------------------
+    # The pane's wood budget, as mean lignin mass per view texel: when the
+    # record holds this much, the season is complete -- germination eases
+    # closed, the community finishes what it is growing, and the interment
+    # begins once the living mass has fallen quiet. Measured against a
+    # 40-minute default run (~0.010 and climbing linearly), so the default
+    # is roughly an hour and a half of growth; presets own the pacing.
+    wood_budget: float = 0.016
+    # The interment: how fast lignin leaves for the ghost once the drive is
+    # full, per second -- a five-to-eight-minute burial at the default, the
+    # benign kind of luminance change (§17.10(2)) -- and what fraction of
+    # the interred mass the ghost keeps.
+    interment_rate: float = 0.010
+    ghost_gain: float = 0.85
+    # How fast the *existing* ghost fades while an interment runs, per
+    # second: one burial dims the previous season's shadow by roughly half,
+    # so the ground reads about two seasons deep -- salience decays, the
+    # gallery keeps the verbatim (§17.6).
+    ghost_fade: float = 0.004
+    # The interment drive's relaxation, seconds. Slow like every controller
+    # here: completion is noticed, not triggered.
+    intern_tau: float = 45.0
+
     # --- The long-duration core (§15.11 step 4) ----------------------------
     # Senescence: fine structure fades once it is old, at a rate that scales
     # with its fineness -- pure fuzz in a few minutes, mixed lateral paths in
@@ -2164,6 +2187,11 @@ def validate(params: Params) -> Params:
     rhiz.lateral_life = min(max(float(rhiz.lateral_life), 1.0), 36000.0)
     rhiz.axis_life = min(max(float(rhiz.axis_life), 5.0), 86400.0)
     rhiz.lignify_rate = min(max(float(rhiz.lignify_rate), 0.0), 1.0)
+    rhiz.wood_budget = min(max(float(rhiz.wood_budget), 0.001), 0.2)
+    rhiz.interment_rate = min(max(float(rhiz.interment_rate), 0.0), 0.2)
+    rhiz.ghost_gain = min(max(float(rhiz.ghost_gain), 0.0), 2.0)
+    rhiz.ghost_fade = min(max(float(rhiz.ghost_fade), 0.0), 0.5)
+    rhiz.intern_tau = min(max(float(rhiz.intern_tau), 4.0), 3600.0)
     rhiz.wood_avoid = min(max(float(rhiz.wood_avoid), 0.0), 4.0)
     rhiz.wood_edge = min(max(float(rhiz.wood_edge), 0.02), 0.5)
     rhiz.wood_age_scale = min(max(float(rhiz.wood_age_scale), 1.0), 36000.0)

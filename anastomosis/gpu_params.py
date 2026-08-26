@@ -331,6 +331,12 @@ RHIZ_FIELDS: list[Field] = [
     # Lignification per tick (relaxation form), the avoidance weight of wood,
     # and the wood shading's transfer and maturation.
     ("lignify_rate", "f32"),
+    # Seasons (§17.6): the interment's per-tick rate (zero outside one),
+    # the ghost's share of interred mass, and the old ghost's per-tick fade
+    # while an interment runs.
+    ("intern_rate", "f32"),
+    ("ghost_gain", "f32"),
+    ("ghost_fade", "f32"),
     ("wood_avoid", "f32"),
     ("wood_edge", "f32"),
     ("wood_age_scale", "f32"),

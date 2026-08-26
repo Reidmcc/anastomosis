@@ -1144,6 +1144,96 @@ def test_the_record_is_append_only_while_the_season_lives(gpu_device):
     )
 
 
+def _write_record(engine, data: np.ndarray) -> None:
+    for texture in engine.record.textures:
+        checkpoint._write_texture(engine.device, texture, data)
+
+
+def test_a_completed_pane_is_interred_and_the_season_turns(gpu_device):
+    """§17.6, the whole cycle on a painted pane: a record at its budget with
+    a quiet community raises the interment drive; lignin leaves for the
+    ghost while the old ghost fades; the fossil is offered exactly once;
+    and when the burial has emptied the record, the season turns and
+    germination eases back open."""
+    params = _resolve(overrides={
+        # A brisk burial, so the whole arc fits in a test.
+        "rhizotron.interment_rate": 0.10,
+        "rhizotron.intern_tau": 6.0,
+        "rhizotron.ghost_fade": 0.05,
+        # No newcomers while the cycle is measured.
+        "rhizotron.germination_rate": 0.0,
+        "rhizotron.germination_floor": 0.0,
+        "rhizotron.axes_per_plant": 1,
+    })
+    engine = _engine(gpu_device, params, seed=47)
+    g = engine.geometry
+
+    # A season at its end, painted: a full record, a still-visible previous
+    # ghost, and no living mass to speak of.
+    budget = params.rhizotron.wood_budget * g.width * g.view_rows
+    per_texel = 4.0 * budget / (g.width * g.height)
+    record = np.zeros((g.height, g.width, 4), dtype=np.float16)
+    record[..., 0] = per_texel          # lignin at ~4x the completion knee
+    record[..., 1] = 900.0              # mature wood
+    record[g.height // 2, :, 3] = 1.0   # the previous season's ghost, one band
+    _write_record(engine, record)
+    _write_structure(engine, np.zeros((g.height, g.width, 4), dtype=np.float16))
+    # A realistic seasonal peak: the quiet gate measures stragglers against
+    # the life the season actually held, so the one seeded axis that keeps
+    # growing through the test must read as the remnant it is.
+    engine._living_peak = 8000.0
+
+    ghost_before = _record(engine).astype(np.float32)[g.height // 2, :, 3].sum()
+    lignin_start = _record(engine).astype(np.float32)[..., 0].sum()
+
+    fossil_offers = 0
+    for _ in range(1800):
+        engine.tick(params, [])
+        if engine.fossil_due:
+            fossil_offers += 1
+            engine.fossil_due = False
+
+    rec = _record(engine).astype(np.float32)
+    lignin_end = float(rec[..., 0].sum())
+    assert engine._intern > 0.0, "the interment drive never rose"
+    assert lignin_end < 0.2 * lignin_start, (
+        f"the burial left {lignin_end:.0f} of {lignin_start:.0f} lignin"
+    )
+    assert float(rec[..., 3].sum()) > 0.0, "no ghost was laid down"
+    ghost_after = float(rec[g.height // 2, :, 3].sum())
+    assert ghost_after < ghost_before, (
+        "the previous season's ghost did not fade under the burial"
+    )
+    assert fossil_offers == 1, (
+        f"the fossil was offered {fossil_offers} times, not once"
+    )
+    assert engine._season == 1, "the season did not turn"
+    assert engine._germ_ease > 0.5, (
+        "germination did not ease back open after the renewal"
+    )
+
+
+def test_season_state_rides_the_checkpoint(gpu_device):
+    """§17.6: the season counter, drive and gates resume with the pane."""
+    params = _resolve()
+    original = _engine(gpu_device, params, seed=49)
+    for _ in range(10):
+        original.tick(params, [])
+    original._season = 3
+    original._intern = 0.4
+    original._germ_ease = 0.7
+    original._living_peak = 512.0
+    original._fossil_taken = True
+
+    snapshot = checkpoint.capture(original, sim_hz=params.sim_hz)
+    device, _ = gpu_device
+    resumed = RhizotronEngine(
+        device, WIDTH, HEIGHT, params, seed=1, geometry=original.geometry)
+    assert checkpoint.restore(resumed, snapshot)
+    assert resumed.season_state() == original.season_state()
+    assert resumed.fossil_due is False
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------

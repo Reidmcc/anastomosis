@@ -797,12 +797,18 @@ class _RhizotronLayout(_Layout):
             engine.tips.index = 0
 
     def engine_meta(self, engine) -> dict[str, Any]:
-        return {"descent": engine.descent_state()}
+        return {
+            "descent": engine.descent_state(),
+            "season": engine.season_state(),
+        }
 
     def restore_engine_meta(self, engine, saved: dict[str, Any]) -> None:
         descent = saved.get("descent")
         if isinstance(descent, dict):
             engine.restore_descent(descent)
+        season = saved.get("season")
+        if isinstance(season, dict):
+            engine.restore_season(season)
 
 
 LAYOUTS: dict[str, _Layout] = {

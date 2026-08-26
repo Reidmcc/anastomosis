@@ -26,8 +26,12 @@
 @group(0) @binding(3) var<storage, read_write> deposit_buf: array<atomic<u32>>;
 @group(0) @binding(4) var record_src: texture_2d<f32>;
 @group(0) @binding(5) var record_dst: texture_storage_2d<rgba16float, write>;
+// The controller words (rhizotron.py): this pass owes the season controller
+// the third and fourth -- living mass and wood mass, fixed point.
+@group(0) @binding(6) var<storage, read_write> front_buf: array<atomic<u32>>;
 
 const DEPOSIT_SCALE: f32 = 1048576.0;
+const MASS_SCALE: f32 = 256.0;
 
 // The floor on the mass the deposit share is measured against, so a deposit
 // onto near-bare ground still counts as (almost) the whole of it: a fresh
@@ -150,6 +154,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let transfer = min(rp.lignify_rate * coarse * density, density);
     density = density - transfer;
     lignin = min(lignin + transfer, DENSITY_CAP);
+    var ghost = rec.w;
+
+    // The interment (§17.6): the one licensed writer of wood's exit, zero
+    // outside a burial. Lignin leaves for the ghost at the drive's eased
+    // rate; the *existing* ghost fades under the same cover, so the ground
+    // reads a couple of seasons deep and no deeper. The biographical clock
+    // clears with the wood it was counting for, slowly, wherever none is
+    // left to age.
+    let interred = lignin * rp.intern_rate;
+    lignin = lignin - interred;
+    ghost = min(
+        ghost * (1.0 - rp.ghost_fade) + interred * rp.ghost_gain,
+        DENSITY_CAP);
+    let presence = smoothstep(0.004, 0.02, lignin);
+    bio_age = bio_age * (1.0 - 0.03 * (1.0 - presence));
     // Biographical age: seconds since wood first held here. Advances only
     // where there is wood to age, smoothly gated so a whisper of lignin does
     // not start a clock the eye will later read; never reset by anything.
@@ -210,5 +229,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         vec4<f32>(density, age, fineness, nutrient));
     textureStore(
         record_dst, vec2<i32>(x, y),
-        vec4<f32>(lignin, bio_age, rec.z, rec.w));
+        vec4<f32>(lignin, bio_age, rec.z, ghost));
+
+    // The season controller's masses, accumulated only where there is
+    // something to count -- integer atomics, so the sum is deterministic
+    // under any dispatch order.
+    if (density > 1e-4) {
+        atomicAdd(&front_buf[2], u32(density * MASS_SCALE));
+    }
+    if (lignin > 1e-4) {
+        atomicAdd(&front_buf[3], u32(lignin * MASS_SCALE));
+    }
 }
