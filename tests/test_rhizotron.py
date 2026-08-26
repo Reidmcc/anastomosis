@@ -765,7 +765,11 @@ def test_the_macros_reach_the_rhizotron():
         tempo=1.0, scale=1.0, intensity=1.0)).resolve()
 
     assert busy.rhizotron.elong_axis > quiet.rhizotron.elong_axis
-    assert busy.rhizotron.descent_rate > quiet.rhizotron.descent_rate
+    # The descent is retired at rest (§17.3): tempo no longer drives it, and
+    # the pane holds at any slider position. A positive rate is reachable
+    # only as an explicit override -- the §15 escape hatch.
+    assert busy.rhizotron.descent_rate == 0.0
+    assert quiet.rhizotron.descent_rate == 0.0
     assert busy.rhizotron.percolation_rate > quiet.rhizotron.percolation_rate
     assert busy.rhizotron.spacing_axis > quiet.rhizotron.spacing_axis
     assert busy.rhizotron.splat_axis > quiet.rhizotron.splat_axis
@@ -832,6 +836,10 @@ def test_hardpan_structures_the_water(gpu_device):
         params = _resolve(overrides={
             "rhizotron.descent_rate": 0.0,
             "rhizotron.descent_wander": 0.0,
+            # No surface band (§17.4): this test measures what hardpan does
+            # to percolation through a full column of soil, and dry air rows
+            # would dilute the row-spread statistic on both sides.
+            "rhizotron.surface_frac": 0.0,
             # Heavy rain, slow relaxation: transport-dominated, so what the
             # bands do to the water is what the measurement sees.
             "rhizotron.rain_base": 0.04,

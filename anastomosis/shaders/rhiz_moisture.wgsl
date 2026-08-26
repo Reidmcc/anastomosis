@@ -28,8 +28,11 @@ fn baseline_at(ux: f32, rel_row: f32) -> f32 {
     let soil = soil_at(rp, ux, rel_row);
     // Permeable soil sits drier at rest; dense soil holds more against
     // gravity. This is what gives the column resting wetness *bands* for the
-    // weather to move against, rather than a uniform grey to darken.
-    return rp.moisture_baseline * max(1.45 - 0.9 * soil.cond, 0.2);
+    // weather to move against, rather than a uniform grey to darken. Above
+    // the soil line (§17.4) the resting moisture eases to zero: air is dry,
+    // and the relaxation term is what keeps it that way.
+    let ground = smoothstep(-0.5, 1.5, rel_row - rp.surface_row);
+    return rp.moisture_baseline * max(1.45 - 0.9 * soil.cond, 0.2) * ground;
 }
 
 // The source state of the texel that will land at row `y` after this tick's
@@ -122,11 +125,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var w = state.x;
 
     // Gravity: what leaves for the row below, what arrives from the row
-    // above. The top row's "above" is the unseen surface, i.e. the rain.
+    // above. Rain lands on the first row below the soil line (§17.4) -- or,
+    // with no surface in the pane, on the top row exactly as the §15 column
+    // always took it: the sentinel surface row floors to below zero and the
+    // clamp hands the old behaviour back.
+    let rain_row = clamp(
+        i32(floor(rp.surface_row)) + 1, 0, i32(rp.dims_y) - 1);
     w = w - flux_down(x, y);
-    if (y == 0) {
+    if (y == rain_row) {
         w = w + rp.rain_base + rp.rain_event_gain * rain_extra;
-    } else {
+    }
+    if (y > 0) {
         w = w + flux_down(x, y - 1);
     }
 

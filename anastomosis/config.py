@@ -767,13 +767,14 @@ class RhizotronParams:
     same discipline ``homeo_rate`` established in `_physics_values`.
     """
 
-    # --- The descent (§15.4) ----------------------------------------------
-    # How fast the window sinks, in window-heights per hour. About one window
-    # per hour at the default: the hour hand, not the second hand -- you do not
-    # see it move, you notice ten minutes later that it has. Step 1 drives
-    # this directly (there are no roots yet for a growth front to track); the
-    # front-controller of §15.4 replaces the constant, not the plumbing.
-    descent_rate: float = 1.0
+    # --- The descent (§15.4), retired at rest (§17.3) ----------------------
+    # How fast the window sinks, in window-heights per hour. Zero since §17:
+    # the pane holds, and what a root system builds stays where the eye can
+    # keep it -- permanence is the metaphor's gift, and the descent spent it.
+    # The machinery remains proven and reachable: any positive rate here (an
+    # override, not a macro -- tempo no longer drives it) grows §15's endless
+    # sinking column exactly as before.
+    descent_rate: float = 0.0
     # The rate's slow OU modulation: the log-scale spread at one standard
     # deviation of a unit walk, and the walk's time constant. Aperiodic and
     # stateful like every other slow variation (§3); zero pins the rate.
@@ -784,18 +785,18 @@ class RhizotronParams:
     # Typical stratum thickness, in view-heights. Quantised to a power of two
     # of rows where it is packed: the vertical lattice of an unbounded u64 row
     # counter is found by shift and mask, which is exact forever.
-    strata_thickness: float = 0.45
+    strata_thickness: float = 0.16
     # How much the strata undulate, as a fraction of their own thickness.
     # Zero rules dead-straight bands across the pane, which reads as a chart
     # rather than a cross-section.
-    strata_tilt: float = 0.45
+    strata_tilt: float = 0.30
     # Stones: how much of the matrix is stone at the stoniest strata, and the
     # typical stone size in sim cells (also power-of-two quantised).
     # Tempered after watching it: at 0.6 the matrix read as a field of pale
     # dots -- §4.7's geometry, made of stone -- rather than as earth with
     # stones in it.
-    stone_amount: float = 0.38
-    stone_cells: float = 12.0
+    stone_amount: float = 0.30
+    stone_cells: float = 20.0
     # Mineral grain: the fine static speckle of the matrix. An amplitude on
     # lightness, kept small -- the grain is texture, not noise.
     grain_amount: float = 0.55
@@ -805,7 +806,7 @@ class RhizotronParams:
     # channels that water races down and roots follow. Hashed features of the
     # soil itself rather than events -- they arrive by descent, at the
     # descent's own speed, which is as non-punctuating as anything can be.
-    hardpan_amount: float = 0.55
+    hardpan_amount: float = 0.35
     biopore_amount: float = 0.5
 
     # --- The nutrient economy (§15.11 step 5, second half) -----------------
@@ -944,8 +945,8 @@ class RhizotronParams:
     # the licensed value from the §15.7(2) sweep, enforced in `validate`.
     root_knee: float = 0.08
     root_edge: float = 0.18
-    root_age_scale: float = 600.0  # seconds to brown
-    root_brown: float = 0.82       # how far a browned root sinks toward soil
+    root_age_scale: float = 260.0  # seconds to brown
+    root_brown: float = 0.88       # how far a browned root sinks toward wood
     # Root hairs: the pale skirt around young material -- the transfer's soft
     # approach, re-admitted only where the structure is young, so growing
     # tips carry a halo of fuzz that fades as they lignify.
@@ -987,11 +988,28 @@ class RhizotronParams:
     descent_mult_min: float = 0.2
     descent_mult_max: float = 6.0
 
-    # --- The look (§15.2) --------------------------------------------------
-    # Lightness span of the soil above the background anchor, in Oklab L. The
-    # ground stays dark-earth rather than dark-void, but it is a *material*
-    # ground: every pixel is something.
-    soil_l_range: float = 0.155
+    # --- The surface (§17.4) -----------------------------------------------
+    # Fraction of the view that is open air above the soil line. The fixed
+    # pane's one landmark: crowns germinate just below it, rain darkens down
+    # from it, and the near-black sky is what makes the ground read warm.
+    # Zero removes the surface entirely (the §15 endless-column look). The
+    # line rides the world coordinate, so a positive descent rate simply
+    # carries it away, as §17.4 says it should.
+    surface_frac: float = 0.07
+
+    # Full-field exposure (§17.5): the factor this backend lifts the
+    # resolved mean-lightness target by. The governor's meaning is unchanged
+    # -- hold the mean, never step -- but a pane of lit earth has an honest
+    # mean several times a void's.
+    exposure_lift: float = 2.0
+
+    # --- The look (§15.2, re-anchored by §17.5) ----------------------------
+    # Lightness of the soil above the background anchor, in Oklab L: a floor
+    # every soil texel clears, plus the span the chip ramps travel. §15's
+    # build had no floor and a narrow span, which priced the entire ground at
+    # black (§17.1); the ground is the *mid* of this image, not its void.
+    soil_l_floor: float = 0.09
+    soil_l_range: float = 0.22
     # Wet soil is darker and slightly more saturated -- the most familiar
     # material appearance there is. Fraction of lightness removed at full
     # wetness, and fraction of chroma added.
@@ -1303,7 +1321,6 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("rhizotron.elong_lateral", 1.2, 2.31, 1.0),
         ("rhizotron.elong_fine", 0.8, 1.47, 1.0),
         ("rhizotron.percolation_rate", 0.55, 1.33, 1.0),
-        ("rhizotron.descent_rate", 0.55, 1.55, 1.0),
     ],
     "palette": [
         # Palette selects a hue anchor; the spatial spread widens slightly at
@@ -1508,7 +1525,6 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("rhizotron.elong_lateral", 1.2, 2.31, 1.0),
         ("rhizotron.elong_fine", 0.8, 1.47, 1.0),
         ("rhizotron.percolation_rate", 0.55, 1.33, 1.0),
-        ("rhizotron.descent_rate", 0.55, 1.55, 1.0),
     ],
     "palette": [
         # Most of the hue circle in play at once. This is spread around the
@@ -1909,6 +1925,19 @@ class Config:
         if mode == "resonance" and not self.filaments:
             params.pigment.density_from_trail = 0.0
 
+        # The rhizotron is a full-field image (§17.5): every pixel is lit
+        # material, where the fungal modes are sparse light on a void. One
+        # exposure-target meaning ("how bright overall") through one number
+        # would crush the earth to meet a void's mean, so this backend lifts
+        # the resolved target by its own factor -- applied like a macro,
+        # before the overrides, so a hand-pinned target still wins.
+        if normalise_backend(self.backend) == "rhizotron":
+            params.safety.exposure_target = min(
+                params.safety.exposure_target
+                * params.rhizotron.exposure_lift,
+                0.40,
+            )
+
         # The named slab size, which is a choice rather than a curve. Applied
         # after the macros and before the overrides, so that it beats nothing
         # (no macro drives it) and loses to an explicit `volume.width`, which
@@ -2133,8 +2162,14 @@ def validate(params: Params) -> Params:
     rhiz.descent_mult_min = min(max(float(rhiz.descent_mult_min), 0.05), 1.0)
     rhiz.descent_mult_max = min(max(float(rhiz.descent_mult_max), 1.0), 10.0)
 
+    # The surface: a band, not the picture. The ceiling keeps an override
+    # from turning the soil mode into a sky mode.
+    rhiz.surface_frac = min(max(float(rhiz.surface_frac), 0.0), 0.30)
+    rhiz.exposure_lift = min(max(float(rhiz.exposure_lift), 0.5), 3.0)
+
     # Luminance-relevant: the wetting front and the soil span both spend the
     # slew budget, and both are bounded here the way every luminance actor is.
+    rhiz.soil_l_floor = min(max(float(rhiz.soil_l_floor), 0.0), 0.30)
     rhiz.soil_l_range = min(max(float(rhiz.soil_l_range), 0.0), 0.40)
     rhiz.wet_darken = min(max(float(rhiz.wet_darken), 0.0), 0.80)
     rhiz.wet_chroma = min(max(float(rhiz.wet_chroma), 0.0), 2.0)

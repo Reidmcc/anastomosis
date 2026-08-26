@@ -200,6 +200,16 @@ struct Soil {
 fn soil_at(rp: RhizParams, ux: f32, rel_row: f32) -> Soil {
     let origin = vec2<u32>(rp.origin_hi, rp.origin_lo);
 
+    // The surface (§17.4). `depth` is rows below the soil line; the topsoil
+    // weight eases in over the first tenth of the view -- the humus horizon:
+    // organic-dark, stone-free, well-draining. With no surface configured
+    // the sentinel row puts every texel at full depth and nothing here fires.
+    let depth = rel_row - rp.surface_row;
+    let topsoil = 1.0 - smoothstep(0.0, 0.10 * f32(rp.view_rows), depth);
+    // Air, for the tips: everything above the line is a wall (§17.4 -- the
+    // bottom margin's mirror), eased over a root-width so nothing steps.
+    let air = 1.0 - smoothstep(-1.5, 0.5, depth);
+
     // Strata undulate: the row every stratum-scale lattice is evaluated at is
     // tilted by a smooth periodic function of x, so the bands dip and rise
     // instead of ruling straight lines. The tilt is a fraction of the stratum
@@ -227,7 +237,8 @@ fn soil_at(rp: RhizParams, ux: f32, rel_row: f32) -> Soil {
     // material, not a temporal threshold -- and the stoniness of the stratum
     // gates how many of the hashed pebbles actually exist, so a fine-earth
     // band is genuinely stone-free.
-    let stoniness = clamp(0.5 + 0.5 * perm, 0.0, 1.0) * rp.stone_amount;
+    let stoniness = clamp(0.5 + 0.5 * perm, 0.0, 1.0) * rp.stone_amount
+        * (1.0 - 0.9 * topsoil);
     let stone = stones_at(rp, ux, rel_row, stoniness);
 
     // Grain: one octave of fine speckle, static in world space so it scrolls
@@ -248,7 +259,8 @@ fn soil_at(rp: RhizParams, ux: f32, rel_row: f32) -> Soil {
     let hp = soil_noise(ux, 2u, origin, rel_row + tilt * 0.35
                         * f32(1u << rp.strata_shift),
                         rp.strata_shift + 1u, rp.seed ^ 0x0AD0u);
-    let hardpan = smoothstep(0.38, 0.58, hp) * rp.hardpan_amount;
+    let hardpan = smoothstep(0.38, 0.58, hp) * rp.hardpan_amount
+        * (1.0 - topsoil);
 
     // Biopores: rare near-vertical old worm channels, tall thin lattices
     // wobbled slightly in x, that water races down and roots follow -- the
@@ -265,6 +277,9 @@ fn soil_at(rp: RhizParams, ux: f32, rel_row: f32) -> Soil {
     var cond = clamp(0.5 + 0.42 * perm, 0.0, 1.0) * (1.0 - 0.92 * stone);
     cond = cond * (1.0 - 0.88 * hardpan);
     cond = min(cond * (1.0 + 5.0 * pore), 1.0);
+    // Topsoil takes rain readily -- organic crumb structure -- which is what
+    // lets a shower reach the crowns instead of sheeting off the first row.
+    cond = min(cond * (1.0 + 0.8 * topsoil), 1.0);
     cond = max(cond, rp.cond_floor);
 
     // Dry lightness: the stratum carries it, the grain only textures it --
@@ -272,12 +287,18 @@ fn soil_at(rp: RhizParams, ux: f32, rel_row: f32) -> Soil {
     // than as material (measured by eye on the first build, and the kind of
     // judgement §15.13 says this section will keep needing). Hardpan reads
     // as its own material: a shade darker and denser than the band it cuts.
+    // The humus horizon is the darkest earth in the column: topsoil pulls
+    // the ramp position down hard, and the grain stays so the darkness still
+    // reads as material rather than as a painted band.
     let light = clamp(
-        0.5 + 0.38 * strat + 0.10 * grain - 0.16 * hardpan, 0.0, 1.0);
+        (0.5 + 0.50 * strat + 0.10 * grain - 0.16 * hardpan)
+            * (1.0 - 0.62 * topsoil) + 0.06 * topsoil * grain,
+        0.0, 1.0);
 
     // The impedance the tips feel is the stone plus most of the hardpan --
-    // roots do force hardpan eventually, which is why it is not a wall.
-    let impedance = min(stone + 0.7 * hardpan, 1.0);
+    // roots do force hardpan eventually, which is why it is not a wall --
+    // and the air, which is: nothing grows above the soil line.
+    let impedance = min(stone + 0.7 * hardpan + air, 1.0);
 
     return Soil(strat, stone, grain, cond, light, impedance);
 }

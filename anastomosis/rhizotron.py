@@ -345,12 +345,18 @@ class RhizotronEngine(Backend):
         tips = np.zeros(max(g.tips_total, 1), dtype=TIP_DTYPE)
         count = min(int(params.rhizotron.axes_per_plant), g.max_axes)
         spread = float(params.rhizotron.axis_spread)
+        # Crowns sit just below the soil line, stratified across the width
+        # with a little scatter -- a community of individuals filling the
+        # pane laterally, not one plant in the middle of it (§17.4). With no
+        # surface configured they start where the §15 column always did.
+        surface = params.rhizotron.surface_frac
+        crown_row = MARGIN_ROWS + g.view_rows * (
+            surface + 0.015 if surface > 0.0 else 0.12)
         for a in range(count):
-            # Axes fan out from one crown, spaced a little so the plant is a
-            # plant and not a cord.
-            tips["x"][a] = g.width * (
-                0.5 + 0.06 * (a - (count - 1) / 2.0) + 0.01 * rng.normal())
-            tips["y"][a] = MARGIN_ROWS + g.view_rows * 0.12
+            jitter = 0.5 * (float(rng.random()) - 0.5) / max(count, 1)
+            tips["x"][a] = (g.width * (
+                (a + 0.5) / max(count, 1) + jitter)) % g.width
+            tips["y"][a] = crown_row
             tips["heading"][a] = math.pi / 2.0 + spread * float(rng.normal())
             tips["rng"][a] = int(rng.integers(1, 2**32))
             tips["flags"][a] = TIP_ALIVE | TIP_SPENT
@@ -439,6 +445,22 @@ class RhizotronEngine(Backend):
 
     # -- parameter packing ----------------------------------------------------
 
+    def _surface_row(self, params: Params) -> float:
+        """The texture row of the soil line this tick, fractional. §17.4.
+
+        The surface is a fixed *world* row -- surface_frac of the view below
+        where the pane began -- so at the §17 resting descent it sits still,
+        and under a positive descent rate it scrolls away exactly as any
+        other world feature does. A large negative sentinel means no surface
+        (surface_frac zero), which every shader reads as "all soil".
+        """
+        frac = params.rhizotron.surface_frac
+        if frac <= 0.0:
+            return -1.0e9
+        surface_world = START_ORIGIN + frac * self.geometry.view_rows
+        origin = math.floor(self._descent_pos) - MARGIN_ROWS
+        return float(surface_world - origin)
+
     def _rhiz_values(
         self, params: Params, scroll_rows: int, base_row: float
     ) -> dict:
@@ -500,9 +522,11 @@ class RhizotronEngine(Backend):
             "nutrient_spread": min(per_tick(rhiz.nutrient_spread), 0.2),
             "chemo_gain": rhiz.chemo_gain,
             "forage_gain": rhiz.forage_gain,
+            "soil_l_floor": rhiz.soil_l_floor,
             "soil_l_range": rhiz.soil_l_range,
             "wet_darken": rhiz.wet_darken,
             "wet_chroma": rhiz.wet_chroma,
+            "surface_row": self._surface_row(params),
             # The plant. Per-second quantities become per-tick here, in the
             # form each one wants: distances scale with dt, relaxations go
             # through 1 - exp(-rate*dt) so a slow tick cannot overshoot, and

@@ -221,10 +221,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let gen = u32(max(tip.generation, 0.0));
             var site_seed = pcg3(slot, gen * 2654435761u, rp.seed ^ 0x5EEDu);
             let fdims = vec2<f32>(f32(rp.dims_x), f32(rp.dims_y));
+            // Seeds wake just below the soil line (§17.4) -- crowns start at
+            // the surface, where the rain arrives. With no surface in the
+            // pane (the sentinel row, or a §15 column sunk past it) the old
+            // upper-window band stands in.
+            var germ_top = rp.surface_row + 1.0;
+            if (germ_top < f32(rp.margin_top) || germ_top >= f32(rp.dims_y)) {
+                germ_top = f32(rp.margin_top) + 0.06 * f32(rp.view_rows);
+            }
             let site = vec2<f32>(
                 rnd(&site_seed) * fdims.x,
-                f32(rp.margin_top)
-                    + (0.06 + 0.16 * rnd(&site_seed)) * f32(rp.view_rows),
+                germ_top + (0.005 + 0.055 * rnd(&site_seed)) * f32(rp.view_rows),
             );
             let wet = textureSampleLevel(
                 moisture_tex, samp,

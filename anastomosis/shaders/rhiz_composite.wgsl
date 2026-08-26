@@ -112,17 +112,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // olive-grey discs against warm earth read as a field of pale dots --
     // and a field of dots is §4.7's geometry whatever it is made of.
     var stone_chip = mix(STONE_DARK, STONE_LIGHT, 0.5 + 0.5 * soil.grain);
-    stone_chip = vec3<f32>(stone_chip.x, stone_chip.yz * 0.55);
-    stone_chip = mix(stone_chip, chip, 0.35);
+    stone_chip = vec3<f32>(stone_chip.x, stone_chip.yz * 0.8);
+    stone_chip = mix(stone_chip, chip, 0.5);
     chip = mix(chip, stone_chip, clamp(soil.stone, 0.0, 1.0));
 
-    // --- Into the dark-earth envelope ---------------------------------------
+    // --- Into the visible-earth envelope (§17.5) ----------------------------
     // The chip's position in the chart's lightness span becomes its position
-    // in [background, background + soil_l_range]; its chromatic direction
-    // comes with it, eased down as the lightness drops so a dim texel is a
-    // dimmer version of the same soil rather than a neon one.
+    // in [background + floor, background + floor + range]; its chromatic
+    // direction comes with it, eased down as the lightness drops so a dim
+    // texel is a dimmer version of the same soil rather than a neon one.
+    // The floor is §17.1's fix: every soil texel clears the void's black, so
+    // the ground is the mid of this image and the sky above it is the dark.
     let t_chip = clamp((chip.x - CHIP_L_LO) / CHIP_L_SPAN, 0.0, 1.0);
-    var l = render.background_luma + rp.soil_l_range * t_chip;
+    var l = render.background_luma + rp.soil_l_floor + rp.soil_l_range * t_chip;
     var ab = chip.yz * pow(max(l, 1e-4) / max(chip.x, 1e-4), 0.7);
 
     // Moisture: darker and slightly richer. This is the weather made visible,
@@ -150,8 +152,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         0.5 - rp.root_edge, 0.5 + rp.root_edge, saturated);
     let age = max(finite_or(root.y, 0.0), 0.0);
     let young_f = exp(-age / max(rp.root_age_scale * 0.4, 1.0));
+    // A pallor boost over the shared macro: the visible-earth envelope
+    // (§17.5) lifted the ground, and the living material keeps its two
+    // rungs of headroom above the palest stratum.
     let l_young = clamp(
-        render.background_luma + render.filament_luma, 0.0, render.l_max);
+        render.background_luma + render.filament_luma * 1.3, 0.0, render.l_max);
 
     // Root hairs, and the mycorrhizal accent (§15.2): the transfer's soft
     // skirt, re-admitted only around *young* material -- a halo of pale fuzz
@@ -172,10 +177,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Warm ivory: a faint 10YR-ish cast so young roots sit in the soil's
         // own colour world rather than reading as neutral grey.
         let young = vec3<f32>(l_young, 0.010 * l_young / 0.4, 0.045 * l_young / 0.4);
-        let root_lab = mix(young, vec3<f32>(l, ab), brown);
+        // Aged material sinks toward *wood*: a shade darker than the soil
+        // around it, so the browning path stays legible as figure -- the
+        // §17.5 ladder puts old wood between the ground and the living.
+        let wood = vec3<f32>(
+            max(l - 0.045, render.background_luma), ab * 0.85);
+        let root_lab = mix(young, wood, brown);
         l = mix(l, root_lab.x, coverage);
         ab = mix(ab, root_lab.yz, coverage);
     }
+
+    // --- The sky (§17.4) ----------------------------------------------------
+    // Above the soil line the pane is open air: the darkest thing in the
+    // image, faintly cool so the earth below reads warm. The blend eases
+    // over a couple of rows -- the litter line, where humus meets light --
+    // and takes the root layer with it (hairs may skirt a row above the
+    // line; nothing may glow in the sky).
+    let depth = row - rp.surface_row;
+    let airf = 1.0 - smoothstep(-0.5, 2.0, depth);
+    // The litter line: a thin pale seam of surface debris where humus meets
+    // air, textured by the grain so it reads as material, not as a rule.
+    let seam = smoothstep(-0.3, 0.6, depth) * (1.0 - smoothstep(0.6, 3.0, depth));
+    l = l + seam * (0.045 + 0.03 * soil.grain);
+    let sky_l = render.background_luma * 0.85;
+    l = mix(l, sky_l, airf);
+    ab = mix(ab, vec2<f32>(-0.002, -0.008), airf);
 
     // The same perceptual bounds the fungal compositors respect; the safety
     // stage re-applies both to its target, so these are shaping, not the
