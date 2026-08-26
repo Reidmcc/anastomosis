@@ -14,7 +14,7 @@ because nothing has ever been watched.
 
 Here, then: built and verified headless against a software adapter (Mesa
 lavapipe), so every shader compiles and the full tick/render sequence runs in CI
-without a GPU. The suite is 659 tests, split the way their costs are:
+without a GPU. The suite is 697 tests, split the way their costs are:
 `.github/workflows/ci.yml` runs everything not marked `slow` on every push,
 across three Python versions plus a leg with no PySide6 that holds the README's
 promise that the panel is optional, and runs the `slow` marks -- drift,
