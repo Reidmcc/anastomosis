@@ -66,6 +66,8 @@ struct Tip {
 // (fixed point, atomicMax) and the count of living tips. Derived state,
 // zeroed by the host every tick, never checkpointed.
 @group(0) @binding(7) var<storage, read_write> front_buf: array<atomic<u32>>;
+// The record layer (§17.6), read-only here: wood the avoidance must count.
+@group(0) @binding(8) var record_tex: texture_2d<f32>;
 
 const DEPOSIT_SCALE: f32 = 1048576.0;
 const FRONT_SCALE: f32 = 64.0;
@@ -154,13 +156,17 @@ fn probe(pos: vec2<f32>) -> f32 {
     let uv = vec2<f32>(fract(pos.x / fdims.x), clamp(pos.y / fdims.y, 0.0, 1.0));
     let wet = textureSampleLevel(moisture_tex, samp, uv, 0.0).x;
     let field = textureSampleLevel(structure_tex, samp, uv, 0.0);
+    let wood = textureSampleLevel(record_tex, samp, uv, 0.0).x;
     let soil = soil_at(rp, uv.x, pos.y - f32(rp.scroll_rows));
     // The tropism sum, chemotropism included: richness pulls (the nutrient
-    // channel rides the same sample the avoidance already takes).
+    // channel rides the same sample the avoidance already takes). Wood
+    // counts toward the avoidance exactly as living structure does (§17.6):
+    // the record is as real an obstacle as the present, and grafts (§17.8)
+    // will be the rare licensed exception, not a leak here.
     return rp.hydro_gain * wet
         + rp.chemo_gain * clamp(field.w, 0.0, 1.2)
         - rp.thigmo_gain * soil.imped
-        - rp.avoid_gain * min(field.x, 1.0);
+        - rp.avoid_gain * min(field.x + rp.wood_avoid * wood, 1.0);
 }
 
 @compute @workgroup_size(64, 1, 1)
@@ -346,7 +352,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // order-independent and so deterministic.
     let amount = rp.tip_deposit * travelled;
     if (amount > 0.0) {
-        let sigma = max(splat_sigma_for(order), 0.2);
+        // Taper: the stamp narrows as the apex matures, so an axis is
+        // broadest where it began -- at the crown -- and hairline at its
+        // deep end, the way a taproot actually is. Reuses the elongation
+        // deceleration's own factor, so the two mature together.
+        let vigor = rp.elong_floor
+            + (1.0 - rp.elong_floor) * exp(-max(tip.age, 0.0) * rp.elong_slow);
+        let sigma = max(splat_sigma_for(order) * (0.72 + 0.28 * vigor), 0.2);
         let base = vec2<i32>(floor(pos - 1.0));
         let order_weight = f32(order) * 0.5;
         for (var j = 0; j < 3; j = j + 1) {

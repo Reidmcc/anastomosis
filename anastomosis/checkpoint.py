@@ -766,6 +766,7 @@ class _RhizotronLayout(_Layout):
         return {
             "column.moisture": (geometry.height, geometry.width, 4),
             "column.structure": (geometry.height, geometry.width, 4),
+            "column.record": (geometry.height, geometry.width, 4),
             "column.tips": (
                 max(geometry.tips_total, 1) * rhizotron_module.TIP_STRIDE,
             ),
@@ -773,7 +774,7 @@ class _RhizotronLayout(_Layout):
 
     def capture(self, engine) -> dict[str, np.ndarray]:
         arrays: dict[str, np.ndarray] = {}
-        for name in ("moisture", "structure"):
+        for name in ("moisture", "structure", "record"):
             pair = getattr(engine, name)
             arrays[f"column.{name}"] = _read_texture(
                 engine.device, pair.textures[pair.index])
@@ -781,7 +782,7 @@ class _RhizotronLayout(_Layout):
         return arrays
 
     def restore_arrays(self, engine, arrays: dict[str, np.ndarray]) -> None:
-        for name in ("moisture", "structure"):
+        for name in ("moisture", "structure", "record"):
             data = arrays.get(f"column.{name}")
             if data is None:
                 continue

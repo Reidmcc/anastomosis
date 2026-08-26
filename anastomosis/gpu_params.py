@@ -327,6 +327,13 @@ RHIZ_FIELDS: list[Field] = [
     ("root_brown", "f32"),      # how far a browned root sinks toward the soil
     ("root_hair", "f32"),       # the pale skirt around young material
     ("mycorrhiza", "f32"),      # the cool shimmer in young fine fuzz
+    # --- The record layer (§17.6) -----------------------------------------
+    # Lignification per tick (relaxation form), the avoidance weight of wood,
+    # and the wood shading's transfer and maturation.
+    ("lignify_rate", "f32"),
+    ("wood_avoid", "f32"),
+    ("wood_edge", "f32"),
+    ("wood_age_scale", "f32"),
     # --- The long-duration core (§15.11 step 4) ---------------------------
     # Senescence: per-tick decay of fine structure, gated by age.
     ("senesce_rate", "f32"),

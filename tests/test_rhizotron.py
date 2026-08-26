@@ -93,6 +93,11 @@ def _structure(engine) -> np.ndarray:
     return checkpoint._read_texture(engine.device, pair.textures[pair.index])
 
 
+def _record(engine) -> np.ndarray:
+    pair = engine.record
+    return checkpoint._read_texture(engine.device, pair.textures[pair.index])
+
+
 def _tips(engine) -> np.ndarray:
     raw = engine.device.queue.read_buffer(engine.tips.cur)
     return np.frombuffer(raw, dtype=TIP_DTYPE).copy()
@@ -1074,11 +1079,69 @@ def test_a_resumed_column_evolves_bit_identically(gpu_device):
     assert np.array_equal(_structure(original), _structure(resumed)), (
         "a resumed plant's structure diverged"
     )
+    assert np.array_equal(_record(original), _record(resumed)), (
+        "a resumed plant's record layer diverged"
+    )
     assert np.array_equal(_tips(original), _tips(resumed)), (
         "a resumed plant's tips diverged -- a branch decision depended on "
         "something the checkpoint does not carry"
     )
     assert resumed.descent_state() == original.descent_state()
+
+
+# ---------------------------------------------------------------------------
+# The record layer (§17.6)
+# ---------------------------------------------------------------------------
+
+
+def test_coarse_material_commits_to_wood(gpu_device):
+    """§17.6: living coarse material transfers into lignin, preferentially
+    where the material is coarse -- the width hierarchy becomes a time
+    hierarchy -- and committed texels carry a growing biographical age."""
+    params = _resolve()
+    engine = _engine(gpu_device, params, seed=41)
+    for _ in range(700):
+        engine.tick(params, [])
+
+    rec = _record(engine).astype(np.float32)
+    lignin = rec[..., 0]
+    assert float(lignin.sum()) > 0.5, "nothing lignified at all"
+
+    struct = _structure(engine).astype(np.float32)
+    fineness = struct[..., 2]
+    rooted = (struct[..., 0] + lignin) > 0.02
+    woody = lignin > 0.05
+    assert woody.any(), "no texel committed enough to measure"
+    assert float(fineness[woody].mean()) < float(fineness[rooted].mean()), (
+        "commitment did not prefer coarse material"
+    )
+    assert float(rec[..., 1][woody].min()) > 0.0, (
+        "committed wood carries no biographical age"
+    )
+
+
+def test_the_record_is_append_only_while_the_season_lives(gpu_device):
+    """The §17.2 thesis, asserted per texel: nothing the simulation does --
+    senescence, succession, the weather -- ever decrements lignin. The
+    record only accumulates until an interment (§17.6) is asked for."""
+    params = _resolve()
+    engine = _engine(gpu_device, params, seed=43)
+    scheduler = events.EventScheduler(seed=7)
+    for _ in range(500):
+        rows, _ = scheduler.pack(8)
+        engine.tick(params, rows)
+        scheduler.update(1.0 / params.sim_hz, params.events)
+    before = _record(engine).astype(np.float32)[..., 0]
+    for _ in range(400):
+        rows, _ = scheduler.pack(8)
+        engine.tick(params, rows)
+        scheduler.update(1.0 / params.sim_hz, params.events)
+    after = _record(engine).astype(np.float32)[..., 0]
+    worst = float((after - before).min())
+    assert worst >= -1e-4, (
+        f"lignin decreased by {-worst:.5f} somewhere: the record is not "
+        f"append-only"
+    )
 
 
 # ---------------------------------------------------------------------------

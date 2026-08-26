@@ -24,6 +24,8 @@
 @group(0) @binding(1) var src_tex: texture_2d<f32>;
 @group(0) @binding(2) var dst_tex: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(3) var<storage, read_write> deposit_buf: array<atomic<u32>>;
+@group(0) @binding(4) var record_src: texture_2d<f32>;
+@group(0) @binding(5) var record_dst: texture_storage_2d<rgba16float, write>;
 
 const DEPOSIT_SCALE: f32 = 1048576.0;
 
@@ -63,6 +65,24 @@ fn state_at(x: i32, y: i32) -> vec4<f32> {
         clamp(finite_or(v.y, 0.0), 0.0, AGE_CAP),
         clamp(finite_or(v.z, 0.0), 0.0, 1.0),
         clamp(n, 0.0, 2.0),
+    );
+}
+
+// The record layer's source state, shifted exactly as the living layer is:
+// (lignin, biographical age, graft glow, ghost). Rows the texture did not
+// hold last tick arrive bare -- fresh soil has no history in it.
+fn record_at(x: i32, y: i32) -> vec4<f32> {
+    let sy = y + i32(rp.scroll_rows);
+    let sx = ((x % i32(rp.dims_x)) + i32(rp.dims_x)) % i32(rp.dims_x);
+    if (sy >= i32(rp.dims_y)) {
+        return vec4<f32>(0.0);
+    }
+    let v = textureLoad(record_src, vec2<i32>(sx, max(sy, 0)), 0);
+    return vec4<f32>(
+        clamp(finite_or(v.x, 0.0), 0.0, DENSITY_CAP),
+        clamp(finite_or(v.y, 0.0), 0.0, AGE_CAP),
+        clamp(finite_or(v.z, 0.0), 0.0, 4.0),
+        clamp(finite_or(v.w, 0.0), 0.0, DENSITY_CAP),
     );
 }
 
@@ -115,6 +135,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let share = clamp(deposited / max(density, AGE_RESET_REF), 0.0, 1.0);
     age = min(age + rp.dt_seconds, AGE_CAP) * (1.0 - share);
 
+    // --- The commitment transfer (§17.6) -----------------------------------
+    // Coarse living material converts into wood at a steady slow rate --
+    // independent of re-touch, which is what the recency age above can never
+    // be: an axis shaft lignifies behind its tip whatever grows across it.
+    // Fineness squared discounts the rate, so fuzz never commits (senescence
+    // is its exit, below) and the width hierarchy becomes a *time* hierarchy:
+    // the boldest strokes are the first into the record. Wood is append-only
+    // while the season lives -- nothing below ever decrements it.
+    let rec = record_at(x, y);
+    var lignin = rec.x;
+    var bio_age = rec.y;
+    let coarse = (1.0 - fineness) * (1.0 - fineness);
+    let transfer = min(rp.lignify_rate * coarse * density, density);
+    density = density - transfer;
+    lignin = min(lignin + transfer, DENSITY_CAP);
+    // Biographical age: seconds since wood first held here. Advances only
+    // where there is wood to age, smoothly gated so a whisper of lignin does
+    // not start a clock the eye will later read; never reset by anything.
+    bio_age = min(
+        bio_age + rp.dt_seconds * smoothstep(0.01, 0.05, lignin), AGE_CAP);
+
     // Senescence (§15.11 step 4): fine material fades once it is old, at a
     // rate scaling with its fineness -- fuzz in minutes, mixed lateral paths
     // in tens of minutes, the woody axes effectively never. Every factor is
@@ -125,8 +166,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // steady state, not just the growth burst.
     let ripeness = 1.0 - exp(
         -max(age - rp.senesce_delay, 0.0) / max(rp.senesce_delay, 1.0));
+    // The remnant cleanup: faint old mass -- what patchy senescence leaves
+    // of a fuzz path -- fades several times faster than established
+    // material, and partly regardless of its fineness label, so the field
+    // never holds a confetti of sub-salience dashes (seen the moment the
+    // record layer gave the living material a contrasting ground). Smooth
+    // in density, gated by the same ripeness, and irrelevant to any path
+    // still being reinforced.
+    let remnant = exp(-density * 18.0);
     let kept = density
-        * (1.0 - rp.senesce_rate * fineness * sqrt(fineness) * ripeness);
+        * (1.0 - rp.senesce_rate * ripeness
+            * (fineness * sqrt(fineness) * (1.0 + 4.0 * remnant)
+                + 0.8 * remnant));
 
     // Fineness follows what deposits, by the same mass share: order 0 pulls
     // toward 0, fines toward 1, and a trunk stays a trunk under crossings.
@@ -157,4 +208,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(
         dst_tex, vec2<i32>(x, y),
         vec4<f32>(density, age, fineness, nutrient));
+    textureStore(
+        record_dst, vec2<i32>(x, y),
+        vec4<f32>(lignin, bio_age, rec.z, rec.w));
 }

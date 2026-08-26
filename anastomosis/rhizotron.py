@@ -237,6 +237,11 @@ class RhizotronEngine(Backend):
         # The root map: density, age (seconds), fineness. Cumulative rather
         # than decaying -- the descent is what retires it (§15.4).
         self.structure = PingPong(device, g.width, g.height, "structure")
+        # The record layer (§17.6): lignin, biographical age, graft glow,
+        # ghost. The append-only half of the field -- nothing erases it while
+        # the season lives, and the interment (§17.6) is the only writer of
+        # its last channel.
+        self.record = PingPong(device, g.width, g.height, "record")
         # The tips, double-buffered for the deterministic birth mechanism
         # (rhiz_tips.wgsl), and their fixed-point deposit accumulator: two
         # words per texel, density and order-weight, drained every tick.
@@ -336,6 +341,8 @@ class RhizotronEngine(Backend):
             upload(texture, state)
         bare = np.zeros((g.height, g.width, 4), dtype=np.float16)
         for texture in self.structure.textures:
+            upload(texture, bare)
+        for texture in self.record.textures:
             upload(texture, bare)
         self.device.queue.write_buffer(
             self.deposit_buf, 0,
@@ -572,6 +579,10 @@ class RhizotronEngine(Backend):
             "root_brown": rhiz.root_brown,
             "root_hair": rhiz.root_hair,
             "mycorrhiza": rhiz.mycorrhiza,
+            "lignify_rate": rate(rhiz.lignify_rate),
+            "wood_avoid": rhiz.wood_avoid,
+            "wood_edge": rhiz.wood_edge,
+            "wood_age_scale": rhiz.wood_age_scale,
             "senesce_rate": per_tick(rhiz.senescence_rate),
             "senesce_delay": rhiz.senescence_delay,
             "regerm_delay": rhiz.regermination_delay / dt,
@@ -635,6 +646,7 @@ class RhizotronEngine(Backend):
             self._buffer_binding(self.deposit_buf),
             self.sampler,
             self._buffer_binding(self.front_buf),
+            self.record.cur,
         ]))
         cpass.dispatch_workgroups(math.ceil(g.tips_total / 64), 1, 1)
 
@@ -655,6 +667,8 @@ class RhizotronEngine(Backend):
             self.structure.cur,
             self.structure.nxt,
             self._buffer_binding(self.deposit_buf),
+            self.record.cur,
+            self.record.nxt,
         ]))
         cpass.dispatch_workgroups(*self._groups(g.width, g.height))
 
@@ -662,6 +676,7 @@ class RhizotronEngine(Backend):
         self.tips.flip()
         self.moisture.flip()
         self.structure.flip()
+        self.record.flip()
 
         self.device.queue.submit([encoder.finish()])
         self.tick_count += 1
@@ -720,6 +735,7 @@ class RhizotronEngine(Backend):
             self.structure.cur,
             self.hdr_view,
             self.sampler,
+            self.record.cur,
         ]))
         cpass.dispatch_workgroups(*self._groups(self.width, self.height))
         return self.scroll_vel_view

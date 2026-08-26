@@ -957,6 +957,26 @@ class RhizotronParams:
     # lightness, and the intensity macro is what brings it in.
     mycorrhiza: float = 0.11
 
+    # --- The record layer (§17.6) ------------------------------------------
+    # Lignification: coarse living material converts into permanent wood at
+    # a steady slow rate -- commitment, independent of re-touch, which is the
+    # mechanism §17.1 found missing. The rate is per second at full
+    # coarseness; fineness squared discounts it, so an axis commits in a few
+    # minutes, a lateral in ten, and pure fuzz never does -- fuzz is working
+    # memory, and senescence is its exit. Wood never senesces and is never
+    # erased while the season lives: the visible skeleton is the biography.
+    lignify_rate: float = 0.011
+    # How strongly the tips' self-avoidance counts wood, relative to living
+    # structure. Wood is exactly as real an obstacle as living root; grafts
+    # (§17.8) will make the rare exception, not this number.
+    wood_avoid: float = 1.0
+    # Wood shading (§17.5): its own coverage transfer, and the biographical
+    # maturation -- russet when newly lignified, sinking to dark umber a
+    # shade under the soil over this many seconds. Biographical age is never
+    # reset by anything; that is the point of it.
+    wood_edge: float = 0.10
+    wood_age_scale: float = 1500.0
+
     # --- The long-duration core (§15.11 step 4) ----------------------------
     # Senescence: fine structure fades once it is old, at a rate that scales
     # with its fineness -- pure fuzz in a few minutes, mixed lateral paths in
@@ -2143,6 +2163,10 @@ def validate(params: Params) -> Params:
     rhiz.fine_life = min(max(float(rhiz.fine_life), 1.0), 3600.0)
     rhiz.lateral_life = min(max(float(rhiz.lateral_life), 1.0), 36000.0)
     rhiz.axis_life = min(max(float(rhiz.axis_life), 5.0), 86400.0)
+    rhiz.lignify_rate = min(max(float(rhiz.lignify_rate), 0.0), 1.0)
+    rhiz.wood_avoid = min(max(float(rhiz.wood_avoid), 0.0), 4.0)
+    rhiz.wood_edge = min(max(float(rhiz.wood_edge), 0.02), 0.5)
+    rhiz.wood_age_scale = min(max(float(rhiz.wood_age_scale), 1.0), 36000.0)
     rhiz.senescence_rate = min(max(float(rhiz.senescence_rate), 0.0), 1.0)
     rhiz.senescence_delay = min(max(float(rhiz.senescence_delay), 0.0), 3600.0)
     rhiz.regermination_delay = min(
