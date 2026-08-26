@@ -516,6 +516,44 @@ def _offscreen(gpu_device, monkeypatch, tmp_path, loop=None, size=SIZE, **option
     ))
 
 
+def test_the_fossil_is_saved_beside_the_checkpoints(
+    gpu_device, monkeypatch, tmp_path
+):
+    """DESIGN.md §17.6: when the perennial backend offers its fossil moment,
+    the application answers with a PNG in the gallery -- written once, valid,
+    and sized to the frame."""
+    import struct
+    import time as time_module
+
+    app = _offscreen(
+        gpu_device, monkeypatch, tmp_path, backend="rhizotron",
+        checkpoint=False,
+    )
+    app.setup()
+    for _ in range(3):
+        app.draw_frame()
+
+    app.engine.fossil_due = True
+    app.draw_frame()
+    assert app.engine.fossil_due is False
+
+    gallery = (tmp_path / "checkpoint.npz").parent / "gallery"
+    deadline = time_module.time() + 10.0
+    files = []
+    while time_module.time() < deadline:
+        files = sorted(gallery.glob("fossil-*.png")) if gallery.exists() else []
+        if files:
+            break
+        time_module.sleep(0.05)
+    assert len(files) == 1, "the fossil did not appear"
+
+    data = files[0].read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    width, height = struct.unpack(">II", data[16:24])
+    assert (width, height) == (app.engine.width, app.engine.height)
+    app.shutdown()
+
+
 def test_a_new_session_picks_up_where_the_last_one_left_off(
     gpu_device, monkeypatch, tmp_path
 ):
