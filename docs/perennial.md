@@ -308,3 +308,73 @@ judgement risk (does *held* appear?) before any lifecycle machinery lands.
    the fixed pane, a `perennial` default, and the frame-sampled viewing
    round that decides the deferred judgements (sprouts, graft warmth,
    season pacing).
+
+### What step 1 actually did
+
+Judged on headless stills from the real backend at every stage — the
+workflow §17.1's postmortem was produced with, kept as the build's own
+instrument. The pane holds (`descent_rate` zero, tempo's curve entries on
+it removed from both tables — the escape hatch is an explicit override, not
+a slider position), the surface landed as a fixed *world* row so a positive
+descent carries it away unchanged, crowns seed stratified across the width
+just below the soil line, germination sites moved up to hug it, rain lands
+on the first row beneath it, and the topsoil eases stones and hardpan out
+while pulling the ramp toward humus-dark.
+
+The shading fight was the §17.1 diagnosis replayed in reverse, and one
+mechanism deserved its record: **the exposure governor was the black**.
+Raising the soil envelope moved almost nothing, because the governor holds
+mean image lightness at a target tuned for sparse light on a void — a
+full-field earth image was being divided back down to a void's mean. The
+fix is `exposure_lift`, a backend-conditional factor on the resolved
+target applied in `Config.resolve` beside the mode pinning: one meaning
+("how bright overall") through two honest referents. After that the
+envelope edits behaved: a lightness floor every soil texel clears, strata
+at a scale the view can actually show several of, warmer half-buried
+stones, the litter seam.
+
+### What step 2 actually did
+
+The record layer is a second ping-pong field beside the structure —
+lignin, biographical age, graft glow, ghost, the last two written by
+nothing yet — updated in the same pass that ages the living layer, so the
+commitment transfer moves mass between the two fields atomically. The
+transfer is the §17.6 design as drawn: steady, smooth, fineness-squared
+discounted, so axes commit in minutes, laterals inside their lifetime
+(the rate was raised once watching found the first cohort's skeletons too
+faint through the succession lull), and fuzz never. Biographical age
+advances wherever wood holds and is reset by nothing; the tips'
+self-avoidance counts lignin exactly as living density.
+
+Two findings by eye, both now structural. **The silhouette must be one.**
+The first build gave wood its own coverage transfer, and mass mid-transfer
+sat below both knees: roots dissolved into dashes precisely where they
+were becoming permanent. The shipped compositor saturates *combined* mass
+through one knee and treats wood-ness as a colour axis along the
+silhouette — with the edge sharpening from `root_edge` toward `wood_edge`
+as material commits — so the hand-over cannot gap by construction. **The
+churn must not read as confetti.** Against a visible ground, fuzz
+fragments lingered pale for minutes after their fines died; the fix is a
+short browning clock for fine material (quadratic in fineness — laterals
+keep their working pallor) plus a remnant-cleanup term in senescence that
+fades faint old mass fully. A taper on the ageing apex's stamp — reusing
+the elongation deceleration's own factor — gives the axes their crown-down
+width gradient in the bargain.
+
+The §17.2 thesis is held by test now: `test_the_record_is_append_only...`
+asserts per-texel that nothing the simulation does decrements lignin, and
+the bit-identical resume covers the new field. Checkpoints from before the
+record exist are refused and regrow — the step 3 precedent, applied again
+while nothing has shipped.
+
+### What step 3 actually did
+
+`tests/crisp_sweep.py` re-run at the §17.5 endpoints, resolved as the
+rhizotron so the exposure lift is inside the measurement, with the descent
+forced to its config ceiling (the escape hatch stays certified): **0.0%
+changing-area fraction at every swept point, both thresholds, both
+sizes**, worst per-pixel ΔL 0.026–0.035 against the §15 record's
+0.027–0.041. The visible earth spends its lightness statically; the
+accumulation-and-slew discipline that made the dark build safe is what
+makes the bright one safe, unchanged. The shipped `root_edge` floor and
+elongation ceilings stand where §15.7(2) licensed them.
