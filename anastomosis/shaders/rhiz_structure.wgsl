@@ -136,8 +136,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // in the trunk -- the central roots breaking up while their plant lived. A
     // hairline crossing a trunk is a fraction of a percent of its mass, and
     // now moves its identity by exactly that much.
+    // Ages advance in 64-tick batches, not per tick: an f16 texel truncates
+    // an increment below one ulp, so per-tick seconds stall at increment x
+    // 1024 -- about a minute -- and every age-driven gradient in the mode
+    // silently saturated there (found when the record layer's biographical
+    // clock froze at 64.0 exactly; the living channel had been capped since
+    // it was built). Batching multiplies the ceiling past AGE_CAP, the
+    // step is a couple of seconds on mappings whose scales are minutes --
+    // far below anything the eye or the slew limiter can see -- and the
+    // tick counter is checkpointed, so a resume replays the same batches.
     let share = clamp(deposited / max(density, AGE_RESET_REF), 0.0, 1.0);
-    age = min(age + rp.dt_seconds, AGE_CAP) * (1.0 - share);
+    let age_batch = select(
+        0.0, rp.dt_seconds * 64.0, (rp.tick & 63u) == 0u);
+    age = min(age + age_batch, AGE_CAP) * (1.0 - share);
 
     // --- The commitment transfer (§17.6) -----------------------------------
     // Coarse living material converts into wood at a steady slow rate --
@@ -162,7 +173,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // reads a couple of seasons deep and no deeper. The biographical clock
     // clears with the wood it was counting for, slowly, wherever none is
     // left to age.
-    let interred = lignin * rp.intern_rate;
+    // Young wood is spared most of the burial: the interment is of the
+    // completed season's record, and a straggler plant still writing
+    // through it keeps the skeleton it is laying down rather than having
+    // it erased under its living tips.
+    let interred = lignin * rp.intern_rate
+        * mix(0.15, 1.0, smoothstep(120.0, 480.0, bio_age));
     lignin = lignin - interred;
     ghost = min(
         ghost * (1.0 - rp.ghost_fade) + interred * rp.ghost_gain,
@@ -173,7 +189,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // where there is wood to age, smoothly gated so a whisper of lignin does
     // not start a clock the eye will later read; never reset by anything.
     bio_age = min(
-        bio_age + rp.dt_seconds * smoothstep(0.01, 0.05, lignin), AGE_CAP);
+        bio_age + select(0.0, rp.dt_seconds * 64.0, (rp.tick & 63u) == 0u)
+            * smoothstep(0.01, 0.05, lignin),
+        AGE_CAP);
 
     // Senescence (§15.11 step 4): fine material fades once it is old, at a
     // rate scaling with its fineness -- fuzz in minutes, mixed lateral paths

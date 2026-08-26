@@ -469,7 +469,7 @@ class RhizotronEngine(Backend):
         # relaxation eases toward.
         if self._fossil_taken:
             remaining = self._wood_mass / max(self._burial_mass, 1e-6)
-            release = min(max((remaining - 0.05) / 0.08, 0.0), 1.0)
+            release = min(max((remaining - 0.10) / 0.10, 0.0), 1.0)
             desired = max(desired, min(self._intern * 1.2, 1.0) * release)
         interval = FRONT_READ_TICKS / max(params.sim_hz, 1e-3)
         alpha = 1.0 - math.exp(-interval / max(rhiz.intern_tau, 1e-3))
@@ -490,8 +490,13 @@ class RhizotronEngine(Backend):
         # Renewal: the record has been emptied by a burial; the next season
         # begins. The drive is already decaying (completion collapsed with
         # the fill), and germination returns with it.
-        buried = self._wood_mass < 0.05 * max(self._burial_mass, 1e-6)
-        if self._fossil_taken and buried and self._intern < 0.6:
+        # The renewal knee sits above the latch's release floor: a burial
+        # that spared its stragglers' young wood (the interment's own rule)
+        # leaves a remnant, and a knee below the remnant would jam the
+        # season -- fossil_taken held forever, no fossil ever offered again
+        # (found by the forced-burial capture).
+        buried = self._wood_mass < 0.10 * max(self._burial_mass, 1e-6)
+        if self._fossil_taken and buried and self._intern < 0.35:
             self._season += 1
             self._fossil_taken = False
             self._living_peak = 0.0

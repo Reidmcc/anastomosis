@@ -114,7 +114,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // and a field of dots is §4.7's geometry whatever it is made of.
     var stone_chip = mix(STONE_DARK, STONE_LIGHT, 0.5 + 0.5 * soil.grain);
     stone_chip = vec3<f32>(stone_chip.x, stone_chip.yz * 0.8);
-    stone_chip = mix(stone_chip, chip, 0.5);
+    stone_chip = mix(stone_chip, chip, 0.62);
     chip = mix(chip, stone_chip, clamp(soil.stone, 0.0, 1.0));
 
     // --- Into the visible-earth envelope (§17.5) ----------------------------
@@ -207,7 +207,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let russet = vec3<f32>(
             l + 0.055, ab + vec2<f32>(0.006, 0.014));
         let umber = vec3<f32>(
-            max(l - 0.05, render.background_luma), ab * 0.72);
+            max(l - 0.05, render.background_luma), ab * 0.92);
         let wood_lab = mix(russet, umber, mature);
         let living_lab = mix(young, russet, brown);
         let root_lab = mix(living_lab, wood_lab, wood_frac);

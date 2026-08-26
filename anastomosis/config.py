@@ -945,8 +945,8 @@ class RhizotronParams:
     # the licensed value from the §15.7(2) sweep, enforced in `validate`.
     root_knee: float = 0.08
     root_edge: float = 0.18
-    root_age_scale: float = 260.0  # seconds to brown
-    root_brown: float = 0.88       # how far a browned root sinks toward wood
+    root_age_scale: float = 420.0  # seconds to brown
+    root_brown: float = 0.80       # how far a browned root sinks toward wood
     # Root hairs: the pale skirt around young material -- the transfer's soft
     # approach, re-admitted only where the structure is young, so growing
     # tips carry a halo of fuzz that fades as they lignify.
@@ -975,7 +975,7 @@ class RhizotronParams:
     # shade under the soil over this many seconds. Biographical age is never
     # reset by anything; that is the point of it.
     wood_edge: float = 0.10
-    wood_age_scale: float = 1500.0
+    wood_age_scale: float = 2600.0
 
     # --- Seasons (§17.6) ---------------------------------------------------
     # The pane's wood budget, as mean lignin mass per view texel: when the
@@ -1044,7 +1044,7 @@ class RhizotronParams:
     # resolved mean-lightness target by. The governor's meaning is unchanged
     # -- hold the mean, never step -- but a pane of lit earth has an honest
     # mean several times a void's.
-    exposure_lift: float = 2.0
+    exposure_lift: float = 2.4
 
     # --- The look (§15.2, re-anchored by §17.5) ----------------------------
     # Lightness of the soil above the background anchor, in Oklab L: a floor
