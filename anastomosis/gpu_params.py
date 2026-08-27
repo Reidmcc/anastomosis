@@ -262,9 +262,14 @@ RHIZ_FIELDS: list[Field] = [
     ("nutrient_spread", "f32"),
     ("chemo_gain", "f32"),
     ("forage_gain", "f32"),
+    ("soil_l_floor", "f32"),
     ("soil_l_range", "f32"),
     ("wet_darken", "f32"),
     ("wet_chroma", "f32"),
+    # The surface (§17.4): the texture row of the soil line, fractional.
+    # Negative or past the bottom means no surface is in the pane (a sunk
+    # §15 column, or surface_frac zero).
+    ("surface_row", "f32"),
     # --- The plant (§15.11 step 3) ----------------------------------------
     # Tip pool shape. Slots are allocated by position in the tree, not by an
     # atomic bump: axis a is slot a, lateral (a, l) is A + a*L + l, fine
@@ -322,6 +327,19 @@ RHIZ_FIELDS: list[Field] = [
     ("root_brown", "f32"),      # how far a browned root sinks toward the soil
     ("root_hair", "f32"),       # the pale skirt around young material
     ("mycorrhiza", "f32"),      # the cool shimmer in young fine fuzz
+    # --- The record layer (§17.6) -----------------------------------------
+    # Lignification per tick (relaxation form), the avoidance weight of wood,
+    # and the wood shading's transfer and maturation.
+    ("lignify_rate", "f32"),
+    # Seasons (§17.6): the interment's per-tick rate (zero outside one),
+    # the ghost's share of interred mass, and the old ghost's per-tick fade
+    # while an interment runs.
+    ("intern_rate", "f32"),
+    ("ghost_gain", "f32"),
+    ("ghost_fade", "f32"),
+    ("wood_avoid", "f32"),
+    ("wood_edge", "f32"),
+    ("wood_age_scale", "f32"),
     # --- The long-duration core (§15.11 step 4) ---------------------------
     # Senescence: per-tick decay of fine structure, gated by age.
     ("senesce_rate", "f32"),
@@ -379,6 +397,7 @@ RENDER_FIELDS: list[Field] = [
     ("exposure_target", "f32"),
     ("exposure_attack", "f32"),
     ("exposure_release", "f32"),
+    ("exposure_max", "f32"),
     ("dither_amount", "f32"),
     ("reproject_scale", "f32"),
     # --- Volumetric slab only (DESIGN.md §5.1) ---------------------------

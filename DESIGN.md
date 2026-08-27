@@ -163,6 +163,23 @@ and the tests — resolves via the table below, and means the file listed agains
   closed to audio by whitelist, so the field dances and never strobes —
   and the build order.
 
+- **§17 — [docs/perennial.md](docs/perennial.md)** *(built: steps 1–5 of
+  §17.11 — the fixed pane and visible earth, the record layer, the
+  re-run crispness certificate, seasons with interment and ghosts, and
+  the fossil gallery. Steps 6–7, grafts and the preset/eyes pass, are
+  open.)*
+  Perennial: the rhizotron re-grounded. What watching the shipped mode
+  found (invisible ground, no value hierarchy, the descent spending the
+  metaphor's permanence), and the redesign: the pane holds still, the soil
+  becomes visible material, and the field splits into a writable living
+  layer and an append-only record layer — fines as working memory, wood as
+  archive. Seasons replace the descent as the never-settles mechanism:
+  determinate growth completes the pane, the finished form exports as a
+  fossil to an append-only gallery, and interment turns the skeleton into
+  ghost strata the next season grows through. Grafts — rare joins onto old
+  wood with a slow warmth along the touched path — return anastomosis to
+  the mode as event rather than texture.
+
 ## Where to look first
 
 - Changing **agent behaviour** (`agents.wgsl`, `vol_agents.wgsl`): §2, §4.7,

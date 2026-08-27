@@ -246,6 +246,11 @@ class RhizotronEngine(Backend):
         # The root map: density, age (seconds), fineness. Cumulative rather
         # than decaying -- the descent is what retires it (§15.4).
         self.structure = PingPong(device, g.width, g.height, "structure")
+        # The record layer (§17.6): lignin, biographical age, graft glow,
+        # ghost. The append-only half of the field -- nothing erases it while
+        # the season lives, and the interment (§17.6) is the only writer of
+        # its last channel.
+        self.record = PingPong(device, g.width, g.height, "record")
         # The tips, double-buffered for the deterministic birth mechanism
         # (rhiz_tips.wgsl), and their fixed-point deposit accumulator: two
         # words per texel, density and order-weight, drained every tick.
@@ -255,14 +260,17 @@ class RhizotronEngine(Backend):
             size=g.width * g.height * 8,
             usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
             label="root_deposit")
-        # The front controller's two words: deepest living row, living count.
-        # Derived -- zeroed before every tips dispatch, read back rarely.
+        # The controller words: deepest living row, living count, and -- for
+        # the season controller (§17.6) -- living mass and wood mass in
+        # fixed point. Derived: zeroed before every tips dispatch (the tips
+        # rebuild the first two, the structure pass the masses), read back
+        # rarely.
         self.front_buf = device.create_buffer(
-            size=8,
+            size=16,
             usage=(wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST
                    | wgpu.BufferUsage.COPY_SRC),
             label="root_front")
-        self._front_zero = np.zeros(2, dtype=np.uint32).tobytes()
+        self._front_zero = np.zeros(4, dtype=np.uint32).tobytes()
         # The controller's accumulated state: the rate multiplier the front
         # error steers, and the last front reading (view fraction; negative
         # means nothing living). Multiplier is checkpointed with the descent;
@@ -270,6 +278,20 @@ class RhizotronEngine(Backend):
         self._descent_mult = 1.0
         self._front_frac = -1.0
         self._alive_tips = 0
+        # The season (§17.6): the interment drive in [0, 1], the germination
+        # ease it and the wood fill impose, the living-mass peak the quiet
+        # gate is measured against, the season counter, and whether this
+        # season's fossil has been offered to the application shell. All of
+        # it rides the checkpoint (`season_state`).
+        self._living_mass = 0.0
+        self._wood_mass = 0.0
+        self._living_peak = 0.0
+        self._intern = 0.0
+        self._germ_ease = 1.0
+        self._season = 0
+        self._fossil_taken = False
+        self._burial_mass = 0.0
+        self.fossil_due = False
 
         # The uniform scroll velocity the safety stage reprojects through:
         # one row of texels, rewritten each frame from the descent's actual
@@ -346,6 +368,8 @@ class RhizotronEngine(Backend):
         bare = np.zeros((g.height, g.width, 4), dtype=np.float16)
         for texture in self.structure.textures:
             upload(texture, bare)
+        for texture in self.record.textures:
+            upload(texture, bare)
         self.device.queue.write_buffer(
             self.deposit_buf, 0,
             np.zeros(g.width * g.height * 2, dtype=np.uint32).tobytes())
@@ -354,12 +378,18 @@ class RhizotronEngine(Backend):
         tips = np.zeros(max(g.tips_total, 1), dtype=TIP_DTYPE)
         count = min(int(params.rhizotron.axes_per_plant), g.max_axes)
         spread = float(params.rhizotron.axis_spread)
+        # Crowns sit just below the soil line, stratified across the width
+        # with a little scatter -- a community of individuals filling the
+        # pane laterally, not one plant in the middle of it (§17.4). With no
+        # surface configured they start where the §15 column always did.
+        surface = params.rhizotron.surface_frac
+        crown_row = MARGIN_ROWS + g.view_rows * (
+            surface + 0.015 if surface > 0.0 else 0.12)
         for a in range(count):
-            # Axes fan out from one crown, spaced a little so the plant is a
-            # plant and not a cord.
-            tips["x"][a] = g.width * (
-                0.5 + 0.06 * (a - (count - 1) / 2.0) + 0.01 * rng.normal())
-            tips["y"][a] = MARGIN_ROWS + g.view_rows * 0.12
+            jitter = 0.5 * (float(rng.random()) - 0.5) / max(count, 1)
+            tips["x"][a] = (g.width * (
+                (a + 0.5) / max(count, 1) + jitter)) % g.width
+            tips["y"][a] = crown_row
             tips["heading"][a] = math.pi / 2.0 + spread * float(rng.normal())
             tips["rng"][a] = int(rng.integers(1, 2**32))
             tips["flags"][a] = TIP_ALIVE | TIP_SPENT
@@ -412,6 +442,74 @@ class RhizotronEngine(Backend):
         origin = int(math.floor(self._descent_pos)) - MARGIN_ROWS
         return origin & 0xFFFFFFFF, (origin >> 32) & 0xFFFFFFFF
 
+    MASS_SCALE = 256.0
+
+    def _update_season(self, params: Params) -> None:
+        """The season controller (§17.6), run on the same rare readback.
+
+        Continuous signals, slow relaxations, no clocks: `fill` is where the
+        record stands against the pane's budget, `quiet` is how far the
+        living mass has fallen from its seasonal peak, and the interment
+        drive relaxes toward their product. Germination eases closed as the
+        pane fills and while the interment runs, and eases back open of its
+        own accord once the burial has emptied the record -- the cycle needs
+        no step anywhere.
+        """
+        rhiz = params.rhizotron
+        g = self.geometry
+        budget = max(rhiz.wood_budget * g.width * g.view_rows, 1e-6)
+        fill = self._wood_mass / budget
+        self._living_peak = max(self._living_peak, self._living_mass)
+
+        completion = min(max((fill - 0.85) / 0.15, 0.0), 1.0)
+        quiet = 1.0 - min(
+            self._living_mass / max(0.06 * self._living_peak, 1e-6), 1.0)
+        desired = completion * quiet
+        # A burial, once committed, finishes: the drive would otherwise
+        # track the fill back down and stall the interment part-done (found
+        # by the cycle test -- a third of the record left standing). The
+        # latch arms only past the fossil moment and releases by *progress
+        # against the season it committed* -- the mass snapshotted at the
+        # fossil moment -- never by absolute fill: a remnant plant laying
+        # fresh wood through the burial would otherwise hold the pane in a
+        # permanent half-interment, the drive burying each new deposit as
+        # it formed (found by the cycle trace). The drive stays continuous
+        # throughout, since the latch only moves the *target* the usual
+        # relaxation eases toward.
+        if self._fossil_taken:
+            remaining = self._wood_mass / max(self._burial_mass, 1e-6)
+            release = min(max((remaining - 0.10) / 0.10, 0.0), 1.0)
+            desired = max(desired, min(self._intern * 1.2, 1.0) * release)
+        interval = FRONT_READ_TICKS / max(params.sim_hz, 1e-3)
+        alpha = 1.0 - math.exp(-interval / max(rhiz.intern_tau, 1e-3))
+        self._intern += (desired - self._intern) * alpha
+
+        # Autumn: germination eases out as the record approaches its budget,
+        # and is held closed by the interment itself.
+        autumn = min(max((fill - 0.70) / 0.25, 0.0), 1.0)
+        self._germ_ease = (1.0 - self._intern) * (1.0 - 0.92 * autumn)
+
+        # The fossil (§17.6): offered once per season, as the interment
+        # commits. The application shell consumes the flag (step 5).
+        if not self._fossil_taken and self._intern > 0.5:
+            self._fossil_taken = True
+            self._burial_mass = max(self._wood_mass, 1e-6)
+            self.fossil_due = True
+
+        # Renewal: the record has been emptied by a burial; the next season
+        # begins. The drive is already decaying (completion collapsed with
+        # the fill), and germination returns with it.
+        # The renewal knee sits above the latch's release floor: a burial
+        # that spared its stragglers' young wood (the interment's own rule)
+        # leaves a remnant, and a knee below the remnant would jam the
+        # season -- fossil_taken held forever, no fossil ever offered again
+        # (found by the forced-burial capture).
+        buried = self._wood_mass < 0.10 * max(self._burial_mass, 1e-6)
+        if self._fossil_taken and buried and self._intern < 0.35:
+            self._season += 1
+            self._fossil_taken = False
+            self._living_peak = 0.0
+
     def _update_front_controller(self, params: Params) -> None:
         """Read the front words back and steer the descent's multiplier.
 
@@ -426,6 +524,9 @@ class RhizotronEngine(Backend):
         raw = np.frombuffer(
             self.device.queue.read_buffer(self.front_buf), dtype=np.uint32)
         self._alive_tips = int(raw[1])
+        self._living_mass = float(raw[2]) / self.MASS_SCALE
+        self._wood_mass = float(raw[3]) / self.MASS_SCALE
+        self._update_season(params)
         rhiz = params.rhizotron
         g = self.geometry
         if self._alive_tips > 0:
@@ -447,6 +548,22 @@ class RhizotronEngine(Backend):
         self._descent_mult += (desired - self._descent_mult) * alpha
 
     # -- parameter packing ----------------------------------------------------
+
+    def _surface_row(self, params: Params) -> float:
+        """The texture row of the soil line this tick, fractional. §17.4.
+
+        The surface is a fixed *world* row -- surface_frac of the view below
+        where the pane began -- so at the §17 resting descent it sits still,
+        and under a positive descent rate it scrolls away exactly as any
+        other world feature does. A large negative sentinel means no surface
+        (surface_frac zero), which every shader reads as "all soil".
+        """
+        frac = params.rhizotron.surface_frac
+        if frac <= 0.0:
+            return -1.0e9
+        surface_world = START_ORIGIN + frac * self.geometry.view_rows
+        origin = math.floor(self._descent_pos) - MARGIN_ROWS
+        return float(surface_world - origin)
 
     def _rhiz_values(
         self, params: Params, scroll_rows: int, base_row: float
@@ -509,9 +626,11 @@ class RhizotronEngine(Backend):
             "nutrient_spread": min(per_tick(rhiz.nutrient_spread), 0.2),
             "chemo_gain": rhiz.chemo_gain,
             "forage_gain": rhiz.forage_gain,
+            "soil_l_floor": rhiz.soil_l_floor,
             "soil_l_range": rhiz.soil_l_range,
             "wet_darken": rhiz.wet_darken,
             "wet_chroma": rhiz.wet_chroma,
+            "surface_row": self._surface_row(params),
             # The plant. Per-second quantities become per-tick here, in the
             # form each one wants: distances scale with dt, relaxations go
             # through 1 - exp(-rate*dt) so a slow tick cannot overshoot, and
@@ -557,11 +676,18 @@ class RhizotronEngine(Backend):
             "root_brown": rhiz.root_brown,
             "root_hair": rhiz.root_hair,
             "mycorrhiza": rhiz.mycorrhiza,
+            "lignify_rate": rate(rhiz.lignify_rate),
+            "intern_rate": rate(rhiz.interment_rate) * self._intern,
+            "ghost_gain": rhiz.ghost_gain,
+            "ghost_fade": rate(rhiz.ghost_fade) * self._intern,
+            "wood_avoid": rhiz.wood_avoid,
+            "wood_edge": rhiz.wood_edge,
+            "wood_age_scale": rhiz.wood_age_scale,
             "senesce_rate": per_tick(rhiz.senescence_rate),
             "senesce_delay": rhiz.senescence_delay,
             "regerm_delay": rhiz.regermination_delay / dt,
-            "germ_prob": rate(rhiz.germination_rate),
-            "germ_floor": rate(rhiz.germination_floor),
+            "germ_prob": rate(rhiz.germination_rate) * self._germ_ease,
+            "germ_floor": rate(rhiz.germination_floor) * self._germ_ease,
             "germ_moisture": rhiz.germination_moisture,
         }
 
@@ -620,6 +746,7 @@ class RhizotronEngine(Backend):
             self._buffer_binding(self.deposit_buf),
             self.sampler,
             self._buffer_binding(self.front_buf),
+            self.record.cur,
         ]))
         cpass.dispatch_workgroups(math.ceil(g.tips_total / 64), 1, 1)
 
@@ -640,6 +767,9 @@ class RhizotronEngine(Backend):
             self.structure.cur,
             self.structure.nxt,
             self._buffer_binding(self.deposit_buf),
+            self.record.cur,
+            self.record.nxt,
+            self._buffer_binding(self.front_buf),
         ]))
         cpass.dispatch_workgroups(*self._groups(g.width, g.height))
 
@@ -647,6 +777,7 @@ class RhizotronEngine(Backend):
         self.tips.flip()
         self.moisture.flip()
         self.structure.flip()
+        self.record.flip()
 
         self.device.queue.submit([encoder.finish()])
         self.tick_count += 1
@@ -705,6 +836,7 @@ class RhizotronEngine(Backend):
             self.structure.cur,
             self.hdr_view,
             self.sampler,
+            self.record.cur,
         ]))
         cpass.dispatch_workgroups(*self._groups(self.width, self.height))
         return self.scroll_vel_view
@@ -726,6 +858,41 @@ class RhizotronEngine(Backend):
             "walk": float(self._descent_walk),
             "rate_mult": float(self._descent_mult),
         }
+
+    def season_state(self) -> dict:
+        """The season's accumulated state, for the checkpoint (§17.6)."""
+        return {
+            "season": int(self._season),
+            "intern": float(self._intern),
+            "germ_ease": float(self._germ_ease),
+            "living_peak": float(self._living_peak),
+            "fossil_taken": bool(self._fossil_taken),
+            "burial_mass": float(self._burial_mass),
+        }
+
+    def restore_season(self, saved: dict) -> None:
+        """Put the season back. Untrusted input, like all of it."""
+        try:
+            season = int(saved.get("season", 0))
+            intern = float(saved.get("intern", 0.0))
+            ease = float(saved.get("germ_ease", 1.0))
+            peak = float(saved.get("living_peak", 0.0))
+            taken = bool(saved.get("fossil_taken", False))
+            burial = float(saved.get("burial_mass", 0.0))
+        except (TypeError, ValueError):
+            return
+        if not (math.isfinite(intern) and math.isfinite(ease)
+                and math.isfinite(peak) and math.isfinite(burial)):
+            return
+        self._season = max(season, 0)
+        self._intern = min(max(intern, 0.0), 1.0)
+        self._germ_ease = min(max(ease, 0.0), 1.0)
+        self._living_peak = max(peak, 0.0)
+        self._fossil_taken = taken
+        self._burial_mass = max(burial, 0.0)
+        # A pending fossil does not survive the file: the application takes
+        # the still at the moment the drive commits, or not at all.
+        self.fossil_due = False
 
     def restore_descent(self, saved: dict) -> None:
         """Put the descent back where it was. Untrusted input, like all of it."""

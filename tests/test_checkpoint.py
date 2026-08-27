@@ -516,6 +516,60 @@ def _offscreen(gpu_device, monkeypatch, tmp_path, loop=None, size=SIZE, **option
     ))
 
 
+def test_the_fossil_is_saved_beside_the_checkpoints(
+    gpu_device, monkeypatch, tmp_path
+):
+    """DESIGN.md §17.6: when the perennial backend offers its fossil moment,
+    the application answers with a PNG in the gallery -- written once, valid,
+    and sized to the frame."""
+    import struct
+    import time as time_module
+
+    app = _offscreen(
+        gpu_device, monkeypatch, tmp_path, backend="rhizotron",
+        checkpoint=False,
+    )
+    app.setup()
+    for _ in range(3):
+        app.draw_frame()
+
+    app.engine.fossil_due = True
+    app.draw_frame()
+    assert app.engine.fossil_due is False
+
+    gallery = (tmp_path / "checkpoint.npz").parent / "gallery"
+    deadline = time_module.time() + 10.0
+    files = []
+    while time_module.time() < deadline:
+        files = sorted(gallery.glob("fossil-*.png")) if gallery.exists() else []
+        if files:
+            break
+        time_module.sleep(0.05)
+    assert len(files) == 1, "the fossil did not appear"
+
+    data = files[0].read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    width, height = struct.unpack(">II", data[16:24])
+    assert (width, height) == (app.engine.width, app.engine.height)
+    app.shutdown()
+
+
+def _draw_until_ticked(app, deadline_seconds: float = 10.0) -> int:
+    """Draw frames until the pacing has consumed at least one simulation tick.
+
+    The ticks come from real elapsed time, and a fixed number of back-to-back
+    draws only ever ticked because *setup* happened to take longer than one
+    tick interval -- true on a cold run, and quietly false once a preceding
+    suite has warmed the shader caches and the GPU. Drawing until a tick lands
+    keeps the pacing path honest (time genuinely passes through the real
+    accumulator) without betting on how long any one step took.
+    """
+    deadline = time.perf_counter() + deadline_seconds
+    while app.engine.tick_count == 0 and time.perf_counter() < deadline:
+        app.draw_frame()
+    return app.engine.tick_count
+
+
 def test_a_new_session_picks_up_where_the_last_one_left_off(
     gpu_device, monkeypatch, tmp_path
 ):
@@ -523,9 +577,7 @@ def test_a_new_session_picks_up_where_the_last_one_left_off(
     first = _offscreen(gpu_device, monkeypatch, tmp_path, checkpoint_seconds=0.0)
     first.setup()
     assert first.resumed_from is None
-    for _ in range(4):
-        first.draw_frame()
-    ticks = first.engine.tick_count
+    ticks = _draw_until_ticked(first)
     assert ticks > 0
     assert first.save_checkpoint(blocking=True)
     assert "saved" in first.checkpoint_status()
@@ -549,9 +601,9 @@ def test_a_new_window_size_resumes_the_field_rather_than_resetting_it(
     """
     first = _offscreen(gpu_device, monkeypatch, tmp_path, checkpoint_seconds=0.0)
     first.setup()
-    for _ in range(4):
-        first.draw_frame()
-    ticks = first.engine.tick_count
+    # At least one tick, so the equality below cannot degrade into comparing
+    # two engines that both simply never ran.
+    ticks = _draw_until_ticked(first)
     assert first.save_checkpoint(blocking=True)
 
     bigger = (SIZE[0] * 2, SIZE[1] + 64)

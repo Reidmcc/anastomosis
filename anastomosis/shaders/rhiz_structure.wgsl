@@ -24,8 +24,14 @@
 @group(0) @binding(1) var src_tex: texture_2d<f32>;
 @group(0) @binding(2) var dst_tex: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(3) var<storage, read_write> deposit_buf: array<atomic<u32>>;
+@group(0) @binding(4) var record_src: texture_2d<f32>;
+@group(0) @binding(5) var record_dst: texture_storage_2d<rgba16float, write>;
+// The controller words (rhizotron.py): this pass owes the season controller
+// the third and fourth -- living mass and wood mass, fixed point.
+@group(0) @binding(6) var<storage, read_write> front_buf: array<atomic<u32>>;
 
 const DEPOSIT_SCALE: f32 = 1048576.0;
+const MASS_SCALE: f32 = 256.0;
 
 // The floor on the mass the deposit share is measured against, so a deposit
 // onto near-bare ground still counts as (almost) the whole of it: a fresh
@@ -63,6 +69,24 @@ fn state_at(x: i32, y: i32) -> vec4<f32> {
         clamp(finite_or(v.y, 0.0), 0.0, AGE_CAP),
         clamp(finite_or(v.z, 0.0), 0.0, 1.0),
         clamp(n, 0.0, 2.0),
+    );
+}
+
+// The record layer's source state, shifted exactly as the living layer is:
+// (lignin, biographical age, graft glow, ghost). Rows the texture did not
+// hold last tick arrive bare -- fresh soil has no history in it.
+fn record_at(x: i32, y: i32) -> vec4<f32> {
+    let sy = y + i32(rp.scroll_rows);
+    let sx = ((x % i32(rp.dims_x)) + i32(rp.dims_x)) % i32(rp.dims_x);
+    if (sy >= i32(rp.dims_y)) {
+        return vec4<f32>(0.0);
+    }
+    let v = textureLoad(record_src, vec2<i32>(sx, max(sy, 0)), 0);
+    return vec4<f32>(
+        clamp(finite_or(v.x, 0.0), 0.0, DENSITY_CAP),
+        clamp(finite_or(v.y, 0.0), 0.0, AGE_CAP),
+        clamp(finite_or(v.z, 0.0), 0.0, 4.0),
+        clamp(finite_or(v.w, 0.0), 0.0, DENSITY_CAP),
     );
 }
 
@@ -112,8 +136,69 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // in the trunk -- the central roots breaking up while their plant lived. A
     // hairline crossing a trunk is a fraction of a percent of its mass, and
     // now moves its identity by exactly that much.
+    // Ages advance in 64-tick batches, not per tick: an f16 texel truncates
+    // an increment below one ulp, so per-tick seconds stall at increment x
+    // 1024 -- about a minute -- and every age-driven gradient in the mode
+    // silently saturated there (found when the record layer's biographical
+    // clock froze at 64.0 exactly; the living channel had been capped since
+    // it was built). Batching multiplies the ceiling past AGE_CAP, the
+    // step is a couple of seconds on mappings whose scales are minutes --
+    // far below anything the eye or the slew limiter can see -- and the
+    // tick counter is checkpointed, so a resume replays the same batches.
     let share = clamp(deposited / max(density, AGE_RESET_REF), 0.0, 1.0);
-    age = min(age + rp.dt_seconds, AGE_CAP) * (1.0 - share);
+    let age_batch = select(
+        0.0, rp.dt_seconds * 64.0, (rp.tick & 63u) == 0u);
+    age = min(age + age_batch, AGE_CAP) * (1.0 - share);
+
+    // --- The commitment transfer (§17.6) -----------------------------------
+    // Coarse living material converts into wood at a steady slow rate --
+    // independent of re-touch, which is what the recency age above can never
+    // be: an axis shaft lignifies behind its tip whatever grows across it.
+    // Fineness squared discounts the rate, so fuzz never commits (senescence
+    // is its exit, below) and the width hierarchy becomes a *time* hierarchy:
+    // the boldest strokes are the first into the record. Wood is append-only
+    // while the season lives -- nothing below ever decrements it.
+    let rec = record_at(x, y);
+    var lignin = rec.x;
+    var bio_age = rec.y;
+    // The discount stays squared -- fuzz and fuzz-adjacent mass must NOT
+    // commit, or the record inks in every path ever taken and the pane
+    // clutters (tried at the three-halves power: a black mesh). The race
+    // against senescence is won by rate instead: at the shipped
+    // lignify_rate a lateral shaft (fineness ~0.5) commits in ~5 minutes
+    // against its 8-minute life, so branch systems stand as wood instead
+    // of vanishing -- the first live viewing's second finding.
+    let coarse = (1.0 - fineness) * (1.0 - fineness);
+    let transfer = min(rp.lignify_rate * coarse * density, density);
+    density = density - transfer;
+    lignin = min(lignin + transfer, DENSITY_CAP);
+    var ghost = rec.w;
+
+    // The interment (§17.6): the one licensed writer of wood's exit, zero
+    // outside a burial. Lignin leaves for the ghost at the drive's eased
+    // rate; the *existing* ghost fades under the same cover, so the ground
+    // reads a couple of seasons deep and no deeper. The biographical clock
+    // clears with the wood it was counting for, slowly, wherever none is
+    // left to age.
+    // Young wood is spared most of the burial: the interment is of the
+    // completed season's record, and a straggler plant still writing
+    // through it keeps the skeleton it is laying down rather than having
+    // it erased under its living tips.
+    let interred = lignin * rp.intern_rate
+        * mix(0.15, 1.0, smoothstep(120.0, 480.0, bio_age));
+    lignin = lignin - interred;
+    ghost = min(
+        ghost * (1.0 - rp.ghost_fade) + interred * rp.ghost_gain,
+        DENSITY_CAP);
+    let presence = smoothstep(0.004, 0.02, lignin);
+    bio_age = bio_age * (1.0 - 0.03 * (1.0 - presence));
+    // Biographical age: seconds since wood first held here. Advances only
+    // where there is wood to age, smoothly gated so a whisper of lignin does
+    // not start a clock the eye will later read; never reset by anything.
+    bio_age = min(
+        bio_age + select(0.0, rp.dt_seconds * 64.0, (rp.tick & 63u) == 0u)
+            * smoothstep(0.01, 0.05, lignin),
+        AGE_CAP);
 
     // Senescence (§15.11 step 4): fine material fades once it is old, at a
     // rate scaling with its fineness -- fuzz in minutes, mixed lateral paths
@@ -125,8 +210,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // steady state, not just the growth burst.
     let ripeness = 1.0 - exp(
         -max(age - rp.senesce_delay, 0.0) / max(rp.senesce_delay, 1.0));
+    // The remnant cleanup: faint old mass -- what patchy senescence leaves
+    // of a fuzz path -- fades several times faster than established
+    // material, and partly regardless of its fineness label, so the field
+    // never holds a confetti of sub-salience dashes (seen the moment the
+    // record layer gave the living material a contrasting ground). Smooth
+    // in density, gated by the same ripeness, and irrelevant to any path
+    // still being reinforced.
+    let remnant = exp(-density * 18.0);
     let kept = density
-        * (1.0 - rp.senesce_rate * fineness * sqrt(fineness) * ripeness);
+        * (1.0 - rp.senesce_rate * ripeness
+            * (fineness * sqrt(fineness) * (1.0 + 4.0 * remnant)
+                + 0.8 * remnant));
 
     // Fineness follows what deposits, by the same mass share: order 0 pulls
     // toward 0, fines toward 1, and a trunk stays a trunk under crossings.
@@ -157,4 +252,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(
         dst_tex, vec2<i32>(x, y),
         vec4<f32>(density, age, fineness, nutrient));
+    textureStore(
+        record_dst, vec2<i32>(x, y),
+        vec4<f32>(lignin, bio_age, rec.z, ghost));
+
+    // The season controller's masses, accumulated only where there is
+    // something to count -- integer atomics, so the sum is deterministic
+    // under any dispatch order.
+    if (density > 1e-4) {
+        atomicAdd(&front_buf[2], u32(density * MASS_SCALE));
+    }
+    if (lignin > 1e-4) {
+        atomicAdd(&front_buf[3], u32(lignin * MASS_SCALE));
+    }
 }

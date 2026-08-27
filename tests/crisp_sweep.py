@@ -48,7 +48,9 @@ BASE_ELONG = {
 
 def busy_corner_params(multiplier: float, edge: float) -> config.Params:
     """Everything that adds bright moving edges, at its eager end."""
-    params = config.Config(macros=config.Macros(
+    # Resolved as the rhizotron so backend-conditional resolution -- the
+    # §17.5 exposure lift above all -- is inside the measurement.
+    params = config.Config(backend="rhizotron", macros=config.Macros(
         intensity=1.0, filament_glow=1.0, brightness=1.0,
     )).resolve()
     params.sim_hz = 30.0

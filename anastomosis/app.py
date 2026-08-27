@@ -34,7 +34,10 @@ from __future__ import annotations
 import dataclasses
 import logging
 import signal
+import struct
+import threading
 import time
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -148,6 +151,31 @@ MIN_PRESENT_FPS = 12
 # while it runs, which reaches the same shutdown by closing the canvas.
 STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 
+
+def _write_png(path, rgb) -> None:
+    """A minimal 8-bit truecolour PNG writer -- stdlib only.
+
+    The application's dependencies are simulation dependencies; a once-per-
+    season still is not worth an imaging library. Filter type 0 on every
+    row, one zlib stream, done.
+    """
+    height, width = rgb.shape[:2]
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload)) + tag + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    raw = b"".join(
+        b"\x00" + rgb[y].tobytes() for y in range(height)
+    )
+    with open(path, "wb") as handle:
+        handle.write(b"\x89PNG\r\n\x1a\n")
+        handle.write(chunk(b"IHDR", header))
+        handle.write(chunk(b"IDAT", zlib.compress(raw, 6)))
+        handle.write(chunk(b"IEND", b""))
 
 @dataclass
 class AppOptions:
@@ -1380,6 +1408,55 @@ class Application:
             # ticks -- so carrying on beats refusing to start.
             log.error("could not restore the saved state: %s", exc)
 
+    def export_fossil(self) -> None:
+        """The season's finished form, written once and never touched again.
+
+        DESIGN.md §17.6: when the perennial backend completes a season it
+        raises `fossil_due` exactly once, and the application answers by
+        saving the frame -- the gallery beside the checkpoints is the mode's
+        deepest append-only layer, every finished season kept verbatim. The
+        readback happens here, between frames; the encode and write go to a
+        thread, since a burial is minutes long and one frame's grace is not.
+        """
+        if self.engine is None:
+            return
+        try:
+            season = int(getattr(self.engine, "_season", 0))
+            seed = int(getattr(self.engine, "seed", 0)) & 0xFFFFFFFF
+            tick = int(getattr(self.engine, "tick_count", 0))
+            gallery = self.checkpoint_path.parent / "gallery"
+            path = gallery / (
+                f"fossil-seed{seed:08x}-season{season:03d}-tick{tick}.png"
+            )
+            linear = self.engine.read_final_rgba()[..., :3]
+        except Exception as exc:
+            log.error("could not read the fossil back: %s", exc)
+            return
+
+        def write() -> None:
+            try:
+                import numpy as np
+
+                x = np.clip(linear.astype(np.float32), 0.0, 1.0)
+                srgb = np.where(
+                    x <= 0.0031308,
+                    x * 12.92,
+                    1.055 * np.power(x, 1.0 / 2.4) - 0.055,
+                )
+                rows = np.clip(srgb * 255.0 + 0.5, 0.0, 255.0).astype(np.uint8)
+                gallery.mkdir(parents=True, exist_ok=True)
+                if path.exists():
+                    # Never overwrite a fossil; a collision means a rerun of
+                    # the same deterministic history, and the first copy is
+                    # the record.
+                    return
+                _write_png(path, rows)
+                log.info("fossil saved: %s", path.name)
+            except Exception as exc:
+                log.error("could not save the fossil: %s", exc)
+
+        threading.Thread(target=write, name="fossil", daemon=True).start()
+
     def save_checkpoint(self, blocking: bool = False) -> bool:
         """Read the simulation state back and write it to disk.
 
@@ -2130,6 +2207,13 @@ class Application:
         ):
             self.watchdog.mark("checkpoint")
             self.save_checkpoint()
+
+        # The fossil moment (§17.6): the perennial backend offers it once
+        # per season; backends without seasons never set the flag.
+        if getattr(self.engine, "fossil_due", False):
+            self.engine.fossil_due = False
+            self.watchdog.mark("fossil")
+            self.export_fossil()
 
         # Between frames now, where waiting is ordinary and the watchdog is
         # correspondingly patient about it.

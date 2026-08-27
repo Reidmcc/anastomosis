@@ -55,6 +55,15 @@ class SafetyParams:
     # the unsafe direction is always "gets brighter".
     exposure_attack: float = 0.0035
     exposure_release: float = 0.0090
+    # The most the governor may amplify (attenuation is never capped). The
+    # fungal modes keep the full range; the perennial pins this to 1.0 in
+    # `Config.resolve`, because its record is *supposed* to darken the pane
+    # as it accumulates -- a mean-holding governor fights the mode's whole
+    # arc, brightening harder and harder as the wood inks in (watched live:
+    # the factor climbed past 7x over one season and pushed the palette
+    # hot). Holding the mean is for fields whose brightness should not
+    # drift; this mode's brightness is its biography.
+    exposure_max: float = 20.0
 
 
 @dataclass
@@ -770,13 +779,14 @@ class RhizotronParams:
     same discipline ``homeo_rate`` established in `_physics_values`.
     """
 
-    # --- The descent (§15.4) ----------------------------------------------
-    # How fast the window sinks, in window-heights per hour. About one window
-    # per hour at the default: the hour hand, not the second hand -- you do not
-    # see it move, you notice ten minutes later that it has. Step 1 drives
-    # this directly (there are no roots yet for a growth front to track); the
-    # front-controller of §15.4 replaces the constant, not the plumbing.
-    descent_rate: float = 1.0
+    # --- The descent (§15.4), retired at rest (§17.3) ----------------------
+    # How fast the window sinks, in window-heights per hour. Zero since §17:
+    # the pane holds, and what a root system builds stays where the eye can
+    # keep it -- permanence is the metaphor's gift, and the descent spent it.
+    # The machinery remains proven and reachable: any positive rate here (an
+    # override, not a macro -- tempo no longer drives it) grows §15's endless
+    # sinking column exactly as before.
+    descent_rate: float = 0.0
     # The rate's slow OU modulation: the log-scale spread at one standard
     # deviation of a unit walk, and the walk's time constant. Aperiodic and
     # stateful like every other slow variation (§3); zero pins the rate.
@@ -787,18 +797,18 @@ class RhizotronParams:
     # Typical stratum thickness, in view-heights. Quantised to a power of two
     # of rows where it is packed: the vertical lattice of an unbounded u64 row
     # counter is found by shift and mask, which is exact forever.
-    strata_thickness: float = 0.45
+    strata_thickness: float = 0.16
     # How much the strata undulate, as a fraction of their own thickness.
     # Zero rules dead-straight bands across the pane, which reads as a chart
     # rather than a cross-section.
-    strata_tilt: float = 0.45
+    strata_tilt: float = 0.30
     # Stones: how much of the matrix is stone at the stoniest strata, and the
     # typical stone size in sim cells (also power-of-two quantised).
     # Tempered after watching it: at 0.6 the matrix read as a field of pale
     # dots -- §4.7's geometry, made of stone -- rather than as earth with
     # stones in it.
-    stone_amount: float = 0.38
-    stone_cells: float = 12.0
+    stone_amount: float = 0.30
+    stone_cells: float = 20.0
     # Mineral grain: the fine static speckle of the matrix. An amplitude on
     # lightness, kept small -- the grain is texture, not noise.
     grain_amount: float = 0.55
@@ -808,7 +818,7 @@ class RhizotronParams:
     # channels that water races down and roots follow. Hashed features of the
     # soil itself rather than events -- they arrive by descent, at the
     # descent's own speed, which is as non-punctuating as anything can be.
-    hardpan_amount: float = 0.55
+    hardpan_amount: float = 0.35
     biopore_amount: float = 0.5
 
     # --- The nutrient economy (§15.11 step 5, second half) -----------------
@@ -947,8 +957,8 @@ class RhizotronParams:
     # the licensed value from the §15.7(2) sweep, enforced in `validate`.
     root_knee: float = 0.08
     root_edge: float = 0.18
-    root_age_scale: float = 600.0  # seconds to brown
-    root_brown: float = 0.82       # how far a browned root sinks toward soil
+    root_age_scale: float = 420.0  # seconds to brown
+    root_brown: float = 0.45       # how far living material tans with age
     # Root hairs: the pale skirt around young material -- the transfer's soft
     # approach, re-admitted only where the structure is young, so growing
     # tips carry a halo of fuzz that fades as they lignify.
@@ -958,6 +968,49 @@ class RhizotronParams:
     # field, the mode remembering where it came from. Spends chroma, not
     # lightness, and the intensity macro is what brings it in.
     mycorrhiza: float = 0.11
+
+    # --- The record layer (§17.6) ------------------------------------------
+    # Lignification: coarse living material converts into permanent wood at
+    # a steady slow rate -- commitment, independent of re-touch, which is the
+    # mechanism §17.1 found missing. The rate is per second at full
+    # coarseness; fineness squared discounts it, so an axis commits in a few
+    # minutes, a lateral in ten, and pure fuzz never does -- fuzz is working
+    # memory, and senescence is its exit. Wood never senesces and is never
+    # erased while the season lives: the visible skeleton is the biography.
+    lignify_rate: float = 0.016
+    # How strongly the tips' self-avoidance counts wood, relative to living
+    # structure. Wood is exactly as real an obstacle as living root; grafts
+    # (§17.8) will make the rare exception, not this number.
+    wood_avoid: float = 1.0
+    # Wood shading (§17.5): its own coverage transfer, and the biographical
+    # maturation -- russet when newly lignified, sinking to dark umber a
+    # shade under the soil over this many seconds. Biographical age is never
+    # reset by anything; that is the point of it.
+    wood_edge: float = 0.10
+    wood_age_scale: float = 2600.0
+
+    # --- Seasons (§17.6) ---------------------------------------------------
+    # The pane's wood budget, as mean lignin mass per view texel: when the
+    # record holds this much, the season is complete -- germination eases
+    # closed, the community finishes what it is growing, and the interment
+    # begins once the living mass has fallen quiet. Measured against a
+    # 40-minute default run (~0.010 and climbing linearly), so the default
+    # is roughly an hour and a half of growth; presets own the pacing.
+    wood_budget: float = 0.016
+    # The interment: how fast lignin leaves for the ghost once the drive is
+    # full, per second -- a five-to-eight-minute burial at the default, the
+    # benign kind of luminance change (§17.10(2)) -- and what fraction of
+    # the interred mass the ghost keeps.
+    interment_rate: float = 0.010
+    ghost_gain: float = 0.85
+    # How fast the *existing* ghost fades while an interment runs, per
+    # second: one burial dims the previous season's shadow by roughly half,
+    # so the ground reads about two seasons deep -- salience decays, the
+    # gallery keeps the verbatim (§17.6).
+    ghost_fade: float = 0.004
+    # The interment drive's relaxation, seconds. Slow like every controller
+    # here: completion is noticed, not triggered.
+    intern_tau: float = 45.0
 
     # --- The long-duration core (§15.11 step 4) ----------------------------
     # Senescence: fine structure fades once it is old, at a rate that scales
@@ -990,11 +1043,28 @@ class RhizotronParams:
     descent_mult_min: float = 0.2
     descent_mult_max: float = 6.0
 
-    # --- The look (§15.2) --------------------------------------------------
-    # Lightness span of the soil above the background anchor, in Oklab L. The
-    # ground stays dark-earth rather than dark-void, but it is a *material*
-    # ground: every pixel is something.
-    soil_l_range: float = 0.155
+    # --- The surface (§17.4) -----------------------------------------------
+    # Fraction of the view that is open air above the soil line. The fixed
+    # pane's one landmark: crowns germinate just below it, rain darkens down
+    # from it, and the near-black sky is what makes the ground read warm.
+    # Zero removes the surface entirely (the §15 endless-column look). The
+    # line rides the world coordinate, so a positive descent rate simply
+    # carries it away, as §17.4 says it should.
+    surface_frac: float = 0.07
+
+    # Full-field exposure (§17.5): the factor this backend lifts the
+    # resolved mean-lightness target by. The governor's meaning is unchanged
+    # -- hold the mean, never step -- but a pane of lit earth has an honest
+    # mean several times a void's.
+    exposure_lift: float = 2.4
+
+    # --- The look (§15.2, re-anchored by §17.5) ----------------------------
+    # Lightness of the soil above the background anchor, in Oklab L: a floor
+    # every soil texel clears, plus the span the chip ramps travel. §15's
+    # build had no floor and a narrow span, which priced the entire ground at
+    # black (§17.1); the ground is the *mid* of this image, not its void.
+    soil_l_floor: float = 0.14
+    soil_l_range: float = 0.26
     # Wet soil is darker and slightly more saturated -- the most familiar
     # material appearance there is. Fraction of lightness removed at full
     # wetness, and fraction of chroma added.
@@ -1373,7 +1443,6 @@ MACRO_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("rhizotron.elong_lateral", 1.2, 2.31, 1.0),
         ("rhizotron.elong_fine", 0.8, 1.47, 1.0),
         ("rhizotron.percolation_rate", 0.55, 1.33, 1.0),
-        ("rhizotron.descent_rate", 0.55, 1.55, 1.0),
     ],
     "palette": [
         # Palette selects a hue anchor; the spatial spread widens slightly at
@@ -1578,7 +1647,6 @@ ACTIVATION_CURVES: dict[str, list[tuple[str, float, float, float]]] = {
         ("rhizotron.elong_lateral", 1.2, 2.31, 1.0),
         ("rhizotron.elong_fine", 0.8, 1.47, 1.0),
         ("rhizotron.percolation_rate", 0.55, 1.33, 1.0),
-        ("rhizotron.descent_rate", 0.55, 1.55, 1.0),
     ],
     "palette": [
         # Most of the hue circle in play at once. This is spread around the
@@ -1723,6 +1791,7 @@ SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
     "safety.exposure_attack": (0.0, 0.050),
     "safety.exposure_release": (0.0, 0.050),
     "safety.exposure_target": (0.02, 0.400),
+    "safety.exposure_max": (0.5, 20.0),
     "render.l_max": (0.05, 0.900),
     "render.c_max": (0.0, 0.220),
     "render.filament_luma": (0.0, 0.900),
@@ -2014,6 +2083,23 @@ class Config:
         if mode == "resonance" and not self.filaments:
             params.pigment.density_from_trail = 0.0
 
+        # The rhizotron is a full-field image (§17.5): every pixel is lit
+        # material, where the fungal modes are sparse light on a void. One
+        # exposure-target meaning ("how bright overall") through one number
+        # would crush the earth to meet a void's mean, so this backend lifts
+        # the resolved target by its own factor -- applied like a macro,
+        # before the overrides, so a hand-pinned target still wins.
+        if normalise_backend(self.backend) == "rhizotron":
+            params.safety.exposure_target = min(
+                params.safety.exposure_target
+                * params.rhizotron.exposure_lift,
+                0.40,
+            )
+            # Attenuation-only: the governor may dim a too-bright frame but
+            # never amplifies, so the pane honestly darkens as the record
+            # accumulates (see SafetyParams.exposure_max).
+            params.safety.exposure_max = 1.0
+
         # The named slab size, which is a choice rather than a curve. Applied
         # after the macros and before the overrides, so that it beats nothing
         # (no macro drives it) and loses to an explicit `volume.width`, which
@@ -2238,6 +2324,15 @@ def validate(params: Params) -> Params:
     rhiz.fine_life = min(max(float(rhiz.fine_life), 1.0), 3600.0)
     rhiz.lateral_life = min(max(float(rhiz.lateral_life), 1.0), 36000.0)
     rhiz.axis_life = min(max(float(rhiz.axis_life), 5.0), 86400.0)
+    rhiz.lignify_rate = min(max(float(rhiz.lignify_rate), 0.0), 1.0)
+    rhiz.wood_budget = min(max(float(rhiz.wood_budget), 0.001), 0.2)
+    rhiz.interment_rate = min(max(float(rhiz.interment_rate), 0.0), 0.2)
+    rhiz.ghost_gain = min(max(float(rhiz.ghost_gain), 0.0), 2.0)
+    rhiz.ghost_fade = min(max(float(rhiz.ghost_fade), 0.0), 0.5)
+    rhiz.intern_tau = min(max(float(rhiz.intern_tau), 4.0), 3600.0)
+    rhiz.wood_avoid = min(max(float(rhiz.wood_avoid), 0.0), 4.0)
+    rhiz.wood_edge = min(max(float(rhiz.wood_edge), 0.02), 0.5)
+    rhiz.wood_age_scale = min(max(float(rhiz.wood_age_scale), 1.0), 36000.0)
     rhiz.senescence_rate = min(max(float(rhiz.senescence_rate), 0.0), 1.0)
     rhiz.senescence_delay = min(max(float(rhiz.senescence_delay), 0.0), 3600.0)
     rhiz.regermination_delay = min(
@@ -2257,8 +2352,14 @@ def validate(params: Params) -> Params:
     rhiz.descent_mult_min = min(max(float(rhiz.descent_mult_min), 0.05), 1.0)
     rhiz.descent_mult_max = min(max(float(rhiz.descent_mult_max), 1.0), 10.0)
 
+    # The surface: a band, not the picture. The ceiling keeps an override
+    # from turning the soil mode into a sky mode.
+    rhiz.surface_frac = min(max(float(rhiz.surface_frac), 0.0), 0.30)
+    rhiz.exposure_lift = min(max(float(rhiz.exposure_lift), 0.5), 3.0)
+
     # Luminance-relevant: the wetting front and the soil span both spend the
     # slew budget, and both are bounded here the way every luminance actor is.
+    rhiz.soil_l_floor = min(max(float(rhiz.soil_l_floor), 0.0), 0.30)
     rhiz.soil_l_range = min(max(float(rhiz.soil_l_range), 0.0), 0.40)
     rhiz.wet_darken = min(max(float(rhiz.wet_darken), 0.0), 0.80)
     rhiz.wet_chroma = min(max(float(rhiz.wet_chroma), 0.0), 2.0)

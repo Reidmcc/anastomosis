@@ -59,7 +59,15 @@ fn main(@builtin(local_invocation_index) lid: u32) {
     stats.img_max_l = sums.y;
     stats.img_count = count;
 
-    let current = clamp(finite_or(stats.exposure, 1.0), 0.02, 20.0);
+    // The amplification ceiling: modes whose honest mean falls over time
+    // (the perennial's record inking in) pin this at 1 so the governor only
+    // ever attenuates; a zeroed or garbage field value falls back to the
+    // full range rather than freezing the image dark.
+    var ceiling = finite_or(render.exposure_max, 20.0);
+    if (ceiling < 0.5) {
+        ceiling = 20.0;
+    }
+    let current = clamp(finite_or(stats.exposure, 1.0), 0.02, ceiling);
 
     // Bounded request: even a completely black or blown-out frame can only ask
     // for a factor of two per frame, before rate limiting.
@@ -69,5 +77,6 @@ fn main(@builtin(local_invocation_index) lid: u32) {
         current * 2.0,
     );
     let rate = select(render.exposure_release, render.exposure_attack, desired > current);
-    stats.exposure = clamp(mix(current, desired, clamp(rate, 0.0, 1.0)), 0.02, 20.0);
+    stats.exposure = clamp(
+        mix(current, desired, clamp(rate, 0.0, 1.0)), 0.02, ceiling);
 }
