@@ -229,8 +229,12 @@ about five display pixels wide rather than one. Motion is unaffected in the way
 that matters — features are five times larger *and* move five times faster in
 absolute terms, so feature-widths per second, which is what the eye reads at this
 timescale, is the same under both. Memory is the other real cost: ~650 MB of
-`rgba16float` against ~90 MB for the 1440p stack, and up to ~3.9 GB if the
-thickness is taken to its ceiling.
+`rgba16float` against ~480 MB of field state for the 1440p stack, and up to
+~3.9 GB if the thickness is taken to its ceiling. (This comparison read
+"~90 MB" for the stack until §8.3 had to price both against an integrated
+GPU's shared memory and found the stack undercounted: eleven full-resolution
+textures a layer, not three or four. The slab is still the expensive one, by
+less than it looked.)
 
 **That loss is a budget decision, not a structural one, and it is exposed as a
 setting.** `config.VOLUME_DETAIL` offers the slab at 512, 768 or 1024 voxels

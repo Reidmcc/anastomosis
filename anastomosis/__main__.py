@@ -67,6 +67,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--gpu", choices=("auto", "integrated", "discrete"), default="auto",
+        help=(
+            "which GPU to run on: 'auto' (the default) leaves the choice to "
+            "the platform, which on a laptop with switchable graphics means "
+            "the integrated one; 'integrated' and 'discrete' ask for that "
+            "class specifically. On a machine with a single GPU all three "
+            "find it"
+        ),
+    )
+    parser.add_argument(
+        "--scale", type=float, default=None, metavar="FRACTION",
+        help=(
+            "what fraction of the window to simulate at (default: 1.0, or "
+            "whatever the config says). Lower is cheaper by roughly the "
+            "square -- 0.7 is half the work -- and costs surprisingly little "
+            "sharpness, because the field is soft and its feature sizes are "
+            "measured in cells rather than pixels. Structural, so it applies "
+            "to a field grown from now on: pass --reset to adopt it "
+            "immediately. On an integrated GPU this also switches off the "
+            "automatic sizing, since it answers the same question"
+        ),
+    )
+    parser.add_argument(
         "--volume-detail", choices=("standard", "fine", "finest"), default=None,
         help=(
             "how wide the volumetric slab is: 'standard' (512 voxels across, "
@@ -101,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--checkpoint-interval", type=float, default=None, metavar="SECONDS",
-        help="how often to save simulation state (default: 300)",
+        help="how often to save simulation state (default: 900)",
     )
     parser.add_argument(
         "--stall-timeout", type=float, default=None, metavar="SECONDS",
@@ -285,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         backend=args.backend,
         volume_detail=args.volume_detail,
+        gpu=args.gpu,
+        scale=args.scale,
         ui=not args.no_ui,
         checkpoint=not args.no_checkpoint,
         resume=not args.reset,

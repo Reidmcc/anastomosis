@@ -217,3 +217,155 @@ cancels every frame it is given when it believes it has no size or has been
 closed, forced frames included, and a kick that counted itself rather than the
 frame described a session drawing nothing whatever as one being carried.
 
+### 8.3 The other machine — laptops and integrated GPUs
+
+Everything above §8.2 is sized against one desktop card. §8.1's budget spends
+its headroom deliberately — native 1440p on the front layer, 20 Hz rather than
+15, wide diffusion kernels — and every one of those is a decision made *because*
+there was headroom. On an integrated GPU there is not, and the interesting thing
+is which parts of the design that changes and which it does not.
+
+**It was never a portability question.** The pipeline is core WebGPU throughout:
+no optional features, no raised limits, `rgba16float` chosen precisely because it
+is both storage-capable and filterable in core (see `engine.py`'s resource notes).
+Counted out of the WGSL, the worst pass uses 3 storage textures against a
+guaranteed 4, 5 storage buffers against 8, 6 sampled textures against 16, 12,288
+bytes of workgroup memory against 16,384, and 256 invocations per workgroup
+against 256. Every binding sits inside the specification's guaranteed minima,
+which is what an integrated adapter actually reports, so the whole application
+*builds* on one. `test_integrated.py` asserts this against the source rather than
+against a device, because no machine anybody develops on would ever show it
+breaking.
+
+So it is a question of cost, and cost on this hardware has a different shape.
+
+**Bandwidth is the machine's, not the card's.** §8.1's passes are bandwidth-bound
+stencil and gather work, and it prices them against 760 GB/s of dedicated VRAM.
+An integrated GPU has no VRAM: it reads system memory, at something between
+68 GB/s (dual-channel LPDDR4x) and ~136 GB/s (LPDDR5x), *shared with the CPU and
+the compositor*. The simulation at §8.1's own arithmetic is ~14 GB/s at 1440p —
+2% of the target card and 20% of a laptop's entire memory bus, before the render
+side or anything else the machine is doing. The requirement was never "runs"; it
+was "leave the machine usable" (§1), and that is the number that has to stay
+small.
+
+Four changes follow, and they are the same change four times: something decided
+once, for a machine with headroom, decided instead from what is there.
+
+**Which GPU.** `power_preference` was pinned to `"high-performance"`, which on a
+laptop with switchable graphics is a request for the discrete card — for a
+program explicitly sized to leave the machine usable and expected to run for days
+on a battery. It now passes no preference by default, which leaves the choice to
+the platform; `--gpu integrated` and `--gpu discrete` say otherwise. On a machine
+with one GPU all three find it. An adapter that comes back empty is now a
+diagnosable message rather than an `AttributeError` from inside `device.py`.
+
+**How much is simulated.** `render.cell_budget` caps the whole stack's cell count
+and `Geometry.derive` shrinks the layers to fit it. Zero — no ceiling — remains
+the default, so the target card keeps its native 1440p front layer; an integrated
+adapter gets 3 M cells unless `--scale`, `render.base_scale` or
+`render.cell_budget` has already answered.
+
+The lever this uses was already there and already free. §8 makes simulation
+resolution independent of the window on purpose — the compositor samples layers
+in normalised coordinates, a resize rebuilds the presentation chain only — so
+simulating smaller is not an approximation of anything, it is the same field with
+fewer cells in it. It costs less sharpness than it sounds like, too: §4.7's whole
+feature-size apparatus is calibrated in *cells*, so a smaller grid gives the same
+morphology at slightly larger on-screen features rather than a blurrier version of
+the same picture.
+
+The rhizotron (§15) is under the same ceiling. Its soil pane is one layer rather
+than three, but it is a *full-window* layer, so at 1600p it is 4.1 M cells —
+more than the stack's front sheet — and its passes read the same shared memory.
+Sizing two backends of three would have been an odd place to stop.
+
+Three million is one 1080p stack (1920×1080 + 960×540 + 480×270 = 2.72 M), so the
+commonest laptop panel is untouched. Where it bites is the panels that arrived
+after §8.1 was written:
+
+| Window | Uncapped | Capped at 3 M | Field memory |
+|---|---|---|---|
+| 1920×1080 | 2.72 M cells | unchanged | 271 MB |
+| 2560×1440 | 4.84 M | 2.87 M | 482 → 285 MB |
+| 2560×1600 | 5.38 M | 2.83 M | 535 → 282 MB |
+| 2880×1800 | 6.81 M | 2.83 M | 678 → 282 MB |
+
+At 3 M cells the simulation moves about 8.6 GB/s, the per-frame interpolation and
+depth of field about 2.9 GB/s at 30 Hz, and the window-sized output stage a few
+more: call it 16–17 GB/s at a 1600p window, about a quarter of a dual-channel
+laptop's bus. Uncapped at 1800p it would be over half.
+
+**The governor's second lever.** §8's governor throttles the sim tick rate and
+nothing else, on the reasoning that the interpolator hides it completely. That is
+right, and it is only *sufficient* while the simulation is what costs. On an
+integrated GPU the per-frame render work is at least as likely to be what is over
+budget — and against a render-bound frame, lowering the tick rate degrades motion
+quality and recovers exactly nothing: the governor walks the tick rate to its
+0.35 floor, the interpolator starts extrapolating over intervals three times
+longer, and the frame is still late.
+
+So there is a second lever, reached only when the first is spent: the presented
+frame rate. Recovery runs in the opposite order — the visible degradation is
+given back before the invisible one — and is judged against the slot at the
+*full* rate rather than the reduced one, or the two would chase each other, since
+dropping to 20 fps makes the slot half again as long and that would itself read
+as headroom.
+
+Resolution is still never touched at runtime, for the reason §8 gives: it would
+be a plainly visible discontinuity. The ceiling above decides it once, when a
+field is grown.
+
+Lowering the presented rate is not a flash-safety question, and it is worth
+saying why it cannot become one. `config.validate` sizes the per-frame lightness
+allowance as `MAX_LUMA_PER_SECOND / max_fps` — against the *cap*, not against the
+rate achieved — so presenting fewer frames only slows the worst case further.
+Presenting more would be the dangerous direction, and `_apply_frame_rate` cannot:
+it clamps to `max_fps` on the way out, which `test_integrated.py` asserts.
+
+**Battery.** Nothing here had ever had to care where the electricity came from. A
+laptop makes it matter: a field left running holds the GPU out of its idle states
+for the whole of a battery. `power.py` reads the machine's power source on each
+platform's own mechanism — `/sys/class/power_supply` on Linux,
+`GetSystemPowerStatus` on Windows, `pmset` on macOS — off a thread, once a
+minute, because the macOS read is a subprocess and the frame loop may not block
+on one.
+
+The answer has three states, not two, and the third is the important one: on
+mains, on battery, and *cannot say*. "Cannot say" reads as mains, which is the
+same rule the window poll follows for a window that will not say whether it is on
+screen (§8.2) — a desktop reports no power source at all, and throttling one for
+a battery it does not have is the failure here nobody would ever diagnose. On
+battery the backoff uses the governor's own two levers, in the same order: tick
+rate to 0.6, frame cap to 20. Resolution, again, untouched.
+
+**Device loss stops being scaffolding.** §13 recorded the rebuild path as present
+but untested, which was defensible while the target was a desktop card: losing a
+device there means a driver reset somebody is already looking at. On a laptop the
+same event is a lid closing, a dock being pulled, or a hybrid-graphics switch —
+routine, nightly, to a session meant to run for days. So it is built. Everything
+on the far side of the device goes and everything is asked for again in the order
+the launch asks for it, retried on a human timescale rather than every frame,
+with the work done on the frame loop rather than in the driver's callback.
+
+The field comes back from the checkpoint on disk, and that cost is not
+recoverable: reading the live field back would have needed the device that went
+away. What returns is the last save — up to fifteen minutes old at the default
+interval — and the log says so, rather than letting a silently younger field look
+like a clean recovery. This is the one place the interval below is felt.
+
+**Checkpoint interval: five minutes to fifteen.** What a save costs scales with
+the simulation, not with the interval: a readback of every field plus an
+uncompressed write, about 165 MB for a 1600p stack. At five minutes that is 2 GB
+an hour and 48 GB a day, on a drive whose endurance is a consumable, for a
+program whose whole proposition is being left running for days. What the shorter
+interval bought back was bounded — the field is rolled back, never lost, into a
+simulation built to keep growing, and fifteen minutes of a multi-day field is not
+a loss anybody can see.
+
+**What is not covered.** The volumetric slab (§5.1) is 666 MB at `standard` and
+2.7 GB at `finest`, in *shared* memory, and its raymarch is up to 48 steps of
+4-tap depth of field plus a 6-step shadow march per contributing sample. The
+early-outs help and it is still not integrated-GPU work at a laptop's native
+resolution. Layered is the backend this section is about; nothing stops the slab
+being selected on such a machine, and nothing here makes it a good idea.

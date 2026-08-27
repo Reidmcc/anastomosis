@@ -31,9 +31,19 @@ unchanged between backends and that this should be "a clean swap rather than a
 fork"; the shared base class is what keeps that true as both sides change.
 
 Memory is the one place the slab is materially more expensive. At the default
-size it holds about 650 MB of ``rgba16float`` against roughly 90 MB for the
-1440p layered stack -- comfortable on the target card (§8.1), and
-``volume.width`` is there for anything smaller.
+size it holds about 650 MB of ``rgba16float`` against about 480 MB of field
+state for the 1440p layered stack -- comfortable on the target card (§8.1),
+and ``volume.width`` is there for anything smaller.
+
+That comparison used to read "roughly 90 MB" for the stack, which counted a
+few of its fields rather than all of them: each layer carries eleven
+full-resolution textures, not the three or four the figure implied -- three
+ping-pong pairs plus velocity, scratch, reaction_prev and the two
+interpolation buffers -- and at 88 bytes a cell the 1440p stack is 482 MB of
+field plus 88 MB of window-sized output. The corrected number does not change
+the conclusion on the target card, and it matters a great deal on the machine
+DESIGN.md §8.3 is about, where this is precisely the comparison somebody would
+use to choose a backend.
 
 **Thickness is a knob, and it is the only geometry the panel moves.**
 Forty-eight voxels is a slab a ray crosses one or two filaments of, which is

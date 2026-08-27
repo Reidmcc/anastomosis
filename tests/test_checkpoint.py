@@ -928,8 +928,8 @@ def test_unreadable_event_state_costs_at_most_the_events():
 # ---------------------------------------------------------------------------
 
 
-def test_state_is_saved_every_five_minutes_by_default():
-    assert checkpoint.DEFAULT_INTERVAL_SECONDS == 300.0
+def test_state_is_saved_every_fifteen_minutes_by_default():
+    assert checkpoint.DEFAULT_INTERVAL_SECONDS == 900.0
 
 
 def test_resuming_is_the_default_behaviour():

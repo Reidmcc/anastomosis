@@ -40,7 +40,9 @@ to run it.
 
 ## Install
 
-Python 3.11 or newer, and a GPU with Vulkan, Metal, or DX12.
+Python 3.11 or newer, and a GPU with Vulkan, Metal, or DX12 — including a
+laptop's integrated one, which is sized for automatically. See
+[Performance](#performance).
 
 ```bash
 pip install -e ".[ui]"     # [ui] adds PySide6 for the control panel
@@ -58,6 +60,8 @@ anastomosis --preset quiet           # start from a named preset
 anastomosis --backend volumetric     # the raymarched slab instead of layers
 anastomosis --volume-detail fine     # a sharper slab, if the card has room
 anastomosis --width 2560 --height 1440
+anastomosis --gpu discrete           # on a laptop, use the other GPU
+anastomosis --scale 0.6              # simulate smaller, if frames run long
 ```
 
 Drag the window to your secondary display and press **F11** to go fullscreen
@@ -117,7 +121,7 @@ anastomosis --write-config           # write a config file and exit
 ## Picking up where you left off
 
 Closing the window doesn't throw the field away. The simulation state is saved
-every five minutes and again on exit, and **the next launch continues from it**
+every fifteen minutes and again on exit, and **the next launch continues from it**
 — you come back to the network you left rather than to fresh noise. A field
 that has been running for hours looks materially different from one that
 started a minute ago, and growing that back takes a while.
@@ -128,7 +132,7 @@ the old field is gone once the saved state is), or:
 ```bash
 anastomosis --reset                  # ignore the saved state this launch
 anastomosis --no-checkpoint          # don't save or resume at all
-anastomosis --checkpoint-interval 60 # save more often than every 5 minutes
+anastomosis --checkpoint-interval 60 # save more often than every 15 minutes
 ```
 
 The state lives in `~/.local/state/anastomosis/checkpoint.npz` — about 150 MB at
@@ -487,8 +491,44 @@ desktop work won't notice it. It is not sized to run alongside a game.
 Simulation and presentation are decoupled: the sim runs at ~20 Hz, the display at
 30, with motion-compensated interpolation between sim states. That makes 20 Hz
 look *smoother* than simulating at 30, and lets the budget governor throttle the
-tick rate invisibly if frames run long. Resolution is never changed at runtime,
-because that would be plainly visible.
+tick rate invisibly if frames run long. If that isn't enough — which happens when
+the *render* rather than the simulation is what's late — it lowers the presented
+frame rate too, and gives that back first when the headroom returns. Resolution
+is never changed at runtime, because that would be plainly visible.
+
+### On a laptop
+
+It runs on integrated graphics, and sizes itself for one without being asked.
+Nothing in the pipeline needs anything beyond core WebGPU — no optional
+features, no raised limits — so this was never a question of whether it works;
+it's a question of what it costs on a GPU whose memory *is* the machine's
+memory, shared with everything else.
+
+Four things happen by themselves:
+
+- **It doesn't grab the discrete card.** On switchable graphics the platform
+  chooses, which means the integrated GPU. `--gpu discrete` overrides it,
+  `--gpu integrated` pins it.
+- **It caps how much it simulates.** On an integrated GPU the whole layer stack
+  is held to about 3 million cells — a 1080p window is untouched; a fullscreen
+  1600p one simulates at about 1856 across instead of 2560. You lose very little
+  sharpness, because the field's feature sizes are measured in simulation cells
+  rather than pixels, so it's the same picture with slightly larger features
+  rather than a blurrier one. `--scale 0.6` sets it by hand, and
+  `render.cell_budget` in the config sets the ceiling directly (`0` removes it).
+- **It backs off on battery.** Tick rate down, frame rate to 20, back up when
+  you plug in. Resolution untouched. Turn it off with
+  `power.battery_backoff = false` in `[overrides]`.
+- **It survives the lid.** A closed lid, a dock pulled out, or a graphics
+  switch takes the GPU away; the device, the surface and the whole simulation
+  are rebuilt and the field comes back from its last save.
+
+The cap covers the layered stack and the rhizotron. The volumetric slab is a
+different proposition — 650 MB of shared memory and a heavy raymarch — and
+nothing stops you selecting it, but it isn't what this is sized for.
+
+The control panel's **Sim / frame** line shows the rates actually in force, so
+you can see when any of the above is happening.
 
 ## If it freezes
 
@@ -593,6 +633,16 @@ unrecoverable:
 - `test_shutdown.py` — that closing the window saves the field and really ends
   the process, the last part in a subprocess with a live Qt loop, because a
   session left running behind a closed window leaves no other trace.
+- `test_integrated.py` — running on a laptop's integrated GPU (§8.3), in two
+  halves. That it *runs*: every binding, workgroup shape and byte of workgroup
+  memory counted out of the WGSL and checked against core WebGPU's guaranteed
+  minima, which is the only place that property is visible — every adapter
+  anybody develops on reports limits far above them, so one extra binding in
+  one pass would break integrated GPUs silently. And that it runs *acceptably*:
+  the cell ceiling shrinks and never grows, the governor reaches for its two
+  levers in the right order and never presents faster than the flash bound was
+  checked against, a machine that will not say where its power comes from
+  counts as mains, and a lost device is rebuilt rather than reported.
 - `test_audio.py` — the resonance mode's front end and drive (§16): that the
   feature extractor is deterministic in the sample stream whatever the
   chunking, bounded under hostile input, and treats silence as zeros; that
@@ -639,6 +689,8 @@ anastomosis/
   gpu_params.py   GPU struct layout (generates the WGSL, drives the packing)
   events.py       Poisson-arrival slow events
   checkpoint.py   periodic save and restore of the simulation state
+  device.py       which GPU, and replacing one that goes away (§8.3)
+  power.py        mains or battery, off a thread of its own (§8.3)
   diagnostics.py  stall watchdog and crash handler
   bluenoise.py    void-and-cluster dither mask
   shaders/        32 top-level WGSL modules, plus three shared includes

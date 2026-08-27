@@ -42,6 +42,7 @@ from dataclasses import dataclass
 import numpy as np
 import wgpu
 
+from . import engine as engine_module
 from . import gpu_params
 from .backend import (
     FIELD_USAGE,
@@ -153,8 +154,16 @@ class RhizotronGeometry:
 
     @classmethod
     def derive(cls, width: int, height: int, params: Params) -> "RhizotronGeometry":
-        scale = params.render.base_scale
         rhiz = params.rhizotron
+        # The cell ceiling applies here for the same reason it applies to the
+        # stack (DESIGN.md §8.3): the pane is one layer rather than three, but
+        # it is a *full-window* layer, so on a 1600p laptop panel it is more
+        # cells than the stack's front sheet and its passes read the same
+        # shared memory. One "layer", so the falloff has nothing to do.
+        scale = engine_module.fit_cell_budget(
+            width, height, params.render.base_scale, 1, 1.0,
+            int(params.render.cell_budget),
+        )
         sim_w = round_up(max(int(width * scale), 64), 32)
         view = max(int(height * scale), 32)
         return cls(

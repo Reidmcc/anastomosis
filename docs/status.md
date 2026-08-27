@@ -14,7 +14,7 @@ because nothing has ever been watched.
 
 Here, then: built and verified headless against a software adapter (Mesa
 lavapipe), so every shader compiles and the full tick/render sequence runs in CI
-without a GPU. The suite is 456 tests, split the way their costs are:
+without a GPU. The suite is 697 tests, split the way their costs are:
 `.github/workflows/ci.yml` runs everything not marked `slow` on every push,
 across three Python versions plus a leg with no PySide6 that holds the README's
 promise that the panel is optional, and runs the `slow` marks -- drift,
@@ -32,7 +32,7 @@ atmosphere; the Oklab colour pipeline; the full safety stage with blue-noise
 dither; sim/render decoupling with motion-compensated interpolation and the
 budget governor; the parameter system with macros, presets, hot reload and
 ramping; the Qt control panel, including asking for an event of a given kind on
-demand; CLI; checkpointing on a five-minute interval and
+demand; CLI; checkpointing on a fifteen-minute interval and
 on close, resuming by default, with an explicit reset in the control panel;
 shutdown as a single idempotent path reached from the window closing, a signal,
 or the loop ending, so closing the window saves the field and ends the process;
@@ -42,7 +42,25 @@ or the control panel, with one saved field each so switching between them is not
 destructive. The slab's thickness is a control panel knob as well, from 8 voxels
 to the shorter lateral axis, priced in graphics memory beside the slider.
 
-The rhizotron is the newest and the only one on a second metaphor: a soil column
+Also complete, and the newest: **integrated-GPU support** (§8.3). The pipeline
+was always portable -- core WebGPU throughout, every binding inside the
+specification's guaranteed minima, which `test_integrated.py` now asserts
+against the WGSL rather than against whatever adapter happens to be present.
+What was not sized for a laptop was everything decided against §8.1's headroom,
+and that is now decided from the adapter instead: which GPU is asked for at
+all, a cell ceiling that holds the stack to what shared memory bandwidth can
+carry, a second lever for the budget governor for when the render rather than
+the simulation is what is late, a battery backoff, and the device-loss rebuild
+above. The ceiling covers the layered stack and the rhizotron; the slab's
+shared-memory footprint is discussed in §8.3 and not solved there.
+
+None of it has been watched on an integrated GPU, which is the same caveat
+this section makes about everything else -- the arithmetic says the sizing is
+right and only a pair of eyes on a laptop can say whether 3 M cells at a 1600p
+panel still looks like the thing it is meant to look like.
+
+The rhizotron is the newest of the three backends and the only one on a second
+metaphor: a soil column
 generated as a pure function of an unbounded depth counter, moisture percolating
 through it, a community of root systems growing by tropism and branching, and a
 window that sinks after the growing front. Steps 1-5 of §15.11 are built and
@@ -80,8 +98,16 @@ makes about the defaults.
   `stability` macro (§9) now runs it up to gain 3 at the sturdy end of its
   travel, so it is a character the panel can ask for rather than a default
   anyone is given.
-- **Device-loss recovery** is scaffolded in `device.py` but the rebuild path is
-  untested, since a software adapter offers no way to provoke a device loss.
+- **Device-loss recovery** is built (§8.3): a lost device, its surface and its
+  engine are all replaced on the frame loop, retried on a human timescale, and
+  the field returns from the last checkpoint. What is still not available here
+  is a way to provoke a *real* device loss -- a software adapter offers none --
+  so what is asserted is the rebuild's own logic against stand-in
+  collaborators (`test_integrated.py`), not a driver actually going away. That
+  is a smaller gap than it was: the path runs, and its failure modes -- a
+  driver still resetting, a checkpoint that will not load, a `--reset` session
+  that must still come back to the field it grew -- are each covered. The
+  remaining unknown is whether a given driver's loss event arrives at all.
 
 **Not assessable from here:** how it actually looks, and whether the defaults
 sit in the right place perceptually. The software adapter renders correct pixels

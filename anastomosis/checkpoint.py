@@ -13,7 +13,7 @@ for what belongs here is not "is it large" but "does the next tick read
 something the previous tick left behind" -- anything answering yes to that is
 state a resume has to carry, wherever it happens to live. What is left out is
 left out on purpose, because at 1440p the whole world is ~230 MB and this is
-written every five minutes for days on end:
+written every fifteen minutes for days on end:
 
 * **Derived fields.** ``velocity`` is rewritten by the flow pass and
   ``reaction_prev`` by a texture copy, both unconditionally at the start of every
@@ -104,9 +104,24 @@ FORMAT_VERSION = 6
 # Reading them costs a few lines and saves anyone upgrading their mature field.
 OLDEST_READABLE_VERSION = 1
 
-# Five minutes: long enough that the readback cost is negligible, short enough
-# that a crash costs less field maturity than it takes to notice one.
-DEFAULT_INTERVAL_SECONDS = 300.0
+# Fifteen minutes. It was five, on the reasoning that a crash should cost less
+# field maturity than it takes to notice one -- which is still the trade, just
+# priced against a laptop as well as a desktop (DESIGN.md §8.3).
+#
+# What a save costs is a readback of every field plus an uncompressed write,
+# and both scale with the simulation, not with the interval. A 1600p stack is
+# roughly 130 MB of field and 35 MB of agents: at five minutes that is about
+# 2 GB an hour of disk writes, 48 GB a day, on a drive whose endurance is a
+# consumable -- for a program whose whole proposition is that it is left
+# running for days. At fifteen it is a third of that.
+#
+# What it buys back is bounded and cheap: the field is not *lost* on a crash,
+# only rolled back, and it is rolled back into a simulation explicitly built
+# to keep growing. Fifteen minutes of a multi-day field is not a loss anybody
+# can see. The one place the number is felt is device-loss recovery, where the
+# readback is impossible by definition and the last save on disk is all there
+# is -- `Application._rebuild_device` says so in the log when it happens.
+DEFAULT_INTERVAL_SECONDS = 900.0
 
 # Ping-pong fields, saved at their current parity and restored into both slots
 # so the next flip cannot read stale data. Every field carrying state between
@@ -164,7 +179,7 @@ for _v in (1, 2, 3):
 # assembled flow potential and the blur scratch are rewritten every tick before
 # anything reads them, and the interpolated pigment every *frame*. At the
 # default slab those three are about 170 MB that would otherwise be written to
-# disk every five minutes to no purpose.
+# disk on every save to no purpose.
 DERIVED_FIELDS = ("reaction_prev", "velocity")
 VOLUME_DERIVED_FIELDS = ("reaction_prev", "velocity", "potential", "scratch", "interp")
 

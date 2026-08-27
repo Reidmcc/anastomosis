@@ -635,10 +635,13 @@ class VolumeParams:
 
     Memory is the one place the slab is genuinely more expensive than the
     layers: at the default size a field is about 650 MB of rgba16float, against
-    roughly 90 MB for the 1440p layered stack. That is comfortable on the
-    target card (DESIGN.md §8.1), and it is also why ``depth`` -- the knob the
-    control panel exposes -- is the parameter that decides what this backend
-    costs. Everything below that is calibrated against a *filament*, in voxels,
+    about 480 MB of field state for the 1440p layered stack (see
+    :mod:`anastomosis.volume`, which carried the same figure and had it wrong
+    by a factor of five). That is comfortable on the target card (DESIGN.md
+    §8.1) and not comfortable at all on an integrated one, which is why §8.3
+    keeps the laptop guidance on the layered backend; it is also why ``depth``
+    -- the knob the control panel exposes -- is the parameter that decides
+    what this backend costs. Everything below that is calibrated against a *filament*, in voxels,
     rather than against the slab's thickness, so that moving it changes how
     much material a ray passes through and nothing else.
     """
@@ -1016,6 +1019,29 @@ class RenderParams:
     layers: int = 3
     base_scale: float = 1.0  # front layer, fraction of display resolution
     scale_falloff: float = 0.5  # each layer back is this much smaller
+    # A ceiling on how many simulation cells the whole stack may add up to,
+    # across every layer. Zero means no ceiling, which is the shipped default
+    # and what the target card of DESIGN.md §8.1 runs at: there, the headroom
+    # is deliberately spent on simulating the front layer at native resolution.
+    #
+    # It exists for the machine that has no such headroom -- an integrated GPU,
+    # where the simulation's bandwidth is the *system's* memory bandwidth and
+    # is shared with the CPU and the compositor (§8.3). `Application` sets it
+    # to `INTEGRATED_CELL_BUDGET` when the adapter is an integrated one and
+    # nothing in the config has answered the question already.
+    #
+    # A ceiling rather than a scale, because it has to bind on the thing that
+    # actually costs: a window twice the size is four times the simulation, and
+    # what an integrated GPU can afford is a number of cells, not a fraction of
+    # whatever panel it is plugged into. `base_scale` still means exactly what
+    # it says and is applied first; this only ever shrinks the result further,
+    # and on a window small enough it never bites at all.
+    #
+    # Integer, so it snaps through the ramp rather than sliding: it is
+    # structural (`Geometry.derive` reads it, and only when a field is grown),
+    # and a half-ramped ceiling deciding the shape of a field that a reset
+    # happened to ask for mid-ramp would be a real, if quiet, bug.
+    cell_budget: int = 0
     # Back layers get larger on-screen features for free by being simulated at
     # lower resolution, so this is a fine-tuning knob rather than the main
     # mechanism; >1 exaggerates the difference.
@@ -1079,6 +1105,49 @@ class RenderParams:
 
 
 @dataclass
+class PowerParams:
+    """What running on a battery costs the field. DESIGN.md §8.3.
+
+    A laptop is the machine this exists for. Nothing else here has ever had to
+    care where the electricity comes from -- a desktop's owner pays a power
+    bill they do not watch -- but a field designed to run for days on a second
+    display will, on a laptop, hold the GPU out of its idle states for the
+    whole of a battery, and the user who asked for something calm did not ask
+    for that.
+
+    The backoff is deliberately made of the two levers the budget governor
+    already uses, in the same order and for the same reasons (§8): the tick
+    rate first, which the motion-compensated interpolator hides completely,
+    and the presented frame rate second, which is the visible one. Nothing
+    here touches resolution -- a field that re-resolved itself when a charger
+    was pulled out would be doing the one thing §8 forbids.
+
+    None of this is a safety question. Presenting *fewer* frames than
+    `max_fps` only slows the flash-safety worst case further, because the
+    per-frame lightness allowance is sized against the cap rather than against
+    the rate actually achieved -- see `validate`.
+    """
+
+    # Whether to back off at all. False leaves a laptop running exactly as a
+    # desktop does, which is a coherent thing to want from a machine that
+    # lives on a charger.
+    battery_backoff: bool = True
+    # What the tick rate is multiplied by on battery. 0.6 takes the shipped
+    # 20 Hz to 12, which is inside the 8-30 band §8 calls tunable and above
+    # the 0.35 floor the budget governor may add on top of it.
+    battery_sim_scale: float = 0.6
+    # And the frame rate ceiling on battery. 20 rather than 30 is a third of
+    # the render work per second; below about 15 the pan starts to read as
+    # steps rather than as motion, which is the thing §8's whole pacing design
+    # exists to avoid, so this stays well clear of it.
+    battery_max_fps: int = 20
+    # How often to ask the machine where its power is coming from. Slow: on
+    # macOS each poll is a subprocess, and plugging in is not an event that
+    # needs noticing within a frame.
+    poll_seconds: float = 60.0
+
+
+@dataclass
 class Params:
     """Complete primitive parameter set."""
 
@@ -1095,6 +1164,7 @@ class Params:
     events: EventParams = field(default_factory=EventParams)
     audio: AudioParams = field(default_factory=AudioParams)
     render: RenderParams = field(default_factory=RenderParams)
+    power: PowerParams = field(default_factory=PowerParams)
     safety: SafetyParams = field(default_factory=SafetyParams)
 
 
@@ -1826,6 +1896,41 @@ VOLUME_DETAIL: dict[str, int] = {
 }
 DEFAULT_VOLUME_DETAIL = "standard"
 
+# --------------------------------------------------------------------------
+# The integrated-GPU cell ceiling. DESIGN.md §8.3.
+# --------------------------------------------------------------------------
+
+# What `render.cell_budget` is set to when the adapter turns out to be an
+# integrated GPU and nothing in the config has already answered the question.
+#
+# Three million cells is one 1080p front layer plus its two half-and-quarter
+# scale companions (1920x1080 + 960x540 + 480x270 = 2.72 M), so the commonest
+# laptop panel simulates at native resolution and this never bites. Where it
+# bites is the panels that have arrived since §8.1 was written: at 2560x1600
+# the stack would be 5.38 M cells and at 2880x1800 it would be 6.81 M, which
+# is where the arithmetic stops working.
+#
+# The arithmetic, since it is the whole justification. These passes are
+# bandwidth-bound (§8.1), and at 3 M cells the simulation moves about
+# 3.0e6 x 6 passes x 20 Hz x 24 B = 8.6 GB/s, with the per-frame interpolation
+# and depth-of-field adding roughly 2.9 GB/s at 30 Hz and the window-sized
+# output stage a few more. Call it 16-17 GB/s all told at a 1600p window.
+# Against a discrete card that is the 2% of §8.1; against an integrated one,
+# whose "video memory" is the system's own -- 68 GB/s on a dual-channel
+# LPDDR4x laptop, and shared with the CPU and the compositor -- it is about a
+# quarter of the machine's total memory bandwidth. That is the number that has
+# to stay small, because the requirement is not "runs" but "leave the machine
+# usable" (§1), and a fullscreen 1800p stack at no ceiling would be over half.
+#
+# Field memory follows the same curve and lands near 300 MB, which on shared
+# memory is 300 MB the rest of the machine does not have.
+INTEGRATED_CELL_BUDGET = 3_000_000
+
+# A positive ceiling below this cannot be honoured -- `Geometry.derive` will
+# not build a layer smaller than 64x32 -- so `validate` raises anything
+# positive up to it rather than leaving a ceiling that looks set and is not.
+MIN_CELL_BUDGET = 64 * 32
+
 
 @dataclass
 class Config:
@@ -2019,6 +2124,25 @@ def validate(params: Params) -> Params:
     # And it has to stay on the screen. Beyond a whole screen width between the
     # near and far material there is nothing left that reads as one scene.
     params.render.parallax = min(max(params.render.parallax, 0.0), 1.0)
+
+    # The cell ceiling (DESIGN.md §8.3). Negative is meaningless and reads as
+    # "no ceiling", which is what zero means; the floor under a *positive* one
+    # is there because a ceiling below it cannot be met anyway -- `Geometry`
+    # will not build a layer smaller than 64x32 -- so a value under it would
+    # be a ceiling that silently did nothing while looking like it did.
+    budget = int(params.render.cell_budget)
+    params.render.cell_budget = 0 if budget <= 0 else max(budget, MIN_CELL_BUDGET)
+
+    # The battery backoff (DESIGN.md §8.3). The tick scale is bounded below
+    # the point where the interpolator stops hiding it, and the frame cap
+    # cannot exceed the session's own -- raising a rate here would push the
+    # per-frame lightness allowance the wrong way, and `max_fps` is the cap
+    # the flash arithmetic was done against.
+    power = params.power
+    power.battery_sim_scale = min(max(power.battery_sim_scale, 0.25), 1.0)
+    power.battery_max_fps = max(1, min(int(power.battery_max_fps),
+                                       int(params.max_fps)))
+    power.poll_seconds = min(max(power.poll_seconds, 5.0), 3600.0)
 
     # The slab's own structural values. The ceilings are core WebGPU's
     # guaranteed maxTextureDimension3D (2048), and the floors are what the
@@ -2298,6 +2422,19 @@ _HEADER = """\
 # [overrides] pins individual primitive parameters by dotted path, e.g.
 #   "render.filament_luma" = 0.42
 # Overrides take precedence over macros.
+#
+# Four overrides matter on a laptop (DESIGN.md §8.3), and all four are
+# already set to something sensible from the GPU the session found:
+#   "render.cell_budget" -- the ceiling on total simulation cells across the
+#     whole layer stack. 0 is no ceiling, which is the default and what a
+#     discrete card keeps; an integrated GPU gets 3000000 unless this or
+#     "render.base_scale" is set here, or --scale was passed. Structural, so
+#     it applies to a field grown from now on.
+#   "render.base_scale" -- what fraction of the window to simulate at, if you
+#     would rather say it directly. Also structural.
+#   "power.battery_backoff" -- 0 to keep the full rates on battery.
+#   "power.battery_sim_scale" / "power.battery_max_fps" -- what those rates
+#     become when it does back off.
 #
 # Safety-relevant values are clamped to hard ceilings on load (see
 # DESIGN.md §7); an out-of-range value is corrected with a warning rather

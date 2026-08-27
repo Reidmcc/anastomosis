@@ -84,14 +84,19 @@ and the tests — resolves via the table below, and means the file listed agains
   arithmetic behind the 1% default and 1.2% ceiling, and the gamut-mapping
   leak that had to be closed.
 
-- **§8 — [docs/frame-pacing.md](docs/frame-pacing.md)** (incl. §8.1–§8.2)
+- **§8 — [docs/frame-pacing.md](docs/frame-pacing.md)** (incl. §8.1–§8.3)
   Sim decoupled from render with motion-compensated interpolation, the frame
   budget governor, the RTX 3080 / 1440p cost budget (§8.1), and
   secondary-display behaviour: fullscreen, vsync, sleep/unplug, and why a
   window resize rebuilds the presentation chain only. Then the failure all of
   that pacing does not cover (§8.2): a loop that stops rather than one that
   runs slow, which produces no evidence at all unless something takes it while
-  the freeze is still happening.
+  the freeze is still happening. And §8.3, the other machine: why an
+  integrated GPU was never a portability question and always a cost one, the
+  cell ceiling that sizes the stack for shared memory bandwidth, the render
+  lever the governor needed once the simulation stopped being what costs, the
+  battery backoff, and the device-loss rebuild that a lid closing every night
+  turns from scaffolding into a requirement.
 
 - **§9 — [docs/parameters.md](docs/parameters.md)**
   The control surface: nine macros over ~40 primitives, presets, TOML as the
