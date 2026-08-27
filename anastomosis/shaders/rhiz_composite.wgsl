@@ -171,8 +171,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // transfer farther out and the wood visibly *widens* as it matures --
     // radial growth, rendered rather than re-deposited. Static on the
     // timescale the limiter watches; the mapping moves over minutes.
+    // Committed material clears the transfer at lower mass than living
+    // fuzz -- a lateral shaft's lignin runs a fraction of a taproot's, and
+    // the debug pass found the whole lateral fabric present in the record
+    // but hovering at the knee, rendered invisible. Maturity then thickens
+    // further: secondary growth.
     let knee = max(rp.root_knee, 1e-4)
-        * (1.0 - 0.35 * wood_frac * mature);
+        * (1.0 - wood_frac * (0.45 + 0.25 * mature));
     let saturated = mass / (mass + knee);
     let edge = mix(rp.root_edge, rp.wood_edge, wood_frac);
     let coverage = smoothstep(0.5 - edge, 0.5 + edge, saturated);
@@ -219,10 +224,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let tan = vec3<f32>(
             l + 0.075, ab + vec2<f32>(0.008, 0.018));
         let wood_new = vec3<f32>(
-            max(render.background_luma + 0.06, l - 0.075),
+            max(render.background_luma + 0.06, l - 0.12),
             ab * 0.85 + vec2<f32>(0.014, 0.016));
         let umber = vec3<f32>(
-            max(render.background_luma + 0.05, l - 0.15),
+            max(render.background_luma + 0.05, l - 0.18),
             ab * 0.55 + vec2<f32>(0.010, 0.012));
         let sweep = mature * mature * (3.0 - 2.0 * mature);
         let wood_lab = mix(wood_new, umber, sweep);
