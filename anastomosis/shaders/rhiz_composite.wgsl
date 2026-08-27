@@ -152,105 +152,91 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     l = l - 0.055 * ghost_sat;
     ab = ab * (1.0 - 0.30 * ghost_sat);
 
-    // --- The roots: one silhouette, two materials (§17.5, §17.6) -----------
-    // The living layer and the record are one organism, so they share one
-    // coverage: combined mass through the saturating map, with the edge
-    // sharpening from `root_edge` toward `wood_edge` as material commits --
-    // wood is crisper than fuzz. Splitting the silhouette between two knees
-    // was tried first and opened a hand-over gap: mass mid-transfer sat
-    // below both, and roots dissolved into dashes exactly where they were
-    // becoming permanent. One silhouette cannot gap; wood-ness is a colour
-    // axis along it, not a second figure.
+    // --- The roots: the record beneath, the living over it (§17.5-6) ------
+    // Two figures, composited in depth order -- soil, then wood, then the
+    // living sheath -- because the fourth viewing convicted every blend
+    // that mixed them along a synthetic axis. `wood_frac`, the
+    // lignin:living ratio, is not a clock: it leaps when senescence empties
+    // the denominator (colour skipped straight to dark) and stalls where
+    // fine traffic keeps re-depositing (colour parked at the soil's own
+    // value -- and, being soil-derived, *tracked the soil's hue* as the
+    // palette drifted). The only clock in the field is `bio_age`, and it
+    // alone drives the wood's colour; the pale-to-dark transition is
+    // occlusion -- the living sheath thinning over wood already coloured
+    // by its age -- and the wood's hue is anchored mostly absolute, a
+    // red-brown no soil family shares, so no stage of a root's life can
+    // inherit the ground's colour and vanish into it.
     let root = textureSampleLevel(structure_tex, samp, suv, 0.0);
     let rec = textureSampleLevel(record_tex, samp, suv, 0.0);
     let density = max(finite_or(root.x, 0.0), 0.0);
     let lignin = max(finite_or(rec.x, 0.0), 0.0);
-    let mass = density + lignin;
-    let wood_frac = lignin / max(mass, 1e-5);
     let age = max(finite_or(root.y, 0.0), 0.0);
     let young_f = exp(-age / max(rp.root_age_scale * 0.4, 1.0));
     let wood_age = max(finite_or(rec.y, 0.0), 0.0);
     let mature = 1.0 - exp(-wood_age / max(rp.wood_age_scale, 1.0));
-    // Secondary thickening: committed material's coverage knee eases down
-    // with biographical age, so an old line's deposit skirt crosses the
-    // transfer farther out and the wood visibly *widens* as it matures --
-    // radial growth, rendered rather than re-deposited. Static on the
-    // timescale the limiter watches; the mapping moves over minutes.
-    // Committed material clears the transfer at lower mass than living
-    // fuzz -- a lateral shaft's lignin runs a fraction of a taproot's, and
-    // the debug pass found the whole lateral fabric present in the record
-    // but hovering at the knee, rendered invisible. Maturity then thickens
-    // further: secondary growth.
-    let knee = max(rp.root_knee, 1e-4)
-        * (1.0 - wood_frac * (0.45 + 0.25 * mature));
-    let saturated = mass / (mass + knee);
-    let edge = mix(rp.root_edge, rp.wood_edge, wood_frac);
-    let coverage = smoothstep(0.5 - edge, 0.5 + edge, saturated);
+
+    // Wood coverage: absolute lignin through its own transfer -- present
+    // in the record means present on screen, at half the living knee so a
+    // lateral shaft's committed mass clears it -- and the knee eases
+    // further with maturity: secondary thickening, radial growth rendered
+    // rather than re-deposited.
+    let wood_knee = max(rp.root_knee, 1e-4) * (0.5 - 0.2 * mature);
+    let wood_sat = lignin / (lignin + wood_knee);
+    let wood_cov = smoothstep(
+        0.5 - rp.wood_edge, 0.5 + rp.wood_edge, wood_sat);
+    // Living coverage: absolute density, the fuzz's softer edge.
+    let live_sat = density / (density + max(rp.root_knee, 1e-4));
+    let live_cov = smoothstep(
+        0.5 - rp.root_edge, 0.5 + rp.root_edge, live_sat);
+
     // A pallor boost over the shared macro: the visible-earth envelope
     // (§17.5) lifted the ground, and the living material keeps its two
     // rungs of headroom above the palest stratum.
     let l_young = clamp(
         render.background_luma + render.filament_luma * 1.55, 0.0, render.l_max);
 
-    // Root hairs, and the mycorrhizal accent (§15.2): the transfer's soft
-    // skirt, re-admitted only around *young* material -- a halo of pale fuzz
-    // at the growing front that fades as the root lignifies. Where the
-    // material is young *and fine*, the same skirt carries a faint cool
-    // shimmer: the hyphae, the one cool accent in a warm field, spending the
-    // chroma budget and none of the luminance budget beyond the hairs'.
-    let skirt = smoothstep(0.04, 0.5, saturated) * (1.0 - coverage);
+    // Root hairs, and the mycorrhizal accent (§15.2): the living
+    // transfer's soft skirt, re-admitted only around *young* material -- a
+    // halo of pale fuzz at the growing front that fades as the root
+    // lignifies. Where the material is young *and fine*, the same skirt
+    // carries the faint cool shimmer: the hyphae, the one cool accent in a
+    // warm field, spending chroma and no luminance beyond the hairs'.
+    let skirt = smoothstep(0.04, 0.5, live_sat) * (1.0 - live_cov);
     let hair = skirt * young_f;
     l = mix(l, l_young, hair * rp.root_hair * 0.5);
     let fineness = clamp(finite_or(root.z, 0.0), 0.0, 1.0);
     let shimmer = hair * fineness * rp.mycorrhiza;
     ab = ab + vec2<f32>(-0.010, -0.024) * shimmer;
 
-    if (coverage > 1e-4) {
-        // Fine material browns on a much shorter clock than coarse: fuzz is
-        // pale only while it is actually growing, so the churn of dying
-        // fines reads as breathing ground rather than as pale confetti
-        // lingering minutes after the life has left it.
+    // The record first: wood by biographical age alone, red-brown into
+    // dark umber, floors keeping it above the sky whatever the ground.
+    if (wood_cov > 1e-4) {
+        let wood_new = vec3<f32>(
+            max(render.background_luma + 0.07, l - 0.10),
+            mix(ab, vec2<f32>(0.058, 0.046), 0.75));
+        let umber = vec3<f32>(
+            max(render.background_luma + 0.05, l - 0.18),
+            mix(ab, vec2<f32>(0.020, 0.018), 0.75));
+        let sweep = mature * mature * (3.0 - 2.0 * mature);
+        let wood_lab = mix(wood_new, umber, sweep);
+        l = mix(l, wood_lab.x, wood_cov);
+        ab = mix(ab, wood_lab.yz, wood_cov);
+    }
+
+    // The living sheath over it: pale for as long as it lives, tanning
+    // with recency age, never sinking toward the ground -- when it thins,
+    // what shows through is the wood, already the colour of its years.
+    if (live_cov > 1e-4) {
         let age_scale = max(rp.root_age_scale, 1.0)
             * (1.0 - 0.55 * fineness * fineness);
         let brown = (1.0 - exp(-age / age_scale)) * rp.root_brown;
-        // Warm ivory: a faint 10YR-ish cast so young roots sit in the soil's
-        // own colour world rather than reading as neutral grey.
-        let young = vec3<f32>(l_young, 0.010 * l_young / 0.4, 0.045 * l_young / 0.4);
-        // The ladder, resolved by the first live viewings: LIVING material
-        // is pale for as long as it lives -- it only tans with age, never
-        // sinking toward the ground -- and WOOD is dark from the moment it
-        // commits, well below any stratum, deepening toward umber with the
-        // biographical age nothing resets. The pale-to-dark crossing
-        // happens once per texel, quickly, as lignin overtakes the living
-        // mass (`wood_frac`), so there is no ambiguous middle band hovering
-        // at the soil's own value -- the band the first pass watched fade
-        // out of existence. Recession-in-salience belongs to the ghosts
-        // after burial (§17.6); standing wood is figure.
+        let young = vec3<f32>(
+            l_young, 0.010 * l_young / 0.4, 0.045 * l_young / 0.4);
         let tan = vec3<f32>(
             l + 0.075, ab + vec2<f32>(0.008, 0.018));
-        let wood_new = vec3<f32>(
-            max(render.background_luma + 0.06, l - 0.12),
-            ab * 0.85 + vec2<f32>(0.014, 0.016));
-        let umber = vec3<f32>(
-            max(render.background_luma + 0.05, l - 0.18),
-            ab * 0.55 + vec2<f32>(0.010, 0.012));
-        let sweep = mature * mature * (3.0 - 2.0 * mature);
-        let wood_lab = mix(wood_new, umber, sweep);
         let living_lab = mix(young, tan, brown);
-        // The pale-to-dark path is routed AROUND the soil's own value, not
-        // through it: at the equal-lightness moment the material carries a
-        // red-brown chroma the ground never has -- suberisation, the
-        // reddening real roots pass through before they darken -- so no
-        // point on the commitment path is invisible. A straight blend
-        // crossed the soil's lightness and whole branches faded for the
-        // minutes their shafts spent mid-transfer (the third viewing's
-        // finding: inconsistent darkening, a window of near-invisibility).
-        let redden = vec3<f32>(l, ab * 1.5 + vec2<f32>(0.030, 0.026));
-        let t1 = smoothstep(0.0, 0.55, wood_frac);
-        let t2 = smoothstep(0.45, 1.0, wood_frac);
-        let root_lab = mix(mix(living_lab, redden, t1), wood_lab, t2);
-        l = mix(l, root_lab.x, coverage);
-        ab = mix(ab, root_lab.yz, coverage);
+        l = mix(l, living_lab.x, live_cov);
+        ab = mix(ab, living_lab.yz, live_cov);
     }
 
     // --- The sky (§17.4) ----------------------------------------------------
