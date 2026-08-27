@@ -358,7 +358,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // deceleration's own factor, so the two mature together.
         let vigor = rp.elong_floor
             + (1.0 - rp.elong_floor) * exp(-max(tip.age, 0.0) * rp.elong_slow);
-        let sigma = max(splat_sigma_for(order) * (0.72 + 0.28 * vigor), 0.2);
+        let sigma = max(splat_sigma_for(order) * (0.85 + 0.15 * vigor), 0.2);
         let base = vec2<i32>(floor(pos - 1.0));
         let order_weight = f32(order) * 0.5;
         for (var j = 0; j < 3; j = j + 1) {

@@ -162,13 +162,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let lignin = max(finite_or(rec.x, 0.0), 0.0);
     let mass = density + lignin;
     let wood_frac = lignin / max(mass, 1e-5);
-    let saturated = mass / (mass + max(rp.root_knee, 1e-4));
-    let edge = mix(rp.root_edge, rp.wood_edge, wood_frac);
-    let coverage = smoothstep(0.5 - edge, 0.5 + edge, saturated);
     let age = max(finite_or(root.y, 0.0), 0.0);
     let young_f = exp(-age / max(rp.root_age_scale * 0.4, 1.0));
     let wood_age = max(finite_or(rec.y, 0.0), 0.0);
     let mature = 1.0 - exp(-wood_age / max(rp.wood_age_scale, 1.0));
+    // Secondary thickening: committed material's coverage knee eases down
+    // with biographical age, so an old line's deposit skirt crosses the
+    // transfer farther out and the wood visibly *widens* as it matures --
+    // radial growth, rendered rather than re-deposited. Static on the
+    // timescale the limiter watches; the mapping moves over minutes.
+    let knee = max(rp.root_knee, 1e-4)
+        * (1.0 - 0.35 * wood_frac * mature);
+    let saturated = mass / (mass + knee);
+    let edge = mix(rp.root_edge, rp.wood_edge, wood_frac);
+    let coverage = smoothstep(0.5 - edge, 0.5 + edge, saturated);
     // A pallor boost over the shared macro: the visible-earth envelope
     // (§17.5) lifted the ground, and the living material keeps its two
     // rungs of headroom above the palest stratum.
@@ -199,29 +206,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Warm ivory: a faint 10YR-ish cast so young roots sit in the soil's
         // own colour world rather than reading as neutral grey.
         let young = vec3<f32>(l_young, 0.010 * l_young / 0.4, 0.045 * l_young / 0.4);
-        // The living gradient hands over to the record's: ivory browns
-        // toward new wood -- russet, above the ground -- and wood matures
-        // from russet down to dark umber, shaded by biographical age, the
-        // channel nothing resets. One continuous path down each root's
-        // length: tip, tan, russet, umber. The umber is emphatically DARK
-        // -- far below any soil, near the sky's register -- because the
-        // first felt-response pass found aged roots melting into the ground
-        // and reading as fading out of existence rather than as ageing:
-        // recession-in-salience belongs to the ghosts after burial (§17.6),
-        // never to standing wood. The record, while it stands, is figure.
-        let russet = vec3<f32>(
+        // The ladder, resolved by the first live viewings: LIVING material
+        // is pale for as long as it lives -- it only tans with age, never
+        // sinking toward the ground -- and WOOD is dark from the moment it
+        // commits, well below any stratum, deepening toward umber with the
+        // biographical age nothing resets. The pale-to-dark crossing
+        // happens once per texel, quickly, as lignin overtakes the living
+        // mass (`wood_frac`), so there is no ambiguous middle band hovering
+        // at the soil's own value -- the band the first pass watched fade
+        // out of existence. Recession-in-salience belongs to the ghosts
+        // after burial (§17.6); standing wood is figure.
+        let tan = vec3<f32>(
             l + 0.075, ab + vec2<f32>(0.008, 0.018));
+        let wood_new = vec3<f32>(
+            max(render.background_luma + 0.06, l - 0.075),
+            ab * 0.85 + vec2<f32>(0.014, 0.016));
         let umber = vec3<f32>(
-            max(render.background_luma + 0.045, l - 0.17),
+            max(render.background_luma + 0.05, l - 0.15),
             ab * 0.55 + vec2<f32>(0.010, 0.012));
-        // The path from russet (above the soil's lightness) to umber (well
-        // below it) must cross the soil's own value somewhere; the curve
-        // sweeps quickly through that crossing, and the warm bias on both
-        // ends keeps wood redder than the ground throughout, so equal
-        // lightness is never invisibility.
         let sweep = mature * mature * (3.0 - 2.0 * mature);
-        let wood_lab = mix(russet, umber, sweep);
-        let living_lab = mix(young, russet, brown);
+        let wood_lab = mix(wood_new, umber, sweep);
+        let living_lab = mix(young, tan, brown);
         let root_lab = mix(living_lab, wood_lab, wood_frac);
         l = mix(l, root_lab.x, coverage);
         ab = mix(ab, root_lab.yz, coverage);

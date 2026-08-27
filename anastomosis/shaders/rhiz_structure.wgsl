@@ -161,6 +161,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let rec = record_at(x, y);
     var lignin = rec.x;
     var bio_age = rec.y;
+    // The discount stays squared -- fuzz and fuzz-adjacent mass must NOT
+    // commit, or the record inks in every path ever taken and the pane
+    // clutters (tried at the three-halves power: a black mesh). The race
+    // against senescence is won by rate instead: at the shipped
+    // lignify_rate a lateral shaft (fineness ~0.5) commits in ~5 minutes
+    // against its 8-minute life, so branch systems stand as wood instead
+    // of vanishing -- the first live viewing's second finding.
     let coarse = (1.0 - fineness) * (1.0 - fineness);
     let transfer = min(rp.lignify_rate * coarse * density, density);
     density = density - transfer;

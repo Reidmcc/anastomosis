@@ -946,7 +946,7 @@ class RhizotronParams:
     root_knee: float = 0.08
     root_edge: float = 0.18
     root_age_scale: float = 420.0  # seconds to brown
-    root_brown: float = 0.80       # how far a browned root sinks toward wood
+    root_brown: float = 0.45       # how far living material tans with age
     # Root hairs: the pale skirt around young material -- the transfer's soft
     # approach, re-admitted only where the structure is young, so growing
     # tips carry a halo of fuzz that fades as they lignify.
@@ -965,7 +965,7 @@ class RhizotronParams:
     # minutes, a lateral in ten, and pure fuzz never does -- fuzz is working
     # memory, and senescence is its exit. Wood never senesces and is never
     # erased while the season lives: the visible skeleton is the biography.
-    lignify_rate: float = 0.011
+    lignify_rate: float = 0.016
     # How strongly the tips' self-avoidance counts wood, relative to living
     # structure. Wood is exactly as real an obstacle as living root; grafts
     # (§17.8) will make the rare exception, not this number.
