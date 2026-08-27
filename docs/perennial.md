@@ -427,6 +427,50 @@ adversarial test is still owed alongside step 6's worst-case graft test —
 the burial's rate at current defaults sits an order of magnitude inside
 the wetting front's already-certified pace.
 
+### What the first live viewings changed
+
+The step-7 eyes-pass began the evening the branch was built — the first
+sustained watching on a real screen, felt responses relayed round by
+round — and it reshaped the ladder more than any design pass had. Four
+findings, in the order watching produced them:
+
+1. **Standing wood is figure, not memory.** Aged roots blending toward
+   the soil read as *fading out of existence*, not as ageing.
+   Recession-in-salience belongs to the ghosts after burial; wood, while
+   it stands, gets ink: dark rungs well below any stratum.
+2. **The commitment race was being lost.** Whole branch systems senesced
+   before their shafts finished lignifying — lone taproots with
+   everything else gone. Rate wins the race now (a lateral shaft commits
+   inside its lifetime); softening the fineness discount instead was
+   tried and inked every path ever taken into a mesh. The debug method
+   that settled where the fault lay — render the raw lignin channel and
+   see what the record actually holds — is worth keeping: the fabric was
+   present all along, and the compositor was hiding it (mass at the
+   coverage knee, colour a hair under the soil). Committed material now
+   clears the transfer at lower mass than living fuzz.
+3. **No monotone pale-to-dark path avoids the soil's value — so route
+   around it in chroma.** Every blend from above-soil to below-soil
+   crosses it, and whatever variable carries the crossing (age, then
+   wood fraction) parks whole branches in a near-invisible window for
+   minutes. The commitment path now passes through a red-brown of higher
+   chroma than any ground — suberisation, which real roots do — so equal
+   lightness is never invisibility. Secondary thickening landed in the
+   same rounds: the coverage knee eases down as wood matures, so old
+   lines visibly widen — radial growth, rendered.
+4. **The governor was fighting the mode's arc.** Holding the image mean
+   meant amplifying harder as the record inked in — the factor climbed
+   past 7x in one season and pushed the palette hot. `exposure_max`
+   (SafetyParams) caps amplification, and this backend pins it to 1:
+   attenuation-only, so the pane honestly darkens as the record
+   accumulates. The Brightness macro keeps its meaning through
+   `background_luma` and `l_max`, now mapped directly to the pane with
+   no governor in between; the composite's native envelope was raised to
+   be self-sufficient, and the wetting bands darken toward — never
+   through — the visible-earth floor. Instrument lesson, recorded so it
+   is not relearned: judge stills only with the governor converged, and
+   with it pinned at 1 the stills and the screen finally agree by
+   construction.
+
 ### What step 5 actually did
 
 The application shell consumes the backend's `fossil_due` flag between

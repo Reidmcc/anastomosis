@@ -397,6 +397,7 @@ RENDER_FIELDS: list[Field] = [
     ("exposure_target", "f32"),
     ("exposure_attack", "f32"),
     ("exposure_release", "f32"),
+    ("exposure_max", "f32"),
     ("dither_amount", "f32"),
     ("reproject_scale", "f32"),
     # --- Volumetric slab only (DESIGN.md §5.1) ---------------------------

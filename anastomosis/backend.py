@@ -801,6 +801,7 @@ class Backend:
             "exposure_target": safety.exposure_target,
             "exposure_attack": safety.exposure_attack,
             "exposure_release": safety.exposure_release,
+            "exposure_max": safety.exposure_max,
             "dither_amount": safety.dither_amount,
             # How many sim ticks the previous frame is behind, so the history
             # can be reprojected by the right distance.

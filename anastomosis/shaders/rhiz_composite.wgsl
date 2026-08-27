@@ -130,7 +130,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Moisture: darker and slightly richer. This is the weather made visible,
     // and the slew limiter downstream is what ultimately bounds its pace.
-    l = l * (1.0 - rp.wet_darken * wet);
+    // Floored: with the governor attenuation-only (§17.5), nothing re-lifts
+    // a broadly wet pane any more, so the wetting bands may darken the
+    // ground toward -- but never through -- the visible-earth floor.
+    l = max(
+        l * (1.0 - rp.wet_darken * wet),
+        render.background_luma + rp.soil_l_floor * 0.55);
     ab = ab * (1.0 + rp.wet_chroma * wet);
 
     // Fine grain, static in world space: texture, not noise -- and quieter
@@ -185,7 +190,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // (§17.5) lifted the ground, and the living material keeps its two
     // rungs of headroom above the palest stratum.
     let l_young = clamp(
-        render.background_luma + render.filament_luma * 1.3, 0.0, render.l_max);
+        render.background_luma + render.filament_luma * 1.55, 0.0, render.l_max);
 
     // Root hairs, and the mycorrhizal accent (§15.2): the transfer's soft
     // skirt, re-admitted only around *young* material -- a halo of pale fuzz
@@ -232,7 +237,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let sweep = mature * mature * (3.0 - 2.0 * mature);
         let wood_lab = mix(wood_new, umber, sweep);
         let living_lab = mix(young, tan, brown);
-        let root_lab = mix(living_lab, wood_lab, wood_frac);
+        // The pale-to-dark path is routed AROUND the soil's own value, not
+        // through it: at the equal-lightness moment the material carries a
+        // red-brown chroma the ground never has -- suberisation, the
+        // reddening real roots pass through before they darken -- so no
+        // point on the commitment path is invisible. A straight blend
+        // crossed the soil's lightness and whole branches faded for the
+        // minutes their shafts spent mid-transfer (the third viewing's
+        // finding: inconsistent darkening, a window of near-invisibility).
+        let redden = vec3<f32>(l, ab * 1.5 + vec2<f32>(0.030, 0.026));
+        let t1 = smoothstep(0.0, 0.55, wood_frac);
+        let t2 = smoothstep(0.45, 1.0, wood_frac);
+        let root_lab = mix(mix(living_lab, redden, t1), wood_lab, t2);
         l = mix(l, root_lab.x, coverage);
         ab = mix(ab, root_lab.yz, coverage);
     }

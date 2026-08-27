@@ -55,6 +55,15 @@ class SafetyParams:
     # the unsafe direction is always "gets brighter".
     exposure_attack: float = 0.0035
     exposure_release: float = 0.0090
+    # The most the governor may amplify (attenuation is never capped). The
+    # fungal modes keep the full range; the perennial pins this to 1.0 in
+    # `Config.resolve`, because its record is *supposed* to darken the pane
+    # as it accumulates -- a mean-holding governor fights the mode's whole
+    # arc, brightening harder and harder as the wood inks in (watched live:
+    # the factor climbed past 7x over one season and pushed the palette
+    # hot). Holding the mean is for fields whose brightness should not
+    # drift; this mode's brightness is its biography.
+    exposure_max: float = 20.0
 
 
 @dataclass
@@ -1051,8 +1060,8 @@ class RhizotronParams:
     # every soil texel clears, plus the span the chip ramps travel. §15's
     # build had no floor and a narrow span, which priced the entire ground at
     # black (§17.1); the ground is the *mid* of this image, not its void.
-    soil_l_floor: float = 0.09
-    soil_l_range: float = 0.22
+    soil_l_floor: float = 0.14
+    soil_l_range: float = 0.26
     # Wet soil is darker and slightly more saturated -- the most familiar
     # material appearance there is. Fraction of lightness removed at full
     # wetness, and fraction of chroma added.
@@ -1712,6 +1721,7 @@ SAFETY_CEILINGS: dict[str, tuple[float, float]] = {
     "safety.exposure_attack": (0.0, 0.050),
     "safety.exposure_release": (0.0, 0.050),
     "safety.exposure_target": (0.02, 0.400),
+    "safety.exposure_max": (0.5, 20.0),
     "render.l_max": (0.05, 0.900),
     "render.c_max": (0.0, 0.220),
     "render.filament_luma": (0.0, 0.900),
@@ -1980,6 +1990,10 @@ class Config:
                 * params.rhizotron.exposure_lift,
                 0.40,
             )
+            # Attenuation-only: the governor may dim a too-bright frame but
+            # never amplifies, so the pane honestly darkens as the record
+            # accumulates (see SafetyParams.exposure_max).
+            params.safety.exposure_max = 1.0
 
         # The named slab size, which is a choice rather than a curve. Applied
         # after the macros and before the overrides, so that it beats nothing
