@@ -471,6 +471,43 @@ findings, in the order watching produced them:
    with it pinned at 1 the stills and the screen finally agree by
    construction.
 
+### What the first long watch found
+
+Four hours on a live screen with no season turn, no fossil, and old roots
+vanishing in the background — reported through the house's own postal
+service, and reproduced headless the same day. Two mechanisms, both
+invisible to every test then in the suite:
+
+1. **The emergent quiet could never arrive.** Deep autumn eased
+   germination to a trickle instead of closing it, and a trickle wakes a
+   plant every few minutes against a 25-minute axis life — so the living
+   mass never fell below a quiet gate whose reference peak never decayed.
+   The forced-interment tests painted the quiet; the emergent path had
+   never once been exercised. Autumn now closes germination fully as the
+   record reaches its budget (not an absorbing state: the burial it
+   enables reopens it), the peak decays on a quarter-hour clock, the
+   quiet threshold is honest about stragglers, and a pressure valve
+   buries a record far past budget regardless.
+2. **The interment half-fired without ceremony — the actual root
+   vanishing.** Transient between-cohort lulls pushed the drive into the
+   0.05–0.3 band while the fill sat over budget, running a continuous
+   slow part-burial that never crossed the fossil moment, never latched,
+   never renewed: the record eroded for hours with nothing exported and
+   each partial burial fading what little ghost the last one laid. The
+   step-4 lesson inverted and completed: a burial, once committed,
+   finishes — *and a burial that has not committed does not begin.* The
+   interment rate is now gated behind the commit point, so the fossil is
+   always taken before the first grain of wood moves; the renewal knee
+   moved above where the gated burial actually rests, and the relics it
+   leaves — spared young wood and the last tenth-or-so of the old season
+   — stand into the next season as part of its ground.
+
+The suite gained the test whose absence cost the four hours:
+`test_a_season_turns_emergently` grows a community from seeds at
+accelerated pacing and requires the whole cycle — budget filled, quiet
+fallen, fossil offered, ghost laid, season turned, germination reopened —
+from the dynamics alone, nothing painted, nothing forced.
+
 ### What step 5 actually did
 
 The application shell consumes the backend's `fossil_due` flag between

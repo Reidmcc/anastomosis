@@ -444,6 +444,11 @@ class RhizotronEngine(Backend):
 
     MASS_SCALE = 256.0
 
+    def _commit_gate(self) -> float:
+        """Smoothly opens the burial only past the fossil moment (§17.6)."""
+        t = min(max((self._intern - 0.5) / 0.25, 0.0), 1.0)
+        return t * t * (3.0 - 2.0 * t)
+
     def _update_season(self, params: Params) -> None:
         """The season controller (§17.6), run on the same rare readback.
 
@@ -459,12 +464,27 @@ class RhizotronEngine(Backend):
         g = self.geometry
         budget = max(rhiz.wood_budget * g.width * g.view_rows, 1e-6)
         fill = self._wood_mass / budget
-        self._living_peak = max(self._living_peak, self._living_mass)
+        # The peak the quiet gate measures against decays slowly (about a
+        # quarter-hour half-life): an early mega-bloom must not set a bar
+        # the community's ordinary autumn can never fall far enough below.
+        interval = FRONT_READ_TICKS / max(params.sim_hz, 1e-3)
+        self._living_peak = max(
+            self._living_peak * math.exp(-interval / 1500.0),
+            self._living_mass)
 
         completion = min(max((fill - 0.85) / 0.15, 0.0), 1.0)
         quiet = 1.0 - min(
-            self._living_mass / max(0.06 * self._living_peak, 1e-6), 1.0)
-        desired = completion * quiet
+            self._living_mass / max(0.12 * self._living_peak, 1e-6), 1.0)
+        # The pressure valve: a record far past its budget buries whatever
+        # the stragglers are doing -- they keep their young wood through it
+        # (the interment's own rule), and without this the season could
+        # stall behind any community that never quite falls quiet. Four
+        # silent hours on a live run were the instrument reading: the
+        # forced-interment tests passed while the emergent trigger was
+        # unreachable, because trickle germination in autumn kept a plant
+        # alive perpetually against a quiet gate whose peak never decayed.
+        overfill = min(max((fill - 1.25) / 0.5, 0.0), 1.0)
+        desired = completion * max(quiet, overfill)
         # A burial, once committed, finishes: the drive would otherwise
         # track the fill back down and stall the interment part-done (found
         # by the cycle test -- a third of the record left standing). The
@@ -478,16 +498,19 @@ class RhizotronEngine(Backend):
         # relaxation eases toward.
         if self._fossil_taken:
             remaining = self._wood_mass / max(self._burial_mass, 1e-6)
-            release = min(max((remaining - 0.10) / 0.10, 0.0), 1.0)
+            release = min(max((remaining - 0.12) / 0.12, 0.0), 1.0)
             desired = max(desired, min(self._intern * 1.2, 1.0) * release)
-        interval = FRONT_READ_TICKS / max(params.sim_hz, 1e-3)
         alpha = 1.0 - math.exp(-interval / max(rhiz.intern_tau, 1e-3))
         self._intern += (desired - self._intern) * alpha
 
-        # Autumn: germination eases out as the record approaches its budget,
-        # and is held closed by the interment itself.
-        autumn = min(max((fill - 0.70) / 0.25, 0.0), 1.0)
-        self._germ_ease = (1.0 - self._intern) * (1.0 - 0.92 * autumn)
+        # Autumn: germination eases fully closed as the record reaches its
+        # budget -- a deep-autumn trickle was enough to keep one plant alive
+        # at all times against a 25-minute axis life, and the season never
+        # fell quiet. Full closure is not an absorbing state (§4.5): the
+        # burial it enables empties the record, the fill collapses, and
+        # this same expression reopens the gate.
+        autumn = min(max((fill - 0.70) / 0.30, 0.0), 1.0)
+        self._germ_ease = (1.0 - self._intern) * (1.0 - autumn)
 
         # The fossil (§17.6): offered once per season, as the interment
         # commits. The application shell consumes the flag (step 5).
@@ -499,12 +522,17 @@ class RhizotronEngine(Backend):
         # Renewal: the record has been emptied by a burial; the next season
         # begins. The drive is already decaying (completion collapsed with
         # the fill), and germination returns with it.
-        # The renewal knee sits above the latch's release floor: a burial
-        # that spared its stragglers' young wood (the interment's own rule)
-        # leaves a remnant, and a knee below the remnant would jam the
-        # season -- fossil_taken held forever, no fossil ever offered again
-        # (found by the forced-burial capture).
-        buried = self._wood_mass < 0.10 * max(self._burial_mass, 1e-6)
+        # The renewal knee sits above where the burial can actually stall:
+        # the commit gate closes the interment as the drive decays through
+        # 0.5, which happens while the latch's release is collapsing, so a
+        # finished burial rests with roughly a tenth to a fifth of the
+        # committed mass still standing -- spared stragglers' young wood
+        # and the last of the old season, left as relics the next season
+        # grows around. A knee below that rest level jams the season:
+        # fossil_taken held forever, no fossil ever offered again (found
+        # by the forced-burial capture, and again when the commit gate
+        # moved the rest level).
+        buried = self._wood_mass < 0.22 * max(self._burial_mass, 1e-6)
         if self._fossil_taken and buried and self._intern < 0.35:
             self._season += 1
             self._fossil_taken = False
@@ -677,9 +705,21 @@ class RhizotronEngine(Backend):
             "root_hair": rhiz.root_hair,
             "mycorrhiza": rhiz.mycorrhiza,
             "lignify_rate": rate(rhiz.lignify_rate),
-            "intern_rate": rate(rhiz.interment_rate) * self._intern,
+            # The burial is gated behind the commit point: below a drive of
+            # 0.5 -- the fossil moment -- not one texel of wood leaves. The
+            # long-run trace found the drive flickering in the 0.05-0.3 band
+            # on transient between-cohort lulls, running a continuous
+            # ceremony-less part-burial that eroded the record for hours
+            # while never taking a fossil, never latching, never turning
+            # the season. A burial either commits or it does not happen;
+            # and the fossil is always taken before the first grain moves.
+            "intern_rate": (
+                rate(rhiz.interment_rate) * self._intern
+                * self._commit_gate()),
             "ghost_gain": rhiz.ghost_gain,
-            "ghost_fade": rate(rhiz.ghost_fade) * self._intern,
+            "ghost_fade": (
+                rate(rhiz.ghost_fade) * self._intern
+                * self._commit_gate()),
             "wood_avoid": rhiz.wood_avoid,
             "wood_edge": rhiz.wood_edge,
             "wood_age_scale": rhiz.wood_age_scale,
