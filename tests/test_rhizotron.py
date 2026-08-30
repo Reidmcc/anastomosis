@@ -1171,9 +1171,14 @@ def test_a_completed_pane_is_interred_and_the_season_turns(gpu_device):
     # A season at its end, painted: a full record, a still-visible previous
     # ghost, and no living mass to speak of.
     budget = params.rhizotron.wood_budget * g.width * g.view_rows
-    per_texel = 4.0 * budget / (g.width * g.height)
+    # A *realistic* completion: a record a fifth past its budget, which is
+    # where the pressure valve and the commit gate actually operate. (An
+    # early draft painted four budgets of wood, and the relics a finished
+    # burial leaves -- a fixed fraction of the committed mass -- then held
+    # the pane in autumn forever: a painting artifact, not a mechanism.)
+    per_texel = 1.2 * budget / (g.width * g.height)
     record = np.zeros((g.height, g.width, 4), dtype=np.float16)
-    record[..., 0] = per_texel          # lignin at ~4x the completion knee
+    record[..., 0] = per_texel
     record[..., 1] = 900.0              # mature wood
     record[g.height // 2, :, 3] = 1.0   # the previous season's ghost, one band
     _write_record(engine, record)
@@ -1187,17 +1192,26 @@ def test_a_completed_pane_is_interred_and_the_season_turns(gpu_device):
     lignin_start = _record(engine).astype(np.float32)[..., 0].sum()
 
     fossil_offers = 0
-    for _ in range(1800):
+    lignin_floor = lignin_start
+    for tick in range(2400):
         engine.tick(params, [])
         if engine.fossil_due:
             fossil_offers += 1
             engine.fossil_due = False
+        if tick % 200 == 199:
+            lignin_floor = min(
+                lignin_floor,
+                float(_record(engine).astype(np.float32)[..., 0].sum()))
 
     rec = _record(engine).astype(np.float32)
-    lignin_end = float(rec[..., 0].sum())
     assert engine._intern > 0.0, "the interment drive never rose"
-    assert lignin_end < 0.2 * lignin_start, (
-        f"the burial left {lignin_end:.0f} of {lignin_start:.0f} lignin"
+    # The floor, not the end state: after the renewal the next season's
+    # regrowth is already recommitting wood, which is the cycle working.
+    # The floor still holds the straggler's spared young wood and the
+    # relics a finished burial deliberately leaves, so the threshold is a
+    # substantial-burial claim, not a zero claim.
+    assert lignin_floor < 0.4 * lignin_start, (
+        f"the burial only reached {lignin_floor:.0f} of {lignin_start:.0f}"
     )
     assert float(rec[..., 3].sum()) > 0.0, "no ghost was laid down"
     ghost_after = float(rec[g.height // 2, :, 3].sum())
@@ -1211,6 +1225,40 @@ def test_a_completed_pane_is_interred_and_the_season_turns(gpu_device):
     assert engine._germ_ease > 0.5, (
         "germination did not ease back open after the renewal"
     )
+
+
+def test_a_season_turns_emergently(gpu_device):
+    """The forced-vs-emergent gap, closed in the suite: no painted state,
+    no forced drive -- a community grown from seeds must fill its budget,
+    fall quiet, take its fossil, bury its record into ghost, and turn the
+    season, all from its own dynamics at accelerated pacing. Four silent
+    hours on a live run were the price of not having this test."""
+    params = _resolve(overrides={
+        "rhizotron.fine_life": 8.0,
+        "rhizotron.lateral_life": 40.0,
+        "rhizotron.axis_life": 90.0,
+        "rhizotron.regermination_delay": 20.0,
+        "rhizotron.senescence_delay": 20.0,
+        "rhizotron.lignify_rate": 0.06,
+        "rhizotron.wood_budget": 0.004,
+        "rhizotron.interment_rate": 0.10,
+        "rhizotron.intern_tau": 5.0,
+        "rhizotron.germination_rate": 0.06,
+    })
+    engine = _engine(gpu_device, params, seed=53)
+
+    fossils = 0
+    for _ in range(16000):
+        engine.tick(params, [])
+        if engine.fossil_due:
+            fossils += 1
+            engine.fossil_due = False
+        if engine._season >= 1 and engine._germ_ease > 0.5:
+            break
+    assert fossils >= 1, "no fossil was ever offered"
+    assert engine._season >= 1, "no season ever turned"
+    ghost = float(_record(engine).astype(np.float32)[..., 3].sum())
+    assert ghost > 0.0, "the burial laid no ghost"
 
 
 def test_season_state_rides_the_checkpoint(gpu_device):
