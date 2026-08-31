@@ -19,8 +19,10 @@ fn wrap_uvw(p: vec3<f32>) -> vec3<f32> {
     return fract(fract(p) + 1.0);
 }
 
+// One added period, not `((p % dims) + dims) % dims`: see wrap_texel in
+// common.wgsl -- a negative dividend must never reach `%`.
 fn wrap_texel3(p: vec3<i32>, dims: vec3<i32>) -> vec3<i32> {
-    return ((p % dims) + dims) % dims;
+    return (p + dims) % dims;
 }
 
 // ---------------------------------------------------------------------------

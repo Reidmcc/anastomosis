@@ -15,6 +15,7 @@ status line, never an exception.
 from __future__ import annotations
 
 import dataclasses
+import sys
 import types
 
 import numpy as np
@@ -278,11 +279,14 @@ def test_an_output_only_monitor_is_not_chosen():
 # ---------------------------------------------------------------------------
 
 
-def test_missing_backend_degrades_to_a_status_line():
-    """This environment has no sounddevice on purpose: the [audio] extra is
-    optional, and §16.2(3) says its absence must leave the mode standing."""
-    with pytest.raises(ImportError):
-        import sounddevice  # noqa: F401
+def test_missing_backend_degrades_to_a_status_line(monkeypatch):
+    """The [audio] extra is optional, and §16.2(3) says its absence must
+    leave the mode standing. CI genuinely lacks both backend packages; a
+    developer machine may have either installed, so absence is imposed
+    rather than assumed -- a None entry in sys.modules makes the import
+    statement raise ImportError wherever the packages really are."""
+    monkeypatch.setitem(sys.modules, "sounddevice", None)
+    monkeypatch.setitem(sys.modules, "soundcard", None)
 
     drive = audio.AudioDrive()
     assert drive.start() is False
@@ -306,6 +310,11 @@ class _StubStream:
         self.active = False
 
 
+# The drive tests below pass `_platform="linux"` alongside the stub: on
+# win32 the drive tries the real `soundcard` WASAPI loopback first, and on a
+# machine that has both the package and a loopback device it would capture
+# from that instead of the stub. Pinning the platform pins the PortAudio
+# route these tests are about.
 def _stub_sd(devices, default_input=0, fail_open=False):
     sd = types.SimpleNamespace()
     sd.default = types.SimpleNamespace(device=[default_input, -1])
@@ -335,7 +344,7 @@ def test_the_drive_picks_the_loopback_and_features_flow_end_to_end():
          "default_samplerate": 48_000.0},
     ]
     sd = _stub_sd(devices, default_input=0)
-    drive = audio.AudioDrive(_sd=sd)
+    drive = audio.AudioDrive(_sd=sd, _platform="linux")
     assert drive.start() is True
     assert "Monitor of Built-in Audio" in drive.describe()
 
@@ -354,7 +363,8 @@ def test_the_drive_picks_the_loopback_and_features_flow_end_to_end():
 def test_a_failed_open_is_a_status_line_not_an_exception():
     devices = [{"name": "Microphone", "max_input_channels": 1,
                 "default_samplerate": 44_100.0}]
-    drive = audio.AudioDrive(_sd=_stub_sd(devices, fail_open=True))
+    drive = audio.AudioDrive(
+        _sd=_stub_sd(devices, fail_open=True), _platform="linux")
     assert drive.start() is False
     assert "failed" in drive.describe()
     assert drive.poll() == audio.AudioFeatures()
@@ -368,7 +378,7 @@ def test_a_configured_device_name_wins_over_the_heuristic():
          "default_samplerate": 48_000.0},
     ]
     sd = _stub_sd(devices)
-    drive = audio.AudioDrive(device="turntable", _sd=sd)
+    drive = audio.AudioDrive(device="turntable", _sd=sd, _platform="linux")
     assert drive.start() is True
     assert "USB Turntable" in drive.describe()
     assert "configured" in drive.describe()
@@ -378,7 +388,7 @@ def test_a_dead_stream_becomes_a_status_line_on_poll():
     devices = [{"name": "Monitor of Built-in Audio", "max_input_channels": 2,
                 "default_samplerate": 48_000.0}]
     sd = _stub_sd(devices)
-    drive = audio.AudioDrive(_sd=sd)
+    drive = audio.AudioDrive(_sd=sd, _platform="linux")
     assert drive.start() is True
     sd.created[0].active = False
     drive.poll()

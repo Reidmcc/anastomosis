@@ -193,7 +193,12 @@ def test_reaction_matches_numpy_with_a_varying_du(gpu_device, substeps):
     du = np.clip(
         params.du * np.exp(range_du * scale), params.du_min, params.du_max)
     dv = params.dv * (du / params.du)
-    assert du.min() == params.du_min and du.max() == params.du_max, (
+    # Compared in float32, which is `du`'s own dtype: whether a float32 value
+    # equals the Python float it was clipped to depends on the numpy
+    # promotion rules in effect (NEP 50 says yes, the legacy rules say no),
+    # and the property being asserted is about the ramp, not about promotion.
+    assert (du.min() == np.float32(params.du_min)
+            and du.max() == np.float32(params.du_max)), (
         "the ramp no longer reaches both clamps, so the clamp in "
         "reaction.wgsl is untested"
     )
