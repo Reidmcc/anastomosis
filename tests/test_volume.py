@@ -32,7 +32,6 @@ reduction is the one the full-size slab runs.
 from __future__ import annotations
 
 import re
-import time
 
 import numpy as np
 import pytest
@@ -48,6 +47,20 @@ from anastomosis import (
 )
 
 OUT_SIZE = (96, 64)
+
+
+def _owe_ticks(app) -> None:
+    """Back-date the frame clock so the next draw_frame owes ticks.
+
+    The shell consumes ticks from real elapsed time (bounded per frame). On
+    the software adapter every draw costs more than a tick interval, so the
+    debt accrues on its own; on a fast adapter back-to-back draws elapse
+    microseconds, and an assertion on ``tick_count`` would be measuring
+    adapter speed rather than behaviour. This makes the elapsed time explicit
+    instead -- the clamp in ``draw_frame`` turns any large debt into a full
+    catch-up burst.
+    """
+    app._last_time -= 1.0
 
 
 def _params(**overrides) -> config.Params:
@@ -770,6 +783,7 @@ def test_the_application_builds_the_backend_it_was_asked_for(
     app.setup()
     assert app.backend == "volumetric"
     assert isinstance(app.engine, volume_module.VolumeEngine)
+    _owe_ticks(app)
     app.draw_frame()
     assert app.engine.tick_count > 0
     app.shutdown()
@@ -828,6 +842,7 @@ def test_changing_the_slab_size_grows_a_new_field_at_the_new_width(
     app.setup()
     assert app.engine.geometry.width == 64
 
+    _owe_ticks(app)
     for _ in range(3):
         app.draw_frame()
     assert app.engine.tick_count > 0
@@ -901,6 +916,7 @@ def test_a_slab_size_the_card_refuses_leaves_the_field_alone(
         checkpoint_seconds=0.0,
     ))
     app.setup()
+    _owe_ticks(app)
     for _ in range(3):
         app.draw_frame()
     ticks = app.engine.tick_count
@@ -1014,6 +1030,7 @@ def test_switching_backend_keeps_both_fields(gpu_device, monkeypatch, tmp_path):
     ))
     app.setup()
     assert app.backend == "layered"
+    _owe_ticks(app)
     for _ in range(4):
         app.draw_frame()
     layered_ticks = app.engine.tick_count
@@ -1080,6 +1097,7 @@ def test_the_thickness_knob_grows_a_new_slab(gpu_device, monkeypatch, tmp_path):
     low, high = app.volume_depth_limits()
     assert (low, high) == (volume_module.MIN_DEPTH, app.engine.geometry.max_depth)
 
+    _owe_ticks(app)
     for _ in range(3):
         app.draw_frame()
     assert app.engine.tick_count > 0
@@ -1097,8 +1115,8 @@ def test_the_thickness_knob_grows_a_new_slab(gpu_device, monkeypatch, tmp_path):
         "the saved field is of the old shape and would rebuild it on the next "
         "launch")
     # A new field resets the pacing clock, so a tick needs a tick's worth of
-    # real time to have passed rather than just another frame.
-    time.sleep(1.5 / app.params.sim_hz)
+    # elapsed time to have passed rather than just another frame.
+    _owe_ticks(app)
     app.draw_frame()
     assert app.engine.tick_count > 0, "the new slab is not ticking"
 
