@@ -819,7 +819,7 @@ class RhizotronEngine(Backend):
         self.structure.flip()
         self.record.flip()
 
-        self.device.queue.submit([encoder.finish()])
+        self._submit_tick(encoder)
         self.tick_count += 1
 
         # The front controller reads back on the tick counter -- deterministic

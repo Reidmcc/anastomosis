@@ -84,7 +84,7 @@ and the tests — resolves via the table below, and means the file listed agains
   arithmetic behind the 1% default and 1.2% ceiling, and the gamut-mapping
   leak that had to be closed.
 
-- **§8 — [docs/frame-pacing.md](docs/frame-pacing.md)** (incl. §8.1–§8.3)
+- **§8 — [docs/frame-pacing.md](docs/frame-pacing.md)** (incl. §8.1–§8.4)
   Sim decoupled from render with motion-compensated interpolation, the frame
   budget governor, the RTX 3080 / 1440p cost budget (§8.1), and
   secondary-display behaviour: fullscreen, vsync, sleep/unplug, and why a
@@ -96,7 +96,11 @@ and the tests — resolves via the table below, and means the file listed agains
   cell ceiling that sizes the stack for shared memory bandwidth, the render
   lever the governor needed once the simulation stopped being what costs, the
   battery backoff, and the device-loss rebuild that a lid closing every night
-  turns from scaffolding into a requirement.
+  turns from scaffolding into a requirement. And §8.4, the rest of the
+  machine's deadlines: how a free-running headless loop starves the desktop
+  compositor through queue occupancy rather than utilisation, and the
+  `gpu_nice` policy (bounded queue depth plus a yield between ticks) that
+  makes soaks invisible to a compositor-shaped probe.
 
 - **§9 — [docs/parameters.md](docs/parameters.md)**
   The control surface: nine macros over ~40 primitives, presets, TOML as the

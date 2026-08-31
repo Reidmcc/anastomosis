@@ -38,6 +38,14 @@ Conventional unit tests cover little of the risk here. The real QA is:
   colour clips every one of them.
 - **No-allocation check.** Assert steady-state buffer/texture count and process RSS
   are flat over a long run.
+- **GPU niceness on hardware runs** (§8.4). On a real adapter every directly
+  constructed engine waits for its own tick and yields ~3 ms before the next,
+  so the desktop stays composited while a soak runs — which means hardware
+  test runs pace themselves and their tick loops run slower than the card
+  could. That is a feature, not noise. A test measuring raw tick *throughput*
+  would need `engine.nice = nice.GpuNice(enabled=False)` and a note about why;
+  none currently does. CI's software adapter resolves the policy to off, so
+  nothing there changes.
 - **Core-limits check** (`test_integrated.py`, §8.3). Every binding, workgroup
   shape and byte of workgroup memory counted out of the WGSL and asserted
   against core WebGPU's guaranteed minima. This one is unusual in that it

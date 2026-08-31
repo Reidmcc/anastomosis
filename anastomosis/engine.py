@@ -786,7 +786,7 @@ class Engine(Backend):
                     field.flip()
 
         cpass.end()
-        self.device.queue.submit([encoder.finish()])
+        self._submit_tick(encoder)
         self.tick_count += 1
 
     # -- rendering ----------------------------------------------------------

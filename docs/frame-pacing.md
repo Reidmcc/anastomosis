@@ -369,3 +369,55 @@ a loss anybody can see.
 early-outs help and it is still not integrated-GPU work at a laptop's native
 resolution. Layered is the backend this section is about; nothing stops the slab
 being selected on such a machine, and nothing here makes it a good idea.
+
+### 8.4 The other users of the GPU — queue occupancy and `gpu_nice`
+
+Everything above is about this program hitting its own deadlines. This section
+is about everyone else's, because the failure that motivated it (issue #40) was
+not ours: with an overnight soak running, the *desktop compositor* stopped
+compositing — browser panes froze, screenshots timed out — while the GPU sat at
+single-digit average utilisation. A machine that looks idle and acts starved.
+
+**The mechanism is occupancy, not utilisation.** Windows preempts GPU work
+between submissions, not inside them, and `tick()` never waits for anything.
+The interactive app is innocent — its frame loop paces ticks to vsync, so its
+queue drains every frame — but a loop that calls `tick()` as fast as Python
+can (a soak test, a headless capture) piles submissions into the hardware
+queue without bound. Measured on the 3080: the volumetric tick costs ~6.6 ms
+of GPU time and ~1.2 ms to encode, so a free-running loop is ~70 ticks deep
+after its first hundred and minutes deep after an hour. Every small job the
+rest of the desktop submits then waits behind that queue. A one-workgroup
+probe dispatch (`tools/gpu_probe.py` — a stand-in for the compositor) that
+completes in 1 ms on an idle desktop takes 8 ms at the median and 20 ms at
+p99 under a free-running soak; a 60 Hz compositor has 16.7 ms for everything.
+
+**The remedy is two waits at the submission seam.** Every backend's tick ends
+at `Backend._submit_tick`, which applies the `anastomosis.nice.GpuNice`
+policy: *drain* — wait for this tick's own GPU work before returning, so this
+process never holds more than one tick in the queue — and *yield* — sleep
+3 ms before the next tick, a window in which this process provably has
+nothing queued at all. No dispatch needed splitting: the largest single
+dispatch is ~1.7 ms (the volumetric reaction pass), well inside any frame
+budget; the entire problem was the unbounded pileup of submissions.
+
+Measured on the 3080, volumetric soak load, probe percentiles:
+
+| condition            | p50    | p99     | max     | soak throughput |
+|----------------------|--------|---------|---------|-----------------|
+| idle desktop         | 1.0 ms | 6.2 ms  | 6.2 ms  | —               |
+| free-run (before)    | 8.4 ms | 19.7 ms | 28.1 ms | unbounded queue |
+| drain only           | 2.4 ms | 7.9 ms  | 35.5 ms | 126 ticks/s     |
+| drain + 3 ms yield   | 0.5 ms | 6.8 ms  | 6.9 ms  | 89 ticks/s      |
+
+With the full policy the compositor stand-in cannot tell the soak is running.
+The throughput cost is real and accepted: a soak's job is to accumulate
+simulated hours on a machine somebody is also using.
+
+**Who gets it.** Auto by default: on for hardware adapters, off for software
+ones (CI's lavapipe has no compositor to protect, and its tests should not
+sleep). Tests and headless scripts construct backends directly and inherit
+that. The interactive app overrides it explicitly from config
+(`gpu_nice`, CLI `--gpu-nice`, default off) — its pacing already keeps the
+queue shallow, and it is the one entry point where throughput is latency.
+The sleep goes through the policy's injectable seam, never a raw
+`time.sleep` in a timed path, so the pacing tests stay deterministic.
