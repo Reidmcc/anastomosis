@@ -96,7 +96,7 @@ fn sample_volume(uvw: vec3<f32>) -> vec4<f32> {
 // lattice into noise the eye integrates away.
 fn pixel_noise(p: vec2<i32>, offset: vec2<i32>) -> f32 {
     let dims = vec2<i32>(textureDimensions(noise_tex, 0));
-    return textureLoad(noise_tex, ((p + offset) % dims + dims) % dims, 0).r;
+    return textureLoad(noise_tex, wrap_texel(p + offset, dims), 0).r;
 }
 
 @compute @workgroup_size(8, 8, 1)

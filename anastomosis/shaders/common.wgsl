@@ -56,8 +56,15 @@ fn wrap_uv(uv: vec2<f32>) -> vec2<f32> {
     return fract(fract(uv) + 1.0);
 }
 
+// A negative dividend must never reach `%`: at least one driver stack in the
+// wild (wgpu-native Vulkan on Windows/NVIDIA) executes i32 `%` as an unsigned
+// modulo of the bit pattern, so `-1 % 48` comes back 15 -- and for
+// power-of-two divisors the wrong answer happens to match the right one,
+// which is how it hides. Adding one period first keeps every caller's worst
+// case (a stencil or bilinear floor a few texels below zero) non-negative,
+// where signed and unsigned agree.
 fn wrap_texel(p: vec2<i32>, dims: vec2<i32>) -> vec2<i32> {
-    return ((p % dims) + dims) % dims;
+    return (p + dims) % dims;
 }
 
 // ---------------------------------------------------------------------------
