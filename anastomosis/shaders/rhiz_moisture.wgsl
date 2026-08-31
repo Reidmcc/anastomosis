@@ -40,7 +40,7 @@ fn baseline_at(ux: f32, rel_row: f32) -> f32 {
 // from the generator.
 fn src_at(x: i32, y: i32) -> vec2<f32> {
     let sy = y + i32(rp.scroll_rows);
-    let sx = ((x % i32(rp.dims_x)) + i32(rp.dims_x)) % i32(rp.dims_x);
+    let sx = (x + i32(rp.dims_x)) % i32(rp.dims_x);
     if (sy >= i32(rp.dims_y)) {
         let ux = (f32(sx) + 0.5) / f32(rp.dims_x);
         let w = baseline_at(ux, f32(y) + 0.5);
