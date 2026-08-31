@@ -53,7 +53,7 @@ fn state_at(x: i32, y: i32) -> vec4<f32> {
     // Above the texture (a diffusion probe from the top row) reads the top
     // row itself -- no-flux; below it is fresh soil from the generator.
     let sy = max(y + i32(rp.scroll_rows), 0);
-    let sx = ((x % i32(rp.dims_x)) + i32(rp.dims_x)) % i32(rp.dims_x);
+    let sx = (x + i32(rp.dims_x)) % i32(rp.dims_x);
     let ux = (f32(sx) + 0.5) / f32(rp.dims_x);
     if (sy >= i32(rp.dims_y)) {
         return vec4<f32>(
@@ -77,7 +77,7 @@ fn state_at(x: i32, y: i32) -> vec4<f32> {
 // hold last tick arrive bare -- fresh soil has no history in it.
 fn record_at(x: i32, y: i32) -> vec4<f32> {
     let sy = y + i32(rp.scroll_rows);
-    let sx = ((x % i32(rp.dims_x)) + i32(rp.dims_x)) % i32(rp.dims_x);
+    let sx = (x + i32(rp.dims_x)) % i32(rp.dims_x);
     if (sy >= i32(rp.dims_y)) {
         return vec4<f32>(0.0);
     }

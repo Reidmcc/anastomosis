@@ -70,7 +70,7 @@ fn soil_noise(
     let n = max(i32(cells_x), 1);
     let gx = fract(ux) * f32(n);
     let fx = gx - floor(gx);
-    let x0 = u32(((i32(floor(gx)) % n) + n) % n);
+    let x0 = u32((i32(floor(gx)) + n) % n);
     let x1 = u32((i32(x0) + 1) % n);
 
     let whole = i32(floor(rel_row));
@@ -128,7 +128,7 @@ fn pebbles(
     for (var dj = -1; dj <= 1; dj = dj + 1) {
         let cell_j = offset64(cell.x, cell.y, dj);
         for (var di = -1; di <= 1; di = di + 1) {
-            let cx = u32(((ix + di) % n + n) % n);
+            let cx = u32((ix + di + n) % n);
             var h = pcg3(
                 cx * 374761393u,
                 cell_j.y * 668265263u ^ pcg(cell_j.x * 2654435761u),

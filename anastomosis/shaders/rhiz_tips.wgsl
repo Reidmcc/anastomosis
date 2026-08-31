@@ -364,8 +364,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var j = 0; j < 3; j = j + 1) {
             for (var i = 0; i < 3; i = i + 1) {
                 let t = vec2<i32>(
-                    (((base.x + i) % i32(rp.dims_x)) + i32(rp.dims_x))
-                        % i32(rp.dims_x),
+                    (base.x + i + i32(rp.dims_x)) % i32(rp.dims_x),
                     base.y + j,
                 );
                 if (t.y < 0 || t.y >= i32(rp.dims_y)) {
