@@ -1266,18 +1266,23 @@ def test_a_resize_rebuilds_only_the_presentation(gpu_device, offscreen_target):
     assert np.isfinite(image).all()
 
 
-def _governor_clamp() -> float:
-    """The ceiling the exposure governor clamps to, read from the shader.
+def _governor_clamp(params: config.Params) -> float:
+    """The ceiling the exposure governor clamps to for this run.
 
-    Copied into the test it would be a number whose entire meaning is being
-    the same one `exposure.wgsl` enforces, kept somewhere that cannot notice
-    when that one moves.
+    This used to be a literal in `exposure.wgsl`, read back out of the shader
+    text so the test could not drift from it. Since the perennial's
+    attenuation-only governor (DESIGN.md §17.6) the shader clamps to
+    `render.exposure_max`, fed from `safety.exposure_max` -- the enforcing
+    site moved into the params, so the params are what is read. The shader
+    keeps only a garbage-value fallback, which is asserted to still be there:
+    if that wiring changes shape again, this should fail loudly rather than
+    return a ceiling the governor no longer honours.
     """
-    bounds = set(re.findall(
-        r",\s*0\.02,\s*([0-9.]+)\)", shaders.load("exposure.wgsl")))
-    assert len(bounds) == 1, (
-        f"exposure.wgsl no longer clamps to a single ceiling: {sorted(bounds)}")
-    return float(bounds.pop())
+    assert re.search(r"finite_or\(render\.exposure_max,", shaders.load(
+        "exposure.wgsl")), (
+        "exposure.wgsl no longer takes its ceiling from render.exposure_max; "
+        "_governor_clamp needs re-deriving against the new wiring")
+    return params.safety.exposure_max
 
 
 def _brightest_exposure_target() -> float:
@@ -1383,7 +1388,7 @@ def test_the_exposure_governor_reaches_its_target_through_the_march(
     # reached from -- there the governor pins and the image stays dim however
     # far the knob is turned. Measured at the top of that knob the slab does
     # settle its target, with the multiplier at 15.5 against a clamp of 20.
-    clamp = _governor_clamp()
+    clamp = _governor_clamp(params)
     top = _brightest_exposure_target()
     ceiling = clamp * target / top
     assert 0.05 < exposure < ceiling, (
