@@ -38,6 +38,21 @@ Conventional unit tests cover little of the risk here. The real QA is:
   colour clips every one of them.
 - **No-allocation check.** Assert steady-state buffer/texture count and process RSS
   are flat over a long run.
+- **Adapters run different fields, and long tests must expect it.** Integer
+  arithmetic can be made identical across drivers (§4.8's postscript: after the
+  signed-modulo miscompile, by construction). Float arithmetic cannot: f16
+  store rounding, FMA contraction and transcendental precision are all legal
+  degrees of freedom, and the dynamics are chaotic, so those ulp-scale
+  differences compound until two adapters running the same seed hold entirely
+  decorrelated fields — measured, the rift test's fixed seed put 0.59 of trail
+  under its disc on lavapipe and 0.18 on an RTX 3080 by tick 800. The
+  consequence for tests: anything calibrated against one adapter's
+  *trajectory* — a fixed seed's ground, the magnitude of a peak-to-median
+  ratio on a nearly-bare field — is a property of that adapter, not of the
+  code. Long-horizon tests assert statistics that hold across trajectories,
+  set thresholds inside the measured gap between healthy and broken rather
+  than at either cluster's edge, and measure their preconditions at runtime
+  instead of trusting a seed to reproduce them (the rift test's ground scan).
 - **Core-limits check** (`test_integrated.py`, §8.3). Every binding, workgroup
   shape and byte of workgroup memory counted out of the WGSL and asserted
   against core WebGPU's guaranteed minima. This one is unusual in that it

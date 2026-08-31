@@ -726,23 +726,40 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
     being found, which thins it further -- and that takes on the order of a
     thousand ticks to develop.
 
-    The seed is fixed because the *magnitude* of the severance depends on what
-    the disc lands on, and legitimately so: the feedback runs furthest where
-    the network is thinnest. What the seed must guarantee is that there is a
-    network under the disc at all, which is why the control's own level is
-    asserted before the ratio is: on bare ground both runs measure a few
-    thousandths and their ratio is noise over noise. Surveyed across seven
-    seeds, the ones that land on material (control trail 0.16 to 0.27) give a
-    severance of 0.73 to 0.83, and the ones that land on a void (0.001 to 0.015)
-    give anything between 0.30 and 1.30 with no signal in it.
+    The seed is *scanned* rather than fixed, because the *magnitude* of the
+    severance depends on what the disc lands on, and legitimately so: the
+    feedback runs furthest where the network is thinnest. What the run must
+    guarantee is that there is a network under the disc at all, which is why
+    the ground is measured at the fork and the control's own level asserted
+    before the ratio is: on bare ground both runs measure a few thousandths
+    and their ratio is noise over noise. Surveyed across seven seeds, the
+    ones that land on material (control trail 0.16 to 0.27) give a severance
+    of 0.73 to 0.83, and the ones that land on a void (0.001 to 0.015) give
+    anything between 0.30 and 1.30 with no signal in it.
 
     This test was previously anchored to a seed whose disc turned out to sit on
     a void, at a threshold only reachable there. Fixing the flow's wrap seam
     (DESIGN.md §4.8) re-rolled the field and moved that disc onto different
     ground, which is what exposed it; bounding the sensing reach (§4.9) re-rolled
-    it again, hence the seed here. The effect size has been stable across all of
-    it: 0.77 on a dense hub before either change, 0.73 and 0.83 after the first,
-    0.78 here after the second.
+    it again. The effect size has been stable across all of it: 0.77 on a
+    dense hub before either change, 0.73 and 0.83 after the first, 0.78 after
+    the second.
+
+    What finally ended the fixed seed was hardware. The wrap fix made the
+    arithmetic identical across drivers where it is *exact*, but Gray-Scott
+    plus trail following is chaotic, and the differences that remain legal --
+    f16 store rounding, FMA contraction, transcendental precision -- amplify
+    tick over tick, so by the end of the 800-tick warm-up two adapters'
+    fields are simply different fields. The seed this test carried landed its
+    disc on 0.59 of trail under lavapipe and 0.18 of trail on an RTX 3080,
+    and on that middling ground the severance read 0.97 -- the void class all
+    over again, on an adapter CI never runs. So the warm-up now scans a short
+    list of seeds and forks from the first whose disc sits on real material,
+    ordered so the software adapter still takes its old seed first and pays
+    for no extra warm-ups. The floor of 0.3 is set from the measured spread:
+    ground of 0.36 and 0.64 gave severances of 0.49 and 0.65 on hardware
+    (0.80 at 0.59 under lavapipe), while 0.18 gave the 0.97 above -- material
+    carries the signal on every adapter measured, middling ground on none.
 
     Trail advection is pinned off, and that is a measurement constraint rather
     than a dodge. The severance this asserts is a statement about what happens
@@ -809,19 +826,44 @@ def test_a_rift_event_takes_the_network_apart_and_the_network_comes_back(gpu_dev
         params.agents.sense_cap = 0.0     # likewise
         return params
 
+    def trail_inside(engine) -> float:
+        layer = engine.layers[0]
+        texture = layer.trail.textures[layer.trail.index]
+        raw = device.queue.read_texture(
+            {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
+            {"offset": 0, "bytes_per_row": size * 8, "rows_per_image": size},
+            (size, size, 1),
+        )
+        field = np.frombuffer(raw, dtype=np.float16).reshape(
+            size, size, 4)[..., 0].astype(np.float32)
+        return float(field[inside].mean())
+
     # The two arms are identical for the first `warm` ticks -- same seed, and
     # no event rows reach the engine before then -- so that stretch is run once
     # and forked through the checkpoint machinery, which test_checkpoint.py
-    # holds to bit-identical continuation.
-    warm_params = rift_params()
-    warmed = engine_module.Engine(device, size, size, warm_params, seed=13)
-    for _ in range(warm):
-        warmed.tick(warm_params, [])
+    # holds to bit-identical continuation. The seed is the first of these
+    # whose disc sits on material at the fork (see the docstring; 13 is the
+    # seed lavapipe always took, so CI's run is unchanged).
+    grounds: dict[int, float] = {}
+    for seed in (13, 2, 16, 6, 20):
+        warm_params = rift_params()
+        warmed = engine_module.Engine(device, size, size, warm_params, seed=seed)
+        for _ in range(warm):
+            warmed.tick(warm_params, [])
+        grounds[seed] = trail_inside(warmed)
+        if grounds[seed] >= 0.3:
+            break
+    else:
+        pytest.fail(
+            f"no candidate seed lands the disc on material on this adapter "
+            f"(trail under the disc at the fork: {grounds}); the scan list "
+            f"needs a seed surveyed for this driver's field"
+        )
     snapshot = checkpoint.capture(warmed)
 
     def run(with_event: bool) -> dict[str, tuple[float, float]]:
         params = rift_params()
-        engine = engine_module.Engine(device, size, size, params, seed=13)
+        engine = engine_module.Engine(device, size, size, params, seed=seed)
         assert checkpoint.restore(engine, snapshot), (
             "the warmed field does not fit the engine it was captured from"
         )
@@ -981,6 +1023,19 @@ def test_the_agent_layer_does_not_condense_onto_one_strand(gpu_device):
     The control arm is the reach as it shipped, because a collapse metric that
     has never seen a collapse is not evidence. It is not a claim that those
     numbers are uniquely bad -- anything past a ratio of about four does it.
+
+    The two peak thresholds are set from the measured gap, which is two
+    orders of magnitude, not from either cluster's edge. The bounded reach
+    reads a peak of 2 to 3 on both the software adapter and hardware; a
+    collapse reads wherever the one strand's brightness happens to sit
+    against a nearly-bare field's median -- 101 to 181 across seeds on an
+    RTX 3080, above 150 for this seed on lavapipe. The old proof bound of
+    150 sat inside that scatter, so the same collapse that passed it on the
+    software adapter failed it on hardware (129, with the population 84%
+    condensed and the headings 0.81 aligned -- the collapse itself is not
+    adapter-sensitive, only the metric's magnitude is). Both bounds now sit
+    in the empty decade between the clusters, where no adapter has ever put
+    a reading.
     """
     device, _ = gpu_device
 
@@ -989,14 +1044,14 @@ def test_the_agent_layer_does_not_condense_onto_one_strand(gpu_device):
         f"agent headings are {axis:.2f} aligned to the axes, so the layer is "
         f"laying the straight strands that close on the torus"
     )
-    assert peak < 150.0, (
+    assert peak < 30.0, (
         f"the trail's busiest row or column is {peak:.0f}x the median, i.e. the "
         f"field has emptied into one strand"
     )
 
     # The reach as it shipped: 8.0 cells, no ceiling, +-3.0 cells of climate.
     was = _run_agent_layer(device, 1100, seed=5, reach=(8.0, 99.0, 3.0))
-    assert was[0] > 0.6 and was[2] > 150.0, (
+    assert was[0] > 0.6 and was[2] > 75.0, (
         f"the unbounded reach no longer condenses (axis {was[0]:.2f}, band "
         f"{was[1]:.2f}, peak {was[2]:.0f}), so the assertions above are not "
         f"testing anything"
