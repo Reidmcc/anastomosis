@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import pytest
-
 from anastomosis import config
 from anastomosis import engine as engine_module
 from anastomosis import nice
