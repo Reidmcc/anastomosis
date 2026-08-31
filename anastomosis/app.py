@@ -111,6 +111,17 @@ UNASKED_SECONDS = 3.0
 # until the scheduler comes back -- see `_start_carrying`.
 KICKS_BEFORE_A_REPORT = 3
 
+# While the poll is carrying the session, how often that state is worth a log
+# line, and how often a dead scheduler is offered a new task. The overnight
+# watch ran carried for ten hours logging sixty warnings a second -- which
+# rotated away the very lines that said why the scheduler stopped -- and
+# nothing in the process could ever have brought the scheduler back: its task
+# dies awaiting a wake-up that was lost crossing threads (rendercanvas'
+# Windows precise-sleep rides a timer thread and a queued Qt signal), and a
+# dead task is not waiting for anything a forced frame completes.
+CARRY_LOG_SECONDS = 60.0
+REVIVE_RETRY_SECONDS = 300.0
+
 # How long to leave a lost device alone before asking for another. A driver
 # reset takes seconds, and a laptop switching graphics can take longer; what
 # this bounds is the retry, not the wait, so the cost of it being generous is
@@ -360,6 +371,15 @@ class Application:
         # in force.
         self._carrying = False
         self._poll_interval = WINDOW_POLL_SECONDS
+        # The scheduler revivals attempted (see `_revive_scheduler`) and when
+        # the last one was, so a scheduler that dies again waits its turn
+        # rather than being restarted every pass; and the last time a carried
+        # session logged its warning, so ten hours of being carried is a line
+        # a minute in the log rather than one per frame -- the overnight
+        # storm rotated away the very lines that said why it started.
+        self._revivals = 0
+        self._revived_at: float | None = None
+        self._carry_logged_at = 0.0
 
     # -- setup --------------------------------------------------------------
 
@@ -987,13 +1007,30 @@ class Application:
         self._kicks += 1
         if not drawn:
             self._blank_kicks += 1
-        log.warning(
-            "no frame was asked for in %.1fs with the window up at %dx%d; "
-            "forced one and %s (%d in a row, scheduler %s)",
-            unasked, width, height,
-            "it was drawn" if drawn else "the canvas threw it away",
-            self._kicks, self._scheduler_summary(),
-        )
+        # While the poll is carrying the session, every pass is a forced
+        # frame, and a line per frame is a log rotated to nothing in
+        # minutes -- the overnight storm destroyed the very lines that said
+        # why the scheduler stopped. One line a minute keeps the state on
+        # the record without the record being made of it.
+        if not self._carrying:
+            log.warning(
+                "no frame was asked for in %.1fs with the window up at "
+                "%dx%d; forced one and %s (%d in a row, scheduler %s)",
+                unasked, width, height,
+                "it was drawn" if drawn else "the canvas threw it away",
+                self._kicks, self._scheduler_summary(),
+            )
+        elif self._kicked_at - self._carry_logged_at >= CARRY_LOG_SECONDS:
+            self._carry_logged_at = self._kicked_at
+            log.warning(
+                "still pacing the session from the window poll (%d frames "
+                "forced%s, scheduler %s, %d revival%s tried)",
+                self._kicks,
+                f", {self._blank_kicks} thrown away" if self._blank_kicks
+                else "",
+                self._scheduler_summary(), self._revivals,
+                "" if self._revivals == 1 else "s",
+            )
         if self._kicks == KICKS_BEFORE_A_REPORT:
             path = self.watchdog.dump(
                 f"the render scheduler stopped asking for frames; "
@@ -1006,6 +1043,7 @@ class Application:
             )
         if self._kicks >= KICKS_BEFORE_A_REPORT and drawn:
             self._start_carrying()
+            self._revive_scheduler()
 
     def _start_carrying(self) -> None:
         """Pace the session from this poll, since the scheduler will not.
@@ -1042,6 +1080,66 @@ class Application:
         self._set_poll_interval(WINDOW_POLL_SECONDS)
         log.info(
             "the render scheduler is asking for frames again; standing down"
+        )
+
+    def _revive_scheduler(self) -> None:
+        """Give the render scheduler a new task, its old one having died.
+
+        rendercanvas' scheduler is an async task riding the GUI loop, and on
+        Windows every sleep it takes crosses a thread boundary twice: a timer
+        thread wakes it through a queued Qt signal, and one lost delivery
+        strands the task forever. That is the state the overnight watch
+        recorded -- `asking (continuous)`, nothing awaited, no frame ever
+        asked for again -- and it is unrecoverable from outside the task,
+        because a dead coroutine is not waiting for anything a forced frame
+        completes. The scheduler *object* is fine; `get_task` merely shadowed
+        its coroutine with None when the canvas first consumed it, so
+        clearing the shadow re-arms it and the loop runs it as the original.
+
+        Deliberately conservative: only after the poll has already convicted
+        the scheduler (KICKS_BEFORE_A_REPORT forced frames), only when its
+        task is not awaiting a present -- a task parked there is alive, and
+        the forced frame's completion is what frees it -- and at most once
+        per REVIVE_RETRY_SECONDS, so a scheduler that dies again waits its
+        turn rather than accumulating tasks. The reach into name-mangled
+        internals is the same deliberate one `_scheduler_summary` makes, and
+        every step of it degrades to doing nothing.
+        """
+        now = time.perf_counter()
+        if self._revived_at is not None and (
+            now - self._revived_at < REVIVE_RETRY_SECONDS
+        ):
+            return
+        scheduler = self._scheduler()
+        if scheduler is None:
+            return
+        if getattr(scheduler, "_ready_for_present", None) is not None:
+            # Waiting on a present: alive, and the kick already frees that.
+            return
+        canvas = getattr(self.canvas, "_subwidget", None) or self.canvas
+        group = getattr(canvas, "_rc_canvas_group", None)
+        loop = group.get_loop() if group is not None else None
+        if loop is None:
+            return
+        self._revived_at = now
+        try:
+            try:
+                # get_task() left an instance attribute shadowing the
+                # coroutine method as None; clearing it re-arms get_task.
+                delattr(scheduler, "_Scheduler__scheduler_task")
+            except AttributeError:
+                pass
+            task = scheduler.get_task()
+            if task is None:
+                return
+            loop.add_task(task, name="scheduler-task")
+        except Exception as exc:
+            log.warning("could not revive the render scheduler: %s", exc)
+            return
+        self._revivals += 1
+        log.warning(
+            "the render scheduler's task had died; started it a new one "
+            "(revival %d)", self._revivals,
         )
 
     # -- hot reload ---------------------------------------------------------
