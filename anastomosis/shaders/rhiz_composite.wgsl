@@ -145,12 +145,39 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Ghost strata (§17.6): where past seasons stand in the ground --
     // darker, quieter earth in the shape of the interred skeletons. Read
     // before the roots so the living and the wood shade *over* their
-    // ancestors, at rungs measured from the haunted ground itself.
+    // ancestors. Strokes, not a tint: the same saturate-then-smoothstep
+    // the wood's own coverage uses, tuned to the record the pane actually
+    // lays down at real pacing -- trunk lines a few hundredths over a
+    // sub-hundredth wash (the overnight watch: a plain 0.12-knee tint
+    // against that signal put seven buried seasons under one 8-bit step
+    // of the converged image). The smoothstep floor drops the wash, and
+    // each generational dim moves a stratum a legible rung down the
+    // curve. Around each crisp core, a softer stain -- four taps a couple
+    // of texels out -- because a buried skeleton is a mark left in the
+    // *ground*, not a wire: a texel-thin dark-on-dark stroke saturates
+    // long before it reads, and the halo is what lets the eye find the
+    // strata at a glance ("deeper", the first felt-response round on the
+    // fixed strata, was this). The deepest strata dip toward, never
+    // through, the visible-earth floor.
     let ghost = max(finite_or(
         textureSampleLevel(record_tex, samp, suv, 0.0).w, 0.0), 0.0);
-    let ghost_sat = ghost / (ghost + 0.12);
-    l = l - 0.055 * ghost_sat;
-    ab = ab * (1.0 - 0.30 * ghost_sat);
+    let ghost_cov = smoothstep(0.15, 0.75, ghost / (ghost + 0.02));
+    let gpx = 2.0 / vec2<f32>(f32(rp.dims_x), f32(rp.dims_y));
+    var stain = 0.0;
+    stain = max(stain, finite_or(textureSampleLevel(
+        record_tex, samp, suv + vec2<f32>(gpx.x, 0.0), 0.0).w, 0.0));
+    stain = max(stain, finite_or(textureSampleLevel(
+        record_tex, samp, suv - vec2<f32>(gpx.x, 0.0), 0.0).w, 0.0));
+    stain = max(stain, finite_or(textureSampleLevel(
+        record_tex, samp, suv + vec2<f32>(0.0, gpx.y), 0.0).w, 0.0));
+    stain = max(stain, finite_or(textureSampleLevel(
+        record_tex, samp, suv - vec2<f32>(0.0, gpx.y), 0.0).w, 0.0));
+    let stain_cov = smoothstep(0.15, 0.75, stain / (stain + 0.02));
+    let haunt = max(ghost_cov, 0.55 * stain_cov);
+    l = max(
+        l - 0.15 * haunt,
+        render.background_luma + rp.soil_l_floor * 0.35);
+    ab = ab * (1.0 - 0.55 * haunt);
 
     // --- The roots: the record beneath, the living over it (§17.5-6) ------
     // Two figures, composited in depth order -- soil, then wood, then the

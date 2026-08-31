@@ -59,9 +59,44 @@ class FakeScheduler:
         self._mode = "continuous"
         self._ready_for_present = None
         self._just_cancelled_a_frame = False
+        # The canvas consumed the task at construction, so the instance
+        # attribute shadows the class' coroutine with None -- exactly the
+        # state the revival finds and re-arms. Spelled the way the real
+        # class' name mangling leaves it.
+        self._Scheduler__scheduler_task = None
+
+    async def _scheduler_coroutine(self):  # pragma: no cover - never run
+        pass
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = bool(enabled)
+
+    def get_task(self):
+        task = self._Scheduler__scheduler_task
+        self._Scheduler__scheduler_task = None
+        assert task is not None
+        return task
+
+
+FakeScheduler._Scheduler__scheduler_task = FakeScheduler._scheduler_coroutine
+
+
+class FakeLoop:
+    """The rendercanvas loop, reduced to the task list the revival adds to."""
+
+    def __init__(self) -> None:
+        self.tasks: list[tuple[object, str | None]] = []
+
+    def add_task(self, task, name=None) -> None:
+        self.tasks.append((task, name))
+
+
+class FakeCanvasGroup:
+    def __init__(self, loop: FakeLoop) -> None:
+        self._loop = loop
+
+    def get_loop(self) -> FakeLoop:
+        return self._loop
 
 
 class FakeSubwidget:
@@ -83,6 +118,8 @@ class FakeSubwidget:
         # Spelled the way the base class' name mangling leaves it, because
         # that is the name the report reads it under.
         self._BaseRenderCanvas__scheduler = FakeScheduler()
+        # The loop the revival hands a dead scheduler's new task to.
+        self._rc_canvas_group = FakeCanvasGroup(FakeLoop())
 
     # -- Qt's side, which stays right whether or not events were delivered
     def width(self):
@@ -353,6 +390,72 @@ def test_pacing_is_handed_back_the_moment_the_scheduler_asks_again(app):
     assert not app._carrying
     assert app._poll_interval == pytest.approx(WINDOW_POLL_SECONDS)
     assert app._kicks == 0
+
+
+# ---------------------------------------------------------------------------
+# Reviving the scheduler
+# ---------------------------------------------------------------------------
+
+
+def _tasks(app):
+    return app.canvas._subwidget._rc_canvas_group.get_loop().tasks
+
+
+def test_a_dead_scheduler_is_given_a_new_task(app):
+    """The overnight fault: the scheduler's task dies awaiting a lost
+    wake-up, `asking (continuous)` with nothing awaited, and no forced
+    frame can ever free it -- a dead coroutine is not waiting for
+    anything. The scheduler object is fine, so the recovery is a new
+    task running the same coroutine."""
+    settle(app)
+    for _ in range(3):
+        app.clock.advance(5.0)
+        app._reconcile_window()
+
+    assert app._carrying
+    assert len(_tasks(app)) == 1, "the dead scheduler was never given a new task"
+    assert _tasks(app)[0][1] == "scheduler-task"
+    assert app._revivals == 1
+
+
+def test_a_scheduler_awaiting_a_present_is_not_revived(app):
+    """A task parked on its present-event is alive, and the forced
+    frame's completion is exactly what frees it -- a second task there
+    would double the frame rate forever."""
+    settle(app)
+    scheduler = app.canvas._subwidget._BaseRenderCanvas__scheduler
+    scheduler._ready_for_present = object()
+    for _ in range(3):
+        app.clock.advance(5.0)
+        app._reconcile_window()
+
+    assert _tasks(app) == [], (
+        "a scheduler that was only waiting for a present was given a "
+        "second task"
+    )
+
+
+def test_a_revival_waits_its_turn_before_trying_again(app):
+    """A scheduler that dies again is offered another task, but on the
+    retry interval -- not once per carried frame."""
+    from anastomosis.app import REVIVE_RETRY_SECONDS
+
+    settle(app)
+    for _ in range(3):
+        app.clock.advance(5.0)
+        app._reconcile_window()
+    assert len(_tasks(app)) == 1
+
+    # Still dead; the poll carries on. No second task yet.
+    for _ in range(10):
+        app.clock.advance(app._poll_interval)
+        app._reconcile_window()
+    assert len(_tasks(app)) == 1
+
+    app.clock.advance(REVIVE_RETRY_SECONDS + 1.0)
+    app._reconcile_window()
+    assert len(_tasks(app)) == 2
+    assert app._revivals == 2
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +741,29 @@ def test_the_canvas_internals_the_recovery_reaches_for_still_exist():
         )
     assert callable(getattr(SizeInfo, "set_physical_size", None)), (
         "the canvas' cached size is no longer written through SizeInfo"
+    )
+    # And the pieces the revival re-arms a dead scheduler through: the
+    # coroutine method get_task shadows on first use, the canvas group the
+    # loop is reached by, and the loop's task registry.
+    from rendercanvas.base import BaseCanvasGroup
+    from rendercanvas.core.loop import BaseLoop
+
+    assert callable(getattr(Scheduler, "get_task", None)), (
+        "the scheduler no longer hands out its task through get_task"
+    )
+    assert callable(getattr(Scheduler, "_Scheduler__scheduler_task", None)), (
+        "the scheduler's coroutine no longer lives on the class, so a dead "
+        "task can no longer be re-armed by clearing get_task's shadow"
+    )
+    assert "_rc_canvas_group" in BaseRenderCanvas.__dict__ or hasattr(
+        BaseRenderCanvas, "_rc_canvas_group"
+    ), "the canvas no longer reaches its loop through _rc_canvas_group"
+    assert callable(getattr(BaseCanvasGroup, "get_loop", None)), (
+        "the canvas group no longer answers which loop it runs on"
+    )
+    assert callable(getattr(BaseLoop, "add_task", None)), (
+        "the loop no longer accepts tasks, which is how a revived "
+        "scheduler gets run"
     )
 
 

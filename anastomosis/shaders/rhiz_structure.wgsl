@@ -176,10 +176,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // The interment (§17.6): the one licensed writer of wood's exit, zero
     // outside a burial. Lignin leaves for the ghost at the drive's eased
-    // rate; the *existing* ghost fades under the same cover, so the ground
-    // reads a couple of seasons deep and no deeper. The biographical clock
-    // clears with the wood it was counting for, slowly, wherever none is
-    // left to age.
+    // rate; the *existing* ghost steps a generation deeper at each fossil
+    // moment (the dim below), so the ground reads a couple of seasons
+    // deep and no deeper. The biographical clock clears with the wood it
+    // was counting for, slowly, wherever none is left to age.
     // Young wood is spared most of the burial: the interment is of the
     // completed season's record, and a straggler plant still writing
     // through it keeps the skeleton it is laying down rather than having
@@ -187,8 +187,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let interred = lignin * rp.intern_rate
         * mix(0.15, 1.0, smoothstep(120.0, 480.0, bio_age));
     lignin = lignin - interred;
+    // The ancestors recede by ceremony, not by rate: `ghost_dim` is 1.0
+    // on every ordinary tick and (1 - ghost_fade) for exactly the one
+    // tick of the fossil moment, so each completed burial stands at full
+    // strength and every stratum beneath it steps a generation deeper,
+    // once, whatever pace the burial itself runs at. (A per-second fade
+    // here erased each season's ghost while it was being laid -- the
+    // overnight watch's finding.)
     ghost = min(
-        ghost * (1.0 - rp.ghost_fade) + interred * rp.ghost_gain,
+        ghost * rp.ghost_dim + interred * rp.ghost_gain,
         DENSITY_CAP);
     let presence = smoothstep(0.004, 0.02, lignin);
     bio_age = bio_age * (1.0 - 0.03 * (1.0 - presence));

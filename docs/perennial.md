@@ -400,10 +400,15 @@ rare readback: germination eases closed as the record approaches
 `wood_budget` (calibrated against a measured 40-minute run), the interment
 drive relaxes toward completion-times-quiet, the fossil moment is offered
 exactly once as the drive commits, and the burial transfers lignin into
-the ghost channel while the previous ghost fades a generation deeper
-under the same cover. Ghost strata shade the ground before the roots do —
-darker, quieter earth in the shape of the interred skeletons — and season
-state rides the checkpoint.
+the ghost channel. The previous strata step a generation deeper at the
+fossil moment itself — a single dim on a single tick, armed by the
+commit and spent by the next dispatch (it rides the checkpoint in
+between) — never by any per-second rate: a real-pacing burial runs for
+minutes, and with stragglers recommitting wood through it, to no bounded
+rate-integral either, so every continuous fade is an eraser at some
+tempo (see "What the second long watch found"). Ghost strata shade the
+ground before the roots do — darker, quieter earth in the shape of the
+interred skeletons — and season state rides the checkpoint.
 
 Three controller lessons, each found by watching or tracing, none by
 design: **a burial must finish** (the drive would otherwise track the
@@ -533,6 +538,45 @@ so what the thinning sheath reveals is full-width wood, and there is no
 re-widening phase left to scatter. The coverage knee still eases with
 maturity (secondary thickening), but now as a gradual swelling of a
 held outline rather than a noisy recovery from a pinch.
+
+### What the second long watch found
+
+An overnight run — the first in the mode's history to cross many
+completed seasons — produced seven fossils, every one of which could
+have been the first: the pane carried no visible past. The ghost
+pipeline was healthy end to end (laid at burial, standing between
+burials, surviving the checkpoint — the numbers were all there), and
+the strata still never reached the screen. Two mechanisms, again both
+invisible to every test then in the suite, because every test ran the
+burial at accelerated pacing:
+
+1. **The fade was a clock wearing a ratio's clothes.** `ghost_fade` was
+   a per-second rate sized against an accelerated burial's duration. A
+   real burial runs minutes rather than seconds — and, with stragglers
+   recommitting wood through it, its rate-integral is not bounded by
+   the renewal knee either — so the same per-second fade that was
+   negligible under test erased each season's ghost *while it was being
+   laid*. No continuous fade has a correct constant, at any tuning: the
+   design quantity ("a generation deeper per burial") is a per-ceremony
+   step, so it is now one — a single dim of the standing strata on the
+   single tick of the fossil moment, armed by the commit, spent by the
+   next dispatch, checkpointed in between. The ceremony lesson of the
+   first watch, extended from the burial's beginning to its ancestors.
+2. **The composite's ghost mapping was scaled to a record the pane
+   never lays down.** At real pacing the record is a sub-hundredth wash
+   with trunk lines a few hundredths — and the old soft tint with a
+   0.12 knee rendered seven buried seasons at under one 8-bit step of
+   the converged image. The ghost now renders the way the wood itself
+   does — saturate then smoothstep, strokes rather than tint — with the
+   knee at the record's actual amplitude, so trunk strata read as dark
+   veins in the earth, each older generation a legible rung fainter,
+   and the wash below the smoothstep floor stays soil.
+
+The suite gained `test_the_ghost_survives_a_burial_at_any_pace`: the
+same painted season buried at two tempos five-fold apart must leave the
+previous season's shadow standing at the configured fraction and the
+laid ghost within a band — the class of every finding above, closed the
+way the emergent test closed the first watch's.
 
 ### What step 5 actually did
 

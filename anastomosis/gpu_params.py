@@ -332,11 +332,13 @@ RHIZ_FIELDS: list[Field] = [
     # and the wood shading's transfer and maturation.
     ("lignify_rate", "f32"),
     # Seasons (§17.6): the interment's per-tick rate (zero outside one),
-    # the ghost's share of interred mass, and the old ghost's per-tick fade
-    # while an interment runs.
+    # the ghost's share of interred mass, and the generational dim -- 1.0
+    # on every ordinary tick, (1 - ghost_fade) for exactly the one tick
+    # of the fossil moment, when the standing strata step a generation
+    # deeper before the new burial lays its own.
     ("intern_rate", "f32"),
     ("ghost_gain", "f32"),
-    ("ghost_fade", "f32"),
+    ("ghost_dim", "f32"),
     ("wood_avoid", "f32"),
     ("wood_edge", "f32"),
     ("wood_age_scale", "f32"),
