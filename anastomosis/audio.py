@@ -857,7 +857,27 @@ class AudioDrive:
         route: copy blocks into the bounded deque and nothing else. It holds
         no lock the render thread takes; a wedged recorder starves the
         features, never the frame loop (§16.6(5)).
+
+        COM has to be initialised *on this thread* before the recorder is
+        touched: ``soundcard`` initialises it only in the thread that first
+        imported it, and WASAPI calls from a thread without COM fail with
+        0x800401f0 on the very first pull -- which, from the outside, looked
+        like a capture stream that died the instant it started.
         """
+        com_initialized = False
+        if self._platform == "win32":
+            import ctypes
+
+            try:
+                # 0 = COINIT_MULTITHREADED. oledll raises OSError on any
+                # failing HRESULT; S_FALSE (already initialised) passes and
+                # still owes the matching CoUninitialize.
+                ctypes.oledll.ole32.CoInitializeEx(None, 0)
+                com_initialized = True
+            except OSError:
+                # Initialised in an incompatible mode by someone else; the
+                # recorder may still work, so let it decide.
+                pass
         try:
             channels = max(1, min(2, int(getattr(mic, "channels", 2) or 2)))
             with mic.recorder(
@@ -872,6 +892,9 @@ class AudioDrive:
                     f"capture stream stopped ({exc}); the field is on its own"
                 )
                 log.warning("audio: %s", self._status)
+        finally:
+            if com_initialized:
+                ctypes.oledll.ole32.CoUninitialize()
 
     def _start_sounddevice(self) -> bool:
         """The PortAudio route — every platform's fallback, most's first."""
