@@ -508,6 +508,32 @@ accelerated pacing and requires the whole cycle — budget filled, quiet
 fallen, fossil offered, ghost laid, season turned, germination reopened —
 from the dynamics alone, nothing painted, nothing forced.
 
+### What the width report changed
+
+A later viewing caught the transition itself misbehaving: filaments
+pinched to hairlines before the red phase began — far thinner than the
+still-active roots beside them — and then re-widened unevenly, in
+patches scattered along their length. One mechanism behind both
+symptoms: the compositor drew *two* silhouettes through separate
+transfers, living coverage from density alone and wood coverage from
+lignin alone. Commitment is a transfer between those two channels, so
+it narrowed the first silhouette minutes before the second could widen
+— the waist — and the re-widening was the lignin tails straggling over
+their own knee texel by texel, a per-texel threshold crossing that
+scatters by construction.
+
+The silhouette is now one figure, carried by the combined mass
+(`density + lignin`), which is invariant under commitment: a root that
+stops being reinforced keeps its width while the sheath dies back, and
+only genuine loss — senescence taking fuzz that never commits — narrows
+anything. Within the outline, the woody core claims the silhouette once
+wood is a real share of the texel's mass — an occlusion weight only;
+colour stays on `bio_age`, the ratio-is-not-a-clock ruling untouched —
+so what the thinning sheath reveals is full-width wood, and there is no
+re-widening phase left to scatter. The coverage knee still eases with
+maturity (secondary thickening), but now as a gradual swelling of a
+held outline rather than a noisy recovery from a pinch.
+
 ### What step 5 actually did
 
 The application shell consumes the backend's `fossil_due` flag between

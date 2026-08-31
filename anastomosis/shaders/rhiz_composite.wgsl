@@ -165,7 +165,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // occlusion -- the living sheath thinning over wood already coloured
     // by its age -- and the wood's hue is anchored mostly absolute, a
     // red-brown no soil family shares, so no stage of a root's life can
-    // inherit the ground's colour and vanish into it.
+    // inherit the ground's colour and vanish into it. The two materials
+    // share ONE silhouette, carried by their combined mass, so commitment
+    // moves nothing at the outline: a root never thins on its way into
+    // the record (the width report's finding, below).
     let root = textureSampleLevel(structure_tex, samp, suv, 0.0);
     let rec = textureSampleLevel(record_tex, samp, suv, 0.0);
     let density = max(finite_or(root.x, 0.0), 0.0);
@@ -175,16 +178,36 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let wood_age = max(finite_or(rec.y, 0.0), 0.0);
     let mature = 1.0 - exp(-wood_age / max(rp.wood_age_scale, 1.0));
 
-    // Wood coverage: absolute lignin through its own transfer -- present
-    // in the record means present on screen, at half the living knee so a
-    // lateral shaft's committed mass clears it -- and the knee eases
-    // further with maturity: secondary thickening, radial growth rendered
-    // rather than re-deposited.
-    let wood_knee = max(rp.root_knee, 1e-4) * (0.5 - 0.2 * mature);
-    let wood_sat = lignin / (lignin + wood_knee);
-    let wood_cov = smoothstep(
-        0.5 - rp.wood_edge, 0.5 + rp.wood_edge, wood_sat);
-    // Living coverage: absolute density, the fuzz's softer edge.
+    // The silhouette: ONE figure, carried by the combined mass, living
+    // plus committed. The width report convicted the split transfers that
+    // stood here: living coverage read density alone and wood read lignin
+    // alone, so commitment -- a *transfer* between the two channels --
+    // narrowed the first silhouette minutes before the second could widen,
+    // and every dying shaft pinched to a hairline, then re-widened texel
+    // by texel as the lignin tails straggled over their own knee. The sum
+    // is invariant under commitment, so the outline holds while the sheath
+    // dies back; only genuine loss -- senescence taking fuzz that never
+    // commits -- narrows anything. The knee eases toward the wood
+    // transfer's as the texel becomes wood (committed mass reads at half
+    // the living knee, so a part-committed lateral keeps the width its
+    // life had), and eases further with maturity: secondary thickening,
+    // radial growth rendered rather than re-deposited.
+    let total = density + lignin;
+    let woodiness = lignin / max(total, 1e-5);
+    let knee_eff = max(rp.root_knee, 1e-4)
+        * mix(1.0, 0.5 - 0.2 * mature, woodiness);
+    let edge_eff = mix(rp.root_edge, rp.wood_edge, woodiness);
+    let tot_sat = total / (total + knee_eff);
+    let cov = smoothstep(0.5 - edge_eff, 0.5 + edge_eff, tot_sat);
+    // The woody core claims the whole silhouette once wood is a real share
+    // of the texel's mass -- an occlusion weight, never a colour axis (the
+    // colour stays on bio_age; the ratio-is-not-a-clock ruling stands).
+    // Under an opaque sheath the claim is invisible; it is what shows,
+    // full-width, the moment the sheath thins -- so the reveal widens
+    // nothing and the red arrives at the width the pale figure held.
+    let wood_cov = cov * smoothstep(0.02, 0.25, woodiness);
+    // Living coverage: absolute density through the living transfer -- the
+    // sheath's own opacity over the wood, and the hairs' driver.
     let live_sat = density / (density + max(rp.root_knee, 1e-4));
     let live_cov = smoothstep(
         0.5 - rp.root_edge, 0.5 + rp.root_edge, live_sat);
