@@ -865,7 +865,11 @@ class AudioDrive:
         like a capture stream that died the instant it started.
         """
         com_initialized = False
-        if self._platform == "win32":
+        # Keyed on the machine's own platform, not the injected `_platform`:
+        # COM is a property of the host OS, and the tests that pin
+        # `_platform="win32"` to reach this route still run on Linux CI,
+        # where `ctypes.oledll` does not exist.
+        if sys.platform == "win32":
             import ctypes
 
             try:
