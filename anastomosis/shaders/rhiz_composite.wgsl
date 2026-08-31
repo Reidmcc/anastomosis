@@ -152,15 +152,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // against that signal put seven buried seasons under one 8-bit step
     // of the converged image). The smoothstep floor drops the wash, and
     // each generational dim moves a stratum a legible rung down the
-    // curve. The deepest strata dip toward, never through, the
-    // visible-earth floor.
+    // curve. Around each crisp core, a softer stain -- four taps a couple
+    // of texels out -- because a buried skeleton is a mark left in the
+    // *ground*, not a wire: a texel-thin dark-on-dark stroke saturates
+    // long before it reads, and the halo is what lets the eye find the
+    // strata at a glance ("deeper", the first felt-response round on the
+    // fixed strata, was this). The deepest strata dip toward, never
+    // through, the visible-earth floor.
     let ghost = max(finite_or(
         textureSampleLevel(record_tex, samp, suv, 0.0).w, 0.0), 0.0);
     let ghost_cov = smoothstep(0.15, 0.75, ghost / (ghost + 0.02));
+    let gpx = 2.0 / vec2<f32>(f32(rp.dims_x), f32(rp.dims_y));
+    var stain = 0.0;
+    stain = max(stain, finite_or(textureSampleLevel(
+        record_tex, samp, suv + vec2<f32>(gpx.x, 0.0), 0.0).w, 0.0));
+    stain = max(stain, finite_or(textureSampleLevel(
+        record_tex, samp, suv - vec2<f32>(gpx.x, 0.0), 0.0).w, 0.0));
+    stain = max(stain, finite_or(textureSampleLevel(
+        record_tex, samp, suv + vec2<f32>(0.0, gpx.y), 0.0).w, 0.0));
+    stain = max(stain, finite_or(textureSampleLevel(
+        record_tex, samp, suv - vec2<f32>(0.0, gpx.y), 0.0).w, 0.0));
+    let stain_cov = smoothstep(0.15, 0.75, stain / (stain + 0.02));
+    let haunt = max(ghost_cov, 0.55 * stain_cov);
     l = max(
-        l - 0.10 * ghost_cov,
-        render.background_luma + rp.soil_l_floor * 0.4);
-    ab = ab * (1.0 - 0.45 * ghost_cov);
+        l - 0.15 * haunt,
+        render.background_luma + rp.soil_l_floor * 0.35);
+    ab = ab * (1.0 - 0.55 * haunt);
 
     // --- The roots: the record beneath, the living over it (§17.5-6) ------
     // Two figures, composited in depth order -- soil, then wood, then the
