@@ -1003,11 +1003,17 @@ class RhizotronParams:
     # the interred mass the ghost keeps.
     interment_rate: float = 0.010
     ghost_gain: float = 0.85
-    # How fast the *existing* ghost fades while an interment runs, per
-    # second: one burial dims the previous season's shadow by roughly half,
-    # so the ground reads about two seasons deep -- salience decays, the
-    # gallery keeps the verbatim (§17.6).
-    ghost_fade: float = 0.004
+    # How much of the *existing* ghost each burial takes with it: at the
+    # fossil moment, every stratum already standing steps this fraction
+    # deeper, once, and then the new burial lays its own ghost at full
+    # strength over them -- so the ground reads about two seasons deep,
+    # salience decays, and the gallery keeps the verbatim (§17.6). A
+    # per-burial fraction applied as a single ceremony, not a per-second
+    # rate: a slow burial and a brisk one leave the same strata behind
+    # (the overnight watch's finding -- a per-second fade erased the
+    # ghost while a real-pacing burial was still laying it, and every
+    # accelerated test was too quick to notice).
+    ghost_fade: float = 0.5
     # The interment drive's relaxation, seconds. Slow like every controller
     # here: completion is noticed, not triggered.
     intern_tau: float = 45.0
@@ -2328,7 +2334,7 @@ def validate(params: Params) -> Params:
     rhiz.wood_budget = min(max(float(rhiz.wood_budget), 0.001), 0.2)
     rhiz.interment_rate = min(max(float(rhiz.interment_rate), 0.0), 0.2)
     rhiz.ghost_gain = min(max(float(rhiz.ghost_gain), 0.0), 2.0)
-    rhiz.ghost_fade = min(max(float(rhiz.ghost_fade), 0.0), 0.5)
+    rhiz.ghost_fade = min(max(float(rhiz.ghost_fade), 0.0), 0.95)
     rhiz.intern_tau = min(max(float(rhiz.intern_tau), 4.0), 3600.0)
     rhiz.wood_avoid = min(max(float(rhiz.wood_avoid), 0.0), 4.0)
     rhiz.wood_edge = min(max(float(rhiz.wood_edge), 0.02), 0.5)

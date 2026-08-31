@@ -1159,7 +1159,7 @@ def test_a_completed_pane_is_interred_and_the_season_turns(gpu_device):
         # A brisk burial, so the whole arc fits in a test.
         "rhizotron.interment_rate": 0.10,
         "rhizotron.intern_tau": 6.0,
-        "rhizotron.ghost_fade": 0.05,
+        "rhizotron.ghost_fade": 0.5,
         # No newcomers while the cycle is measured.
         "rhizotron.germination_rate": 0.0,
         "rhizotron.germination_floor": 0.0,
@@ -1224,6 +1224,81 @@ def test_a_completed_pane_is_interred_and_the_season_turns(gpu_device):
     assert engine._season == 1, "the season did not turn"
     assert engine._germ_ease > 0.5, (
         "germination did not ease back open after the renewal"
+    )
+
+
+def test_the_ghost_survives_a_burial_at_any_pace(gpu_device):
+    """§17.6, the overnight watch's finding: the ancestors recede by
+    ceremony, never by rate. A brisk burial and one five times slower
+    are the same ceremony at different tempos, so both must leave the
+    previous season's shadow standing at the configured fraction -- the
+    generational dim fires once, at the fossil moment, however long the
+    burial then takes. The per-second fade this replaces passed the
+    brisk form of every test and, at the pace the app actually runs
+    (minutes per burial, and no bounded rate-integral once stragglers
+    recommit wood through it), erased each season's ghost while it was
+    still being laid."""
+    results = {}
+    for rate in (0.10, 0.02):
+        params = _resolve(overrides={
+            "rhizotron.interment_rate": rate,
+            "rhizotron.intern_tau": 6.0,
+            "rhizotron.germination_rate": 0.0,
+            "rhizotron.germination_floor": 0.0,
+            "rhizotron.axes_per_plant": 1,
+        })
+        engine = _engine(gpu_device, params, seed=47)
+        g = engine.geometry
+        band_row = g.height // 2
+
+        budget = params.rhizotron.wood_budget * g.width * g.view_rows
+        per_texel = 1.2 * budget / (g.width * g.height)
+        record = np.zeros((g.height, g.width, 4), dtype=np.float16)
+        record[..., 0] = per_texel
+        record[..., 1] = 900.0            # mature wood
+        record[band_row, :, 3] = 1.0      # the previous season's ghost
+        _write_record(engine, record)
+        _write_structure(
+            engine, np.zeros((g.height, g.width, 4), dtype=np.float16))
+        engine._living_peak = 8000.0
+
+        # Run each burial to its own completion, not for a fixed time.
+        for _ in range(12000):
+            engine.tick(params, [])
+            engine.fossil_due = False
+            if engine._season >= 1:
+                break
+        assert engine._season >= 1, f"the burial at {rate}/s never finished"
+
+        rec = _record(engine).astype(np.float32)
+        band = float(rec[band_row, :, 3].sum())
+        laid = float(rec[..., 3].sum()) - band
+        results[rate] = (laid, band)
+
+    laid_fast, band_fast = results[0.10]
+    laid_slow, band_slow = results[0.02]
+    assert laid_fast > 0.0 and laid_slow > 0.0, "a burial laid no ghost"
+    # The previous season's shadow after one burial: dimmed by the
+    # configured fraction, once -- not proportionally to how long the
+    # burial ran. The band starts at width * 1.0 and also gains its own
+    # row's laid ghost, so the floor is a survived-the-ceremony claim.
+    fade = _resolve().rhizotron.ghost_fade
+    for rate, (laid, band) in results.items():
+        floor = 0.8 * (1.0 - fade) * WIDTH
+        assert band > floor, (
+            f"the burial at {rate}/s erased the previous season's ghost "
+            f"({band:.1f} standing, floor {floor:.1f})"
+        )
+    assert 0.8 < band_slow / band_fast < 1.25, (
+        f"the previous ghost's fade depends on the burial's pace: "
+        f"{band_slow:.1f} slow vs {band_fast:.1f} fast"
+    )
+    # The laid ghost keeps the gain's share of what was interred under
+    # either pace. The slower burial inters more straggler recommitment
+    # along the way, so this is a no-eraser band, not an equality.
+    assert 0.5 < laid_slow / laid_fast < 2.0, (
+        f"the laid ghost depends on the burial's pace: "
+        f"{laid_slow:.1f} slow vs {laid_fast:.1f} fast"
     )
 
 

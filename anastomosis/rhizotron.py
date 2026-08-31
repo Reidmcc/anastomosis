@@ -292,6 +292,15 @@ class RhizotronEngine(Backend):
         self._fossil_taken = False
         self._burial_mass = 0.0
         self.fossil_due = False
+        # The generational dim, armed at the fossil moment (§17.6): the
+        # standing ghost strata step one generation deeper, per burial, by
+        # exactly the configured fraction -- eased over GHOST_DIM_SECONDS
+        # of ticks so the recession is never a visible step (§17.10(5)),
+        # while the *total* stays the ceremony's, independent of the
+        # burial's own pace. Both words ride the checkpoint, so a session
+        # saved mid-recession still owes its ancestors the rest.
+        self._ghost_dim_ticks = 0
+        self._ghost_dim_step = 1.0
 
         # The uniform scroll velocity the safety stage reprojects through:
         # one row of texels, rewritten each frame from the descent's actual
@@ -444,6 +453,22 @@ class RhizotronEngine(Backend):
 
     MASS_SCALE = 256.0
 
+    # The renewal knee (§17.6): the fraction of the committed mass still
+    # standing when a burial is considered finished. Shared between the
+    # season controller's renewal test and the ghost fade's calibration --
+    # ln(1/RENEWAL_FRACTION) is the interment integral one burial spends,
+    # which is what makes a per-burial fade fraction expressible as a
+    # multiple of the interment's own rate.
+    RENEWAL_FRACTION = 0.22
+
+    # How long the generational dim takes to land, in simulated seconds: a
+    # ceremony in total (armed once, per burial, at the fossil moment) but
+    # eased in appearance -- §17.10(5) admits no visible steps, and a
+    # one-tick dim would brighten every ghost stroke in a single frame.
+    # Well inside any burial the config can reach, so the recession always
+    # completes under the interment's own cover.
+    GHOST_DIM_SECONDS = 8.0
+
     def _commit_gate(self) -> float:
         """Smoothly opens the burial only past the fossil moment (§17.6)."""
         t = min(max((self._intern - 0.5) / 0.25, 0.0), 1.0)
@@ -518,6 +543,15 @@ class RhizotronEngine(Backend):
             self._fossil_taken = True
             self._burial_mass = max(self._wood_mass, 1e-6)
             self.fossil_due = True
+            # The ceremony's other half: as the burial commits, whatever
+            # already stands in the ground recedes one generation -- the
+            # total fixed by config, the appearance eased across the next
+            # few simulated seconds of ticks.
+            ticks = max(int(round(
+                self.GHOST_DIM_SECONDS * max(params.sim_hz, 1e-3))), 1)
+            self._ghost_dim_ticks = ticks
+            self._ghost_dim_step = (
+                max(1.0 - rhiz.ghost_fade, 0.05) ** (1.0 / ticks))
 
         # Renewal: the record has been emptied by a burial; the next season
         # begins. The drive is already decaying (completion collapsed with
@@ -532,7 +566,8 @@ class RhizotronEngine(Backend):
         # fossil_taken held forever, no fossil ever offered again (found
         # by the forced-burial capture, and again when the commit gate
         # moved the rest level).
-        buried = self._wood_mass < 0.22 * max(self._burial_mass, 1e-6)
+        buried = self._wood_mass < self.RENEWAL_FRACTION * max(
+            self._burial_mass, 1e-6)
         if self._fossil_taken and buried and self._intern < 0.35:
             self._season += 1
             self._fossil_taken = False
@@ -717,9 +752,19 @@ class RhizotronEngine(Backend):
                 rate(rhiz.interment_rate) * self._intern
                 * self._commit_gate()),
             "ghost_gain": rhiz.ghost_gain,
-            "ghost_fade": (
-                rate(rhiz.ghost_fade) * self._intern
-                * self._commit_gate()),
+            # The generational dim: as a burial commits, the ancestors
+            # step one generation deeper -- a per-ceremony total, eased
+            # over GHOST_DIM_SECONDS of ticks so nothing steps on screen.
+            # A ceremony, never a rate: the overnight watch found the
+            # per-second fade this replaces erasing each season's ghost
+            # while it was still being laid -- a real-pacing burial runs
+            # minutes (and, with stragglers recommitting wood through it,
+            # to no bounded rate-integral either), so every continuous
+            # fade the accelerated tests certified was an eraser at the
+            # pace the app actually runs. The strata passed every test
+            # and never once reached the screen.
+            "ghost_dim": (
+                self._ghost_dim_step if self._ghost_dim_ticks > 0 else 1.0),
             "wood_avoid": rhiz.wood_avoid,
             "wood_edge": rhiz.wood_edge,
             "wood_age_scale": rhiz.wood_age_scale,
@@ -821,6 +866,9 @@ class RhizotronEngine(Backend):
 
         self.device.queue.submit([encoder.finish()])
         self.tick_count += 1
+        # One more tick of the generational dim has been dispatched.
+        if self._ghost_dim_ticks > 0:
+            self._ghost_dim_ticks -= 1
 
         # The front controller reads back on the tick counter -- deterministic
         # in the state, so a resumed session reproduces its corrections.
@@ -908,6 +956,8 @@ class RhizotronEngine(Backend):
             "living_peak": float(self._living_peak),
             "fossil_taken": bool(self._fossil_taken),
             "burial_mass": float(self._burial_mass),
+            "ghost_dim_ticks": int(self._ghost_dim_ticks),
+            "ghost_dim_step": float(self._ghost_dim_step),
         }
 
     def restore_season(self, saved: dict) -> None:
@@ -930,6 +980,15 @@ class RhizotronEngine(Backend):
         self._living_peak = max(peak, 0.0)
         self._fossil_taken = taken
         self._burial_mass = max(burial, 0.0)
+        try:
+            dim_ticks = int(saved.get("ghost_dim_ticks", 0))
+            dim_step = float(saved.get("ghost_dim_step", 1.0))
+        except (TypeError, ValueError):
+            dim_ticks, dim_step = 0, 1.0
+        if not math.isfinite(dim_step):
+            dim_ticks, dim_step = 0, 1.0
+        self._ghost_dim_ticks = max(dim_ticks, 0)
+        self._ghost_dim_step = min(max(dim_step, 0.05), 1.0)
         # A pending fossil does not survive the file: the application takes
         # the still at the moment the drive commits, or not at all.
         self.fossil_due = False
