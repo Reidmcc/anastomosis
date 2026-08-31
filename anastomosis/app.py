@@ -50,6 +50,7 @@ from . import device as device_module
 from . import diagnostics as diagnostics_module
 from . import engine as engine_module
 from . import events as events_module
+from . import nice as nice_module
 from . import power as power_module
 from . import rhizotron as rhizotron_module
 from . import volume as volume_module
@@ -233,6 +234,13 @@ class AppOptions:
     resume: bool = True
     checkpoint_path: Path | None = None
     checkpoint_seconds: float = checkpoint_module.DEFAULT_INTERVAL_SECONDS
+    # GPU niceness for the *interactive* session (issue #40; see
+    # `anastomosis.nice`). ``None`` takes the config's ``gpu_nice``, which
+    # defaults to off: the frame loop already paces ticks to vsync, so its
+    # queue never runs deep, and the app is the one entry point where
+    # throughput is latency. ``--gpu-nice`` is for running the app in the
+    # background of a machine whose foreground matters more.
+    gpu_nice: bool | None = None
 
 
 class Application:
@@ -1471,10 +1479,22 @@ class Application:
 
     def _make_engine(self, width: int, height: int, geometry):
         engine_class, _ = backend_classes(self.backend)
-        return engine_class(
+        engine = engine_class(
             self.device, width, height, self.params,
             seed=self.options.seed, geometry=geometry,
         )
+        # The interactive session decides its GPU niceness explicitly (CLI
+        # over config, off by default) rather than inheriting the auto
+        # default, which exists for free-running callers -- this loop paces
+        # ticks to frames, so it is not one. See `anastomosis.nice`.
+        wanted = self.options.gpu_nice
+        if wanted is None:
+            wanted = bool(getattr(self.config, "gpu_nice", False))
+        engine.nice = nice_module.GpuNice(enabled=wanted)
+        if wanted:
+            log.info("gpu-nice is on: yielding %.0f ms between ticks",
+                     engine.nice.yield_seconds * 1000)
+        return engine
 
     def _saved_checkpoint(self) -> checkpoint_module.Checkpoint | None:
         """The checkpoint on disk, if there is one and this launch wants it.

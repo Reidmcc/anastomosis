@@ -36,6 +36,7 @@ import numpy as np
 import wgpu
 
 from . import gpu_params, shaders
+from . import nice as nice_module
 from .config import Params
 
 log = logging.getLogger(__name__)
@@ -189,6 +190,11 @@ class Backend:
         self.height = height
         self.tick_count = 0
         self.frame_count = 0
+        # How politely tick submissions treat the rest of the machine's GPU
+        # users (issue #40). Auto by default -- on for hardware adapters, off
+        # for software ones -- and a plain attribute, so the interactive app
+        # overrides it from its config and tests can inject a recorder.
+        self.nice = nice_module.default_policy()
         self.seed = seed if seed is not None else int(time.time_ns() & 0xFFFFFFFF)
         self._bind_cache: dict[tuple, wgpu.GPUBindGroup] = {}
         self._layout_cache: dict[int, wgpu.GPUBindGroupLayout] = {}
@@ -246,6 +252,21 @@ class Backend:
 
         self._make_noise_texture()
         self._build_output_pipelines()
+
+    # -- submission ---------------------------------------------------------
+
+    def _submit_tick(self, encoder: wgpu.GPUCommandEncoder) -> None:
+        """Submit a tick's command buffer, through the GPU-niceness seam.
+
+        Every backend's ``tick()`` ends here rather than at ``queue.submit``
+        directly, so that a free-running caller -- a soak test, a headless
+        capture loop -- gets the bounded queue depth and preemption gaps of
+        :mod:`anastomosis.nice` without any entry point having to remember
+        to ask. Render and readback submissions do not come through here:
+        they are either paced by the frame loop or synchronous already.
+        """
+        self.device.queue.submit([encoder.finish()])
+        self.nice.after_submit(self.device)
 
     # -- output targets -----------------------------------------------------
 

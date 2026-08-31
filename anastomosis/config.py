@@ -2059,6 +2059,15 @@ class Config:
     mode: str = DEFAULT_MODE
     filaments: bool = True
     audio_device: str = ""
+    # Whether the *interactive* session bounds its GPU queue depth and yields
+    # between ticks (issue #40; :mod:`anastomosis.nice`). Off by default: the
+    # frame loop paces ticks to vsync, so its queue never runs deep, and the
+    # app is the one entry point where throughput is latency. Free-running
+    # entry points -- tests, headless captures -- do not read this; they get
+    # the niceness automatically on hardware adapters. Turn it on (or pass
+    # ``--gpu-nice``) for an app deliberately left running in the background
+    # of a machine whose foreground matters more.
+    gpu_nice: bool = False
 
     def resolve(self) -> Params:
         params = Params()
@@ -2629,6 +2638,8 @@ def load(path: str | Path) -> Config:
         # defaults -- the network drawn, the capture heuristic choosing.
         filaments=bool(data.get("filaments", True)),
         audio_device=str(data.get("audio_device", "")),
+        # Absence means the default: an ordinary foreground session, not nice.
+        gpu_nice=bool(data.get("gpu_nice", False)),
     )
 
 
@@ -2649,6 +2660,7 @@ def save(config: Config, path: str | Path) -> None:
     doc.add("mode", normalise_mode(config.mode))
     doc.add("filaments", bool(config.filaments))
     doc.add("audio_device", str(config.audio_device))
+    doc.add("gpu_nice", bool(config.gpu_nice))
 
     macros = tomlkit.table()
     for f in fields(config.macros):

@@ -141,6 +141,18 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: ~/.local/state/anastomosis/diagnostics)"
         ),
     )
+    parser.add_argument(
+        "--gpu-nice", action="store_true", default=None,
+        help=(
+            "be a polite GPU neighbor: wait for each tick's GPU work before "
+            "submitting the next, and yield a few milliseconds in between, "
+            "so the desktop compositor and other applications keep their "
+            "frame deadlines. The interactive app rarely needs this -- its "
+            "frame pacing already keeps the queue shallow -- but it is the "
+            "right setting for a session left running in the background. "
+            "Omit to use the config's gpu_nice (default: off)"
+        ),
+    )
     parser.add_argument("--list-presets", action="store_true")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
@@ -315,6 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         resume=not args.reset,
         checkpoint_path=args.checkpoint,
         diagnostics_dir=args.diagnostics_dir,
+        gpu_nice=args.gpu_nice,
     )
     # Left unset unless asked for, so the default has one home, as above.
     if args.stall_timeout is not None:

@@ -864,7 +864,7 @@ class RhizotronEngine(Backend):
         self.structure.flip()
         self.record.flip()
 
-        self.device.queue.submit([encoder.finish()])
+        self._submit_tick(encoder)
         self.tick_count += 1
         # One more tick of the generational dim has been dispatched.
         if self._ghost_dim_ticks > 0:
