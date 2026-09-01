@@ -55,15 +55,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="fix the random seed; omit for a different world each launch",
     )
     parser.add_argument(
-        "--backend", choices=("layered", "volumetric", "rhizotron"),
+        "--backend", choices=("layered", "volumetric", "rhizotron", "things"),
         default=None,
         help=(
             "what is drawn: 'layered' (three 2.5D sheets of the fungal "
             "field, the default), 'volumetric' (the same field as a "
-            "raymarched slab), or 'rhizotron' (the plant-root world: a pane "
-            "of living soil, descending). Each keeps its own saved field, so "
-            "switching does not discard the others. Omit to use the config's "
-            "setting."
+            "raymarched slab), 'rhizotron' (the plant-root world: a pane "
+            "of living soil, descending), or 'things' (Small Strange "
+            "Things: little wandering beings that befriend, sparkle, and "
+            "persist). Each keeps its own saved field, so switching does "
+            "not discard the others. Omit to use the config's setting."
         ),
     )
     parser.add_argument(
@@ -193,18 +194,19 @@ def arm_exit_guard(seconds: float = EXIT_GRACE_SECONDS) -> threading.Thread:
 def _backend_for_preset(current: str, preset: str) -> str:
     """The backend a preset's world needs, disturbing the choice least.
 
-    A rhizotron preset means the rhizotron. A fungal preset from a config
-    left on the rhizotron means *a* fungal backend, and the default layered
-    one is the only sensible guess; a config already on a fungal backend
-    keeps it, because `dense` is `dense` under either depth view.
+    A rhizotron preset means the rhizotron, a Things preset means the
+    Things. A fungal preset from a config left on either means *a* fungal
+    backend, and the default layered one is the only sensible guess; a
+    config already on a fungal backend keeps it, because `dense` is
+    `dense` under either depth view.
     """
     from . import config as config_module
     from . import presets as presets_module
 
     world = presets_module.world_of(preset)
-    if world == "rhizotron":
-        return "rhizotron"
-    if current == "rhizotron":
+    if world in ("rhizotron", "things"):
+        return world
+    if current in ("rhizotron", "things"):
         return config_module.DEFAULT_BACKEND
     return current
 

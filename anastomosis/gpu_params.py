@@ -357,6 +357,120 @@ RHIZ_FIELDS: list[Field] = [
 ]
 
 # --------------------------------------------------------------------------
+# Small Strange Things parameters -- bound to the port's passes (DESIGN.md
+# §18).
+#
+# Its own block for the same reason the rhizotron has one: the Things share
+# no simulation machinery with the other backends. Everything dynamic
+# arrives per-tick, converted from the per-second values in ThingsParams
+# against sim_hz where it is packed, so the tick rate cannot retune their
+# world (§18.1 soul 10).
+# --------------------------------------------------------------------------
+
+THINGS_FIELDS: list[Field] = [
+    ("dims_x", "u32"),
+    ("dims_y", "u32"),
+    ("capacity", "u32"),
+    # The lottery's ceiling (§18.1 soul 4). The buffer is larger by the
+    # click reserve, because in the founding file the cap only ever gated
+    # reproduction -- the click handler pushed unconditionally. The click
+    # outranks the cap (soul 9); a full village still answers the finger.
+    ("soft_cap", "u32"),
+    ("tick", "u32"),
+    ("seed", "u32"),
+    # Click-to-add (§18.1 soul 9): up to four clicks consumed per tick, in
+    # field texels, each spawning `per_click` Things. Empty slots claim them
+    # by rank; see things_update.wgsl.
+    ("click_count", "u32"),
+    ("per_click", "u32"),
+    ("click0_x", "f32"),
+    ("click0_y", "f32"),
+    ("click1_x", "f32"),
+    ("click1_y", "f32"),
+    ("click2_x", "f32"),
+    ("click2_y", "f32"),
+    ("click3_x", "f32"),
+    ("click3_y", "f32"),
+    ("click_scatter", "f32"),
+    # Wander: the per-tick scale on the trait speed. The founding file
+    # stepped `(rand - 0.5) * speed` per 60 fps frame; this factor is
+    # sqrt(60 * dt) so the realised diffusion per second matches at any
+    # tick rate -- times the world scale below, so the diffusion covers
+    # the same *fraction* of the world at any resolution.
+    ("step_scale", "f32"),
+    # The same-beings-at-every-resolution law (§18, round 2): every
+    # length in this block arrives pre-multiplied by field_width /
+    # WORLD_WIDTH, and this factor carries the scale for the lengths the
+    # shaders derive themselves (the trait size, the sparkle's stamp).
+    # The founding file was pixel-native because it only ever lived at
+    # one window; the port lives at every size.
+    ("world_scale", "f32"),
+    # Friendship (soul 2). Probability per tick; radius in texels. The
+    # three-friend cap is a law, not a knob -- it is a constant in the
+    # shader.
+    ("friend_prob", "f32"),
+    ("friend_radius", "f32"),
+    # Lineage (soul 4). Probability per empty slot per tick, the maturity
+    # gate in ticks, and the birth scatter.
+    ("spawn_prob", "f32"),
+    ("mature_ticks", "f32"),
+    ("spawn_radius", "f32"),
+    # The birth fade-in, in ticks (the founding file's age/50 frames).
+    ("fadein_ticks", "f32"),
+    # The canvas field (soul 7): per-tick decay, already 1 - exp(-rate*dt).
+    ("fade", "f32"),
+    # Deposit amplitudes. Bodies and bonds are sustained emitters and
+    # arrive per-tick (emit-per-second * dt) so steady-state canvas level
+    # is emit/fade_rate whatever the tick rate; a sparkle is an *event* and
+    # its amplitude is absolute.
+    ("body_emit", "f32"),
+    ("bond_emit", "f32"),
+    ("bond_width", "f32"),
+    # Bond span differentiation (§18.2, the round-2 ruling): intra-village
+    # bonds are background hum at near-founding hairline; the long emigrant
+    # lines keep their earned width and presence. The ramp runs from
+    # friend_radius (formation scale) to a few multiples of it.
+    ("bond_near_width", "f32"),
+    ("bond_near_gain", "f32"),
+    ("sparkle_amp", "f32"),
+    ("sparkle_prob", "f32"),
+    ("sparkle_offset", "f32"),
+    # The glow skirt (§18.2): radius as a multiple of the body's, and its
+    # amplitude relative to the core.
+    ("glow_mult", "f32"),
+    ("glow_gain", "f32"),
+    # The breath layer (§18.1 soul 7, incarnated properly): the founding
+    # file's wander-shadows were an 8-bit canvas quantisation floor -- a
+    # rounding error that became a soul. Here it is explicit: the canvas
+    # alpha channel max-accumulates a ghost of everywhere light has been,
+    # decaying on a slow clock (ghost_fade is per tick), rendered at
+    # ghost_luma as a faint cool-grey breath under the villages.
+    ("ghost_gain", "f32"),
+    ("ghost_fade", "f32"),
+    ("ghost_luma", "f32"),
+    # The pulse (the founding sin(time*0.05 + x*0.01) * 0.5): accumulated
+    # phase (host state, checkpointed), spatial frequency, amplitude.
+    ("pulse_phase", "f32"),
+    ("pulse_x", "f32"),
+    ("pulse_amp", "f32"),
+    # Composite: aspect correction (both axes wrap; see
+    # backend.aspect_correction) and the canvas-to-HDR gain.
+    ("x_scale", "f32"),
+    ("y_scale", "f32"),
+    ("out_gain", "f32"),
+    # The trail layer's rendered ceiling (§18 round 6): the founding
+    # 8-bit source-over bound, restated as a soft knee on the additive
+    # record.
+    ("trail_knee", "f32"),
+    # The painter's order, restored (§18 round 5): the display-linear
+    # level a body's own colour is drawn at when the compositor paints
+    # the owned core source-over the canvas -- emit/fade, the same
+    # steady-state level the trail holds, so the look the review ratified
+    # keeps its brightness while neighbours lose their vote in it.
+    ("body_level", "f32"),
+]
+
+# --------------------------------------------------------------------------
 # Render parameters -- bound to composite / safety / blit.
 # --------------------------------------------------------------------------
 
@@ -518,6 +632,7 @@ def _dtype(fields: list[Field]) -> np.dtype:
 
 SIM_DTYPE = _dtype(SIM_FIELDS)
 RHIZ_DTYPE = _dtype(RHIZ_FIELDS)
+THINGS_DTYPE = _dtype(THINGS_FIELDS)
 RENDER_DTYPE = _dtype(RENDER_FIELDS)
 LAYER_DTYPE = _dtype(LAYER_FIELDS)
 EVENT_DTYPE = _dtype(EVENT_FIELDS)

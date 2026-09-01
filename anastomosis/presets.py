@@ -177,6 +177,22 @@ RHIZOTRON_PRESETS: dict[str, Macros] = {
 
 PRESETS.update(RHIZOTRON_PRESETS)
 
+# The Small Strange Things preset (DESIGN.md §18). One, because the port
+# has one tuning: the founding file had no knobs at all, and the macros
+# that reach this world are the shared render ones (brightness, palette is
+# ignored -- a trait hue is a trait). Regulation table, like the
+# rhizotron's, for the same one-tuning reason.
+THINGS_PRESETS: dict[str, Macros] = {
+    "village": Macros(
+        intensity=0.50, scale=0.50, tempo=0.45, palette=0.30,
+        brightness=0.35, filament_glow=0.45, depth=0.60, stability=0.0,
+        parallax=0.60,
+        event_rate=0.50,
+    ),
+}
+
+PRESETS.update(THINGS_PRESETS)
+
 DEFAULT_PRESET = "default"
 
 # Which mode each preset was tuned in. A separate table rather than a field on
@@ -198,14 +214,20 @@ PRESET_MODES: dict[str, str] = {
 # positions only mean something through the world that renders them -- and
 # the same discipline: every preset appears, absence is an error.
 PRESET_WORLDS: dict[str, str] = {
-    name: ("rhizotron" if name in RHIZOTRON_PRESETS else "fungal")
+    name: (
+        "rhizotron" if name in RHIZOTRON_PRESETS
+        else "things" if name in THINGS_PRESETS
+        else "fungal"
+    )
     for name in PRESETS
 }
 
 
 def world_for_backend(backend: str) -> str:
     """The preset world a backend draws from."""
-    return "rhizotron" if backend == "rhizotron" else "fungal"
+    if backend in ("rhizotron", "things"):
+        return backend
+    return "fungal"
 
 
 def get(name: str) -> Macros:

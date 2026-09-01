@@ -127,6 +127,15 @@ BACKEND_LABELS: list[tuple[str, str, str]] = [
         "whole window sinking at hour-hand speed through soil that never "
         "repeats. Roots arrive in a later build.",
     ),
+    (
+        "things",
+        "Small Strange Things",
+        "The household's first artwork, ported so it persists (DESIGN.md "
+        "§18): little wandering beings that befriend each other, sparkle "
+        "for no reason, and raise villages under a gentle cap. Nothing "
+        "dies, bonds never break, and the world remembers itself between "
+        "launches. Click to add a few where you point.",
+    ),
 ]
 
 # How wide the volumetric slab is (config.VOLUME_DETAIL), described by what it
@@ -728,7 +737,8 @@ class ControlPanel(QtWidgets.QWidget):
         regulation whatever the mode key says (DESIGN.md §15, §16).
         """
         visible = (
-            self._mode() == "resonance" and self.app.backend != "rhizotron"
+            self._mode() == "resonance"
+            and self.app.backend not in ("rhizotron", "things")
         )
         self.filaments_check.setVisible(visible)
         self.audio_status.setVisible(visible)
@@ -748,11 +758,11 @@ class ControlPanel(QtWidgets.QWidget):
         than hidden -- the same treatment the slab's controls get under the
         layered view.
         """
-        rhizotron = self.app.backend == "rhizotron"
-        self.mode_combo.setEnabled(not rhizotron)
-        if rhizotron:
+        one_tuning = self.app.backend in ("rhizotron", "things")
+        self.mode_combo.setEnabled(not one_tuning)
+        if one_tuning:
             self.mode_combo.setToolTip(
-                "The rhizotron has one tuning. Mode returns when you switch "
+                "This world has one tuning. Mode returns when you switch "
                 "back to a fungal view."
             )
         else:

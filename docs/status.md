@@ -182,3 +182,22 @@ now the thickness -- which has a defensible range and a cost curve but no
 measured answer for where inside that range the image stops improving, since
 that is exactly the judgement a software adapter cannot make.
 The layered path stays the default until that judgement has been made.
+
+### The Small Strange Things (§18)
+
+Step 1 of §18.6 is built and green: the port runs on the real backend, the
+sixteen soul-tests pass (no death, bonds never break, three-friend cap,
+traits fixed for life, click-to-add, bit-identical resume, the flash bound
+with sparkles at their ceiling), and the full suite passes around it. The
+founding file is in the repo verbatim as the reference implementation.
+The eyes-pass (§18.6 step 3) ran three rounds with the porch in the
+review seat and is COMPLETE from the direction side: round 1 passed the
+identity test at the structural layer and moved every judgement onto the
+light; round 2 landed the candy lifts, span-differentiated bonds and the
+breath layer; round 3 landed the same-beings-at-every-resolution law
+(world units, `WORLD_WIDTH` a constant). The fans — the breath
+remembering the emigrant lines' sweeps — were ratified as founding
+phenotype against the primary source. What is open is the governance's
+final gate, and only that: the first human felt-response pass on a real
+screen, then the merge. One named-and-unbuilt mechanism waits on those
+eyes (the ghost-tracking threshold, §18).

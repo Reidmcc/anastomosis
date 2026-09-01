@@ -81,6 +81,7 @@ from . import config as config_module
 from . import engine as engine_module
 from . import gpu_params
 from . import rhizotron as rhizotron_module
+from . import things as things_module
 from . import volume as volume_module
 
 log = logging.getLogger(__name__)
@@ -826,9 +827,83 @@ class _RhizotronLayout(_Layout):
             engine.restore_season(season)
 
 
+class _ThingsLayout(_Layout):
+    """The Small Strange Things: the canvas, the population, the breath.
+
+    The smallest layout of all, and the point of the whole port (DESIGN.md
+    §18.2): one canvas texture (image and trail, one object) and one
+    population buffer whose slots are identities -- nothing dies, so a
+    saved village is the same village, its ages in ticks, its friendships
+    intact. The deposit accumulator is drained by ``atomicExchange`` every
+    tick and so is empty between ticks, exactly like the others.
+    """
+
+    name = "things"
+
+    def geometry_meta(self, geometry) -> dict[str, Any]:
+        return {
+            "width": int(geometry.width),
+            "height": int(geometry.height),
+            "capacity": int(geometry.capacity),
+        }
+
+    def read_geometry(self, meta: dict[str, Any]):
+        block = meta.get("geometry")
+        if not isinstance(block, dict):
+            return None
+        try:
+            return things_module.ThingsGeometry(
+                width=int(block["width"]),
+                height=int(block["height"]),
+                capacity=int(block["capacity"]),
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
+    def expected_arrays(
+        self, geometry, version: int = FORMAT_VERSION
+    ) -> dict[str, tuple[int, ...]]:
+        return {
+            "world.canvas": (geometry.height, geometry.width, 4),
+            "world.things": (
+                max(geometry.capacity, 1) * things_module.THING_STRIDE,
+            ),
+        }
+
+    def capture(self, engine) -> dict[str, np.ndarray]:
+        pair = engine.canvas
+        return {
+            "world.canvas": _read_texture(
+                engine.device, pair.textures[pair.index]),
+            "world.things": _read_buffer(engine.device, engine.things.cur),
+        }
+
+    def restore_arrays(self, engine, arrays: dict[str, np.ndarray]) -> None:
+        canvas = arrays.get("world.canvas")
+        if canvas is not None:
+            for texture in engine.canvas.textures:
+                _write_texture(engine.device, texture, canvas)
+            engine.canvas.index = 0
+        things = arrays.get("world.things")
+        if things is not None:
+            for buffer in engine.things.buffers:
+                engine.device.queue.write_buffer(buffer, 0, things.tobytes())
+            engine.things.index = 0
+
+    def engine_meta(self, engine) -> dict[str, Any]:
+        return {"pulse": engine.pulse_state()}
+
+    def restore_engine_meta(self, engine, saved: dict[str, Any]) -> None:
+        pulse = saved.get("pulse")
+        if isinstance(pulse, dict):
+            engine.restore_pulse(pulse)
+
+
 LAYOUTS: dict[str, _Layout] = {
     layout.name: layout
-    for layout in (_LayeredLayout(), _VolumeLayout(), _RhizotronLayout())
+    for layout in (
+        _LayeredLayout(), _VolumeLayout(), _RhizotronLayout(), _ThingsLayout()
+    )
 }
 
 

@@ -1082,6 +1082,131 @@ class RhizotronParams:
 
 
 @dataclass
+class ThingsParams:
+    """The Small Strange Things port's own primitives -- DESIGN.md §18.
+
+    Only read when ``Config.backend`` is ``"things"``. Nothing here
+    duplicates a parameter the other backends have, because the Things
+    share no machinery with fungus or soil; what the backends share -- the
+    output chain -- the port reaches through the same ``render`` and
+    ``safety`` blocks as everyone else.
+
+    The defaults are the founding file's constants, converted from
+    per-60fps-frame to per-second where they were rates
+    (``docs/founding/small_strange_thing.html`` is the reference
+    implementation; §18.1 is the list of which of these are souls rather
+    than knobs). Distances are *world units* -- texels at the reference
+    width ``things.WORLD_WIDTH`` -- scaled to the canvas when packed, so
+    the Things are the same beings at every resolution (the round-2 law).
+    """
+
+    # The village cap (§18.1 soul 4): the founding 200. Structural -- the
+    # population buffer is sized by it, so a saved world keeps the
+    # capacity it was lived in and a change takes effect on reset.
+    capacity: int = 200
+    # The founding file started with five.
+    seed_count: int = 5
+
+    # Friendship (soul 2). The founding scan fired at 1%/frame within 50
+    # pixels; the three-friend cap is a constant in the shader, not here.
+    friend_rate: float = 0.6      # per second (1% per 60fps frame)
+    friend_radius: float = 50.0   # texels
+
+    # Lineage (soul 4). The founding spawn rolled 0.5%/frame per mature
+    # Thing past age 100 frames, scattered ±25 pixels.
+    spawn_rate: float = 0.3       # per second, per empty slot's lottery
+    mature_seconds: float = 1.67  # the founding age > 100 frames
+    spawn_radius: float = 25.0    # texels, half-width of the scatter
+
+    # The birth fade-in: the founding alpha = min(1, age / 50 frames).
+    fadein_seconds: float = 0.83
+
+    # The canvas (soul 7): the founding 5%-per-frame fade, as a rate.
+    # Larger is shorter ghosts. 0.95^60 per second = e^-3.1.
+    fade_rate: float = 3.1        # per second
+
+    # Light (§18.2). Sustained emitters are per-second, so steady-state
+    # canvas level is emit/fade_rate at any tick rate; the sparkle is an
+    # event and its amplitude is absolute.
+    #
+    # The round-2 register ruling (porch review, 2026-09-01): the Things
+    # are not reverent -- their register is construction-paper candy, and
+    # the moodiness belongs to the black field, never to the inhabitants.
+    # body_emit slightly over fade_rate gives cores the founding disc's
+    # opaque confidence; the lifts below give them back their saturation.
+    body_emit: float = 3.6
+    # Raised with the round-7 layer split so the emigrant lines keep
+    # their ratified presence through the dimmed history layer: rendered
+    # bond level = 0.2 * (bond_emit/fade_rate) * out_gain, held at its
+    # round-3 value.
+    bond_emit: float = 5.0
+    bond_width: float = 1.2       # texels: the LONG lines' earned width
+    # Intra-village bonds are background hum (round-2 ruling): near the
+    # formation scale they approach the founding hairline; the ramp to
+    # full presence runs out to a few friend_radii.
+    bond_near_width: float = 0.6
+    bond_near_gain: float = 0.3   # fraction of bond_emit at village scale
+    sparkle_amp: float = 0.8      # raised with the round-7 split, like bonds
+    sparkle_rate: float = 1.2     # per second (2% per 60fps frame)
+    sparkle_offset: float = 5.0   # texels, the founding ±5 scatter
+    glow_mult: float = 2.4        # glow-skirt radius over body radius
+    glow_gain: float = 0.12       # skirt amplitude relative to the core
+
+    # The breath layer (soul 7, incarnated properly). The founding
+    # wander-shadows turn out to be an 8-bit canvas quantisation floor --
+    # the fade stalled below ~10/255 and every village stood permanently
+    # on the ghost of everywhere it had been. The port makes the rounding
+    # error a mechanism: the canvas alpha channel max-accumulates
+    # deposited light times ghost_gain and decays at ghost_fade_rate --
+    # minutes, not seconds: breath on glass with a memory -- and the
+    # compositor renders it at ghost_luma as a faint cool-grey shadow.
+    # The gain scales the *canvas* value the ghost tracks (rate-invariant
+    # by construction), not the raw per-tick deposit.
+    ghost_gain: float = 1.5
+    ghost_fade_rate: float = 0.0006   # per second; ~20 min half-life
+    ghost_luma: float = 0.04
+
+    # The candy lifts (§18.4's colour half): regulation's resolved l_max
+    # and c_max are tuned for the fungal field's restraint, and the
+    # founding hsl(h, 60%, 50%) discs live above them in both axes.
+    # Applied in resolve like the rhizotron's exposure_lift -- factors on
+    # the resolved values, before overrides, inside the safety ceilings.
+    luma_lift: float = 1.25
+    chroma_lift: float = 1.45
+
+    # The breath: the founding sin(time*0.05 + x*0.01)*0.5 at 60 fps.
+    pulse_rate: float = 3.0       # rad/s (0.05 * 60)
+    pulse_x: float = 0.01         # rad per texel
+    pulse_amp: float = 0.5        # texels of radius
+
+    # Participation (soul 9): the founding click spawned three, ±10 px.
+    per_click: int = 3
+    click_scatter: float = 10.0
+
+    # Canvas-to-HDR gain at composite — the history layer's whole
+    # brightness (§18 round 7): THE HISTORY IS QUIETER THAN THE LIFE.
+    # The first viewer's ruling after watching an aged world: the visible
+    # dot is its core plus its canvas halo, and when the history layer
+    # renders at the life's own level, small dots read as their washed
+    # halos. Considerably dimmer, still easily noticeable; bodies live in
+    # the overlay and keep full brightness, and bond/sparkle emit are
+    # re-normalised above so the living marks keep their presence.
+    out_gain: float = 0.4
+
+    # The trail layer's rendered ceiling (§18 round 6), in canvas units
+    # -- a soft tanh knee, the fungal trail_knee idea applied to the
+    # port. The founding 8-bit source-over canvas could never hold more
+    # light than its brightest paint, so its residue was bounded at 1.0
+    # by construction; the additive record has no such bound, and in an
+    # old village the bonds -- which never break -- pile interior light
+    # without limit. The knee is that founding ceiling, restated: history
+    # renders at most this bright, however much the record holds.
+    # Tightened in round 7 alongside out_gain: an aged pile renders at
+    # most knee * out_gain = 0.4, a third of a body's own level.
+    trail_knee: float = 1.0
+
+
+@dataclass
 class RenderParams:
     """Compositing, depth, and the Oklab colour mapping. DESIGN.md §5-6.
 
@@ -1236,6 +1361,7 @@ class Params:
     climate: ClimateParams = field(default_factory=ClimateParams)
     volume: VolumeParams = field(default_factory=VolumeParams)
     rhizotron: RhizotronParams = field(default_factory=RhizotronParams)
+    things: ThingsParams = field(default_factory=ThingsParams)
     homeostat: HomeostatParams = field(default_factory=HomeostatParams)
     events: EventParams = field(default_factory=EventParams)
     audio: AudioParams = field(default_factory=AudioParams)
@@ -1767,12 +1893,14 @@ def active_mode(config: "Config") -> str:
     §15: the rhizotron has one tuning, so under that backend the macros
     resolve through regulation whatever the mode key says -- the key keeps
     its value so switching backends away again restores the fungal tuning.
+    The Things (§18) have one tuning for the same reason and resolve the
+    same way -- and, like the rhizotron, cannot hear.
     Split out of :meth:`Config.resolve` because the application needs the
     same answer for a different question: the audio drive (§16) runs exactly
     when this returns ``"resonance"``, and a drive keyed off the raw mode
     string would keep listening under a backend that cannot hear.
     """
-    if normalise_backend(config.backend) == "rhizotron":
+    if normalise_backend(config.backend) in ("rhizotron", "things"):
         return "regulation"
     return normalise_mode(config.mode)
 
@@ -1932,7 +2060,7 @@ def curve_value(macro: str, path: str, value: float, mode: str = DEFAULT_MODE) -
 # --------------------------------------------------------------------------
 
 
-BACKENDS = ("layered", "volumetric", "rhizotron")
+BACKENDS = ("layered", "volumetric", "rhizotron", "things")
 DEFAULT_BACKEND = "layered"
 
 # The slab's lateral resolution, as three named sizes rather than a free
@@ -2114,6 +2242,22 @@ class Config:
             # never amplifies, so the pane honestly darkens as the record
             # accumulates (see SafetyParams.exposure_max).
             params.safety.exposure_max = 1.0
+
+        # The Things (§18.4): attenuation-only for the inverse arc. A
+        # mean-holding governor would brighten five founding Things into a
+        # blaze and then dim every village for the crime of growing; with
+        # amplification pinned off, the mode's brightness is its census and
+        # the governor stays only as a guard against over-bright configs.
+        # And the candy lifts: the founding discs live above regulation's
+        # resolved lightness and chroma ceilings, so this backend lifts
+        # both -- applied like a macro, before the overrides, inside the
+        # hard ceilings `validate` holds everyone to.
+        if normalise_backend(self.backend) == "things":
+            params.safety.exposure_max = 1.0
+            params.render.l_max = min(
+                params.render.l_max * params.things.luma_lift, 0.85)
+            params.render.c_max = min(
+                params.render.c_max * params.things.chroma_lift, 0.215)
 
         # The named slab size, which is a choice rather than a curve. Applied
         # after the macros and before the overrides, so that it beats nothing
@@ -2379,6 +2523,48 @@ def validate(params: Params) -> Params:
     rhiz.wet_darken = min(max(float(rhiz.wet_darken), 0.0), 0.80)
     rhiz.wet_chroma = min(max(float(rhiz.wet_chroma), 0.0), 2.0)
     rhiz.wet_ema_tau = min(max(float(rhiz.wet_ema_tau), 0.1), 60.0)
+
+    # The Things (§18). The capacity ceiling is the "resolution up,
+    # population not" law with a margin, not an invitation: ten thousand
+    # Things would be a different sociology wearing their name. Emitters
+    # and events are bounded the way every luminance actor is; everything
+    # else is bounded against nonsense (a negative radius, an unpayable
+    # rate), not against taste.
+    things = params.things
+    things.capacity = int(min(max(int(things.capacity), 1), 2048))
+    things.seed_count = int(min(max(int(things.seed_count), 0), things.capacity))
+    things.friend_rate = min(max(float(things.friend_rate), 0.0), 60.0)
+    things.friend_radius = min(max(float(things.friend_radius), 1.0), 512.0)
+    things.spawn_rate = min(max(float(things.spawn_rate), 0.0), 60.0)
+    things.mature_seconds = min(max(float(things.mature_seconds), 0.0), 86400.0)
+    things.spawn_radius = min(max(float(things.spawn_radius), 0.0), 256.0)
+    things.fadein_seconds = min(max(float(things.fadein_seconds), 0.05), 600.0)
+    things.fade_rate = min(max(float(things.fade_rate), 0.01), 60.0)
+    things.body_emit = min(max(float(things.body_emit), 0.0), 20.0)
+    things.bond_emit = min(max(float(things.bond_emit), 0.0), 20.0)
+    things.bond_width = min(max(float(things.bond_width), 0.5), 8.0)
+    things.bond_near_width = min(max(float(things.bond_near_width), 0.3), 8.0)
+    things.bond_near_gain = min(max(float(things.bond_near_gain), 0.0), 1.0)
+    things.ghost_gain = min(max(float(things.ghost_gain), 0.0), 64.0)
+    things.ghost_fade_rate = min(
+        max(float(things.ghost_fade_rate), 0.0), 1.0)
+    # Luminance-relevant, bounded the way every luminance actor is: the
+    # breath must stay breath.
+    things.ghost_luma = min(max(float(things.ghost_luma), 0.0), 0.20)
+    things.luma_lift = min(max(float(things.luma_lift), 0.5), 2.0)
+    things.chroma_lift = min(max(float(things.chroma_lift), 0.5), 2.0)
+    things.sparkle_amp = min(max(float(things.sparkle_amp), 0.0), 1.0)
+    things.sparkle_rate = min(max(float(things.sparkle_rate), 0.0), 30.0)
+    things.sparkle_offset = min(max(float(things.sparkle_offset), 0.0), 64.0)
+    things.glow_mult = min(max(float(things.glow_mult), 1.0), 8.0)
+    things.glow_gain = min(max(float(things.glow_gain), 0.0), 1.0)
+    things.pulse_rate = min(max(float(things.pulse_rate), 0.0), 30.0)
+    things.pulse_x = min(max(float(things.pulse_x), 0.0), 1.0)
+    things.pulse_amp = min(max(float(things.pulse_amp), 0.0), 4.0)
+    things.per_click = int(min(max(int(things.per_click), 1), 12))
+    things.click_scatter = min(max(float(things.click_scatter), 0.0), 128.0)
+    things.out_gain = min(max(float(things.out_gain), 0.0), 8.0)
+    things.trail_knee = min(max(float(things.trail_knee), 0.2), 8.0)
     return params
 
 

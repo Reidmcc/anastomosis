@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { 
+            margin: 0; 
+            background: #0a0a0a; 
+            overflow: hidden;
+            cursor: crosshair;
+        }
+        canvas { 
+            display: block; 
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        
+        let things = [];
+        let time = 0;
+        
+        function Thing(x, y) {
+            this.x = x;
+            this.y = y;
+            this.age = 0;
+            this.size = Math.random() * 3 + 1;
+            this.speed = Math.random() * 0.5 + 0.1;
+            this.hue = Math.random() * 360;
+            this.friends = [];
+            this.curiosity = Math.random();
+            this.shyness = Math.random();
+        }
+        
+        Thing.prototype.grow = function() {
+            this.age++;
+            
+            // Wander
+            this.x += (Math.random() - 0.5) * this.speed;
+            this.y += (Math.random() - 0.5) * this.speed;
+            
+            // Stay in bounds, sort of
+            if (this.x < 0) this.x = canvas.width;
+            if (this.x > canvas.width) this.x = 0;
+            if (this.y < 0) this.y = canvas.height;
+            if (this.y > canvas.height) this.y = 0;
+            
+            // Look for friends
+            if (this.curiosity > this.shyness && Math.random() < 0.01) {
+                things.forEach(other => {
+                    if (other !== this) {
+                        let distance = Math.sqrt((this.x - other.x) ** 2 + (this.y - other.y) ** 2);
+                        if (distance < 50 && this.friends.length < 3) {
+                            this.friends.push(other);
+                        }
+                    }
+                });
+            }
+            
+            // Sometimes spawn new things
+            if (this.age > 100 && Math.random() < 0.005 && things.length < 200) {
+                let newX = this.x + (Math.random() - 0.5) * 50;
+                let newY = this.y + (Math.random() - 0.5) * 50;
+                things.push(new Thing(newX, newY));
+            }
+        };
+        
+        Thing.prototype.draw = function() {
+            // Draw connections to friends
+            this.friends.forEach(friend => {
+                ctx.strokeStyle = `hsla(${(this.hue + friend.hue) / 2}, 50%, 40%, 0.2)`;
+                ctx.lineWidth = 0.5;
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y);
+                ctx.lineTo(friend.x, friend.y);
+                ctx.stroke();
+            });
+            
+            // Draw self
+            let alpha = Math.min(1, this.age / 50);
+            let pulseSize = this.size + Math.sin(time * 0.05 + this.x * 0.01) * 0.5;
+            
+            ctx.fillStyle = `hsla(${this.hue}, 60%, 50%, ${alpha * 0.7})`;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, pulseSize, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Little sparkle sometimes
+            if (Math.random() < 0.02) {
+                ctx.fillStyle = `hsla(${this.hue + 60}, 80%, 80%, 0.8)`;
+                ctx.beginPath();
+                ctx.arc(this.x + (Math.random() - 0.5) * 10, 
+                       this.y + (Math.random() - 0.5) * 10, 
+                       1, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        };
+        
+        function animate() {
+            time++;
+            
+            ctx.fillStyle = 'rgba(10, 10, 10, 0.05)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            things.forEach(thing => {
+                thing.grow();
+                thing.draw();
+            });
+            
+            requestAnimationFrame(animate);
+        }
+        
+        canvas.addEventListener('click', (e) => {
+            for (let i = 0; i < 3; i++) {
+                things.push(new Thing(
+                    e.clientX + (Math.random() - 0.5) * 20,
+                    e.clientY + (Math.random() - 0.5) * 20
+                ));
+            }
+        });
+        
+        // Start with a few things
+        for (let i = 0; i < 5; i++) {
+            things.push(new Thing(
+                Math.random() * canvas.width,
+                Math.random() * canvas.height
+            ));
+        }
+        
+        animate();
+    </script>
+</body>
+</html>

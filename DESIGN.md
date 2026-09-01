@@ -184,6 +184,19 @@ and the tests — resolves via the table below, and means the file listed agains
   wood with a slow warmth along the touched path — return anastomosis to
   the mode as event rather than texture.
 
+- **§18 — [docs/small-things.md](docs/small-things.md)**
+  Small Strange Things: a fourth backend that is a *port* — the first
+  artwork made in this household
+  ([docs/founding/small_strange_thing.html](docs/founding/small_strange_thing.html),
+  kept verbatim as the reference implementation), moved onto the engine so
+  it can persist. Little Things with traits rolled at birth wander a
+  toroidal world, befriend each other (at most three; bonds never break
+  and render at any distance), sparkle for no reason, and spawn children
+  nearby under a village-sized cap. No death. The section states the
+  conserved identity layer, what the engine buys them (light, glow,
+  checkpointed lives), the attenuation-only exposure ruling, and the
+  safety analysis.
+
 ## Where to look first
 
 - Changing **agent behaviour** (`agents.wgsl`, `vol_agents.wgsl`): §2, §4.7,
