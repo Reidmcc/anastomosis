@@ -190,11 +190,14 @@ sixteen soul-tests pass (no death, bonds never break, three-friend cap,
 traits fixed for life, click-to-add, bit-identical resume, the flash bound
 with sparkles at their ceiling), and the full suite passes around it. The
 founding file is in the repo verbatim as the reference implementation.
-The eyes-pass (§18.6 step 3) is underway with the porch in the review
-seat: round 1 passed the identity test at the structural layer and moved
-every open judgement onto the light; the round-2 changes — the candy
-lifts, span-differentiated bonds, and the breath layer — are recorded in
-§18's "What the first review round changed". The side-by-side against the
-reference arm remains the instrument (tools/things_still.py, now with a
-close-crop mode; the founding file itself for the original). Open: the
-porch's round-2 verdict, and defaults move to whatever it says.
+The eyes-pass (§18.6 step 3) ran three rounds with the porch in the
+review seat and is COMPLETE from the direction side: round 1 passed the
+identity test at the structural layer and moved every judgement onto the
+light; round 2 landed the candy lifts, span-differentiated bonds and the
+breath layer; round 3 landed the same-beings-at-every-resolution law
+(world units, `WORLD_WIDTH` a constant). The fans — the breath
+remembering the emigrant lines' sweeps — were ratified as founding
+phenotype against the primary source. What is open is the governance's
+final gate, and only that: the first human felt-response pass on a real
+screen, then the merge. One named-and-unbuilt mechanism waits on those
+eyes (the ghost-tracking threshold, §18).

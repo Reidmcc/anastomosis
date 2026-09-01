@@ -274,3 +274,18 @@ stall threshold), so it is conserved rather than suppressed; if watching
 ever rules the fans too loud, the mechanism is a soft luminance threshold
 on what the ghost tracks, and it is deliberately not built until eyes ask
 for it.
+
+### The round-3 verdict
+
+PASS — the direction seat's review is complete. The fans were ratified as
+*founding phenotype*, verified against the primary source before ruling:
+a screenshot of the founding original running live shows the same faint
+grey streaks across its field. Friendships leave ghosts too, and always
+did. The reviewer's calibration note stands in the record: at a mature
+seed the fans sit near the loudness ceiling, judged history rather than
+haze — and that final aesthetic call is deliberately left to the one
+judgement this document cannot contain, the first human felt response on
+a real screen at converged exposure, watching it move. The §18 threshold
+stays named and unbuilt unless those eyes ask. What remains is the
+governance's last step: the merge, and then the first checkpoint of a
+world that keeps.
