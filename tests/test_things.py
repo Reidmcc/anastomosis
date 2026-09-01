@@ -567,11 +567,15 @@ def test_the_living_do_not_tint_each_other(gpu_device, offscreen_target):
     frame = engine.read_final_rgba()[..., :3]
 
     def core_pixel(fx):
+        # Sample the subject's exact centre, where its ownership is
+        # certain. An argmax over a window can land on an unowned gap
+        # between discs -- summed skirts can outshine an owned core by a
+        # margin that flips with the adapter's rounding, which is
+        # exactly the pastel this test exists to measure, sampled by
+        # accident (found by CI's software adapter disagreeing with the
+        # 3080 about which pixel was brightest).
         px, py = int(fx / g.width * WIDTH), int(0.5 * HEIGHT)
-        patch = frame[py - 3:py + 3, px - 3:px + 3]
-        lum = R.lightness(patch)
-        yx = np.unravel_index(int(np.argmax(lum)), lum.shape)
-        return patch[yx[0], yx[1]]
+        return frame[py, px]
 
     l_mob, c_mob = _oklab_of(core_pixel(ring_x))
     l_lone, c_lone = _oklab_of(core_pixel(g.width * 0.75))
