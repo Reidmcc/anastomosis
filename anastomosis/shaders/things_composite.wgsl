@@ -40,8 +40,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // as a faint cool-grey wander-shadow -- present at converged
     // exposure, always quieter than any body. The moodiness of this
     // image lives in the field; the shadows are how the field remembers.
+    //
+    // THE GHOST MAY NOT TINT THE LIVING (§18, round 4). Additive grey
+    // under a candy disc is milk: the felt pass found bodies pastel in
+    // dense breath and vibrant on virgin ground -- settlement being
+    // punished, which was never in any soul. The founding file's
+    // source-over order (fade first, discs after) guaranteed the living
+    // always sat on top of their own history, and shadows existed only
+    // where no body currently stood; this occlusion is that order,
+    // restated for an additive canvas. The knees are trail arithmetic,
+    // not taste: trail older than about two seconds has decayed below
+    // 0.02 (steady state times e^-fade_rate*t), so the breath keeps its
+    // full jurisdiction over settled ground, while anything the living
+    // are currently lighting -- cores, skirts, fresh wake -- occludes it
+    // fully by 0.12, well under the dimmest bilinear-diluted body core.
+    // A Thing over thick cloud and a Thing on virgin dark are identical
+    // by construction, and the shadows show exactly where no body
+    // currently stands.
     let ghost = clamp(canvas.a, 0.0, 1.0);
-    let breath = vec3<f32>(0.85, 0.92, 1.0) * (ghost * params.ghost_luma);
+    let lit_max = max(max(lit.r, lit.g), lit.b);
+    let occlusion = smoothstep(0.02, 0.12, lit_max);
+    let breath = vec3<f32>(0.85, 0.92, 1.0)
+        * (ghost * params.ghost_luma * (1.0 - occlusion));
 
     let rgb = fog + breath + lit * params.out_gain;
 

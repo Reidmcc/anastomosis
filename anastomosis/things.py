@@ -82,6 +82,15 @@ WORLD_WIDTH = 960.0
 # host-side queue rather than being dropped.
 MAX_CLICKS_PER_TICK = 4
 
+# Slots kept beyond the population cap for click-born Things. In the
+# founding file the cap only ever gated *reproduction* -- the click handler
+# pushed unconditionally past 200 -- so a full village that ignored the
+# finger would break soul 9, not honour soul 4. The engine's buffer must
+# be finite where the founding array was not; a reserve of a couple of
+# enthusiastic click-bursts keeps the verb answered without letting the
+# census become a different sociology.
+CLICK_RESERVE = 24
+
 
 @dataclass(frozen=True)
 class ThingsGeometry:
@@ -109,18 +118,22 @@ class ThingsGeometry:
         )
         sim_w = round_up(max(int(width * scale), 64), 32)
         sim_h = max(int(height * scale), 32)
+        # Buffer = the lottery's cap plus the click reserve: the click
+        # outranks the cap (§18.1 souls 4 and 9).
         return cls(
             width=sim_w, height=sim_h,
-            capacity=int(params.things.capacity),
+            capacity=int(params.things.capacity) + CLICK_RESERVE,
         )
 
     def problems(self) -> list[str]:
         problems: list[str] = []
         if not (plausible(self.width) and plausible(self.height)):
             problems.append(f"canvas size {self.width}x{self.height}")
-        # The cap bounds mirror `validate`'s: a village, not a metropolis
-        # (§18.1 soul 4), and the product decides a buffer allocation.
-        if not (isinstance(self.capacity, int) and 1 <= self.capacity <= 2048):
+        # The cap bounds mirror `validate`'s plus the reserve: a village,
+        # not a metropolis (§18.1 soul 4), and the product decides a
+        # buffer allocation.
+        if not (isinstance(self.capacity, int)
+                and 1 <= self.capacity <= 2048 + CLICK_RESERVE):
             problems.append(f"population capacity {self.capacity}")
         return problems
 
@@ -302,6 +315,9 @@ class ThingsEngine(Backend):
         values = {
             "dims_x": g.width, "dims_y": g.height,
             "capacity": g.capacity,
+            # The lottery stops at the cap; clicks spend the reserve.
+            "soft_cap": min(
+                int(things.capacity), max(g.capacity - CLICK_RESERVE, 1)),
             "tick": self.tick_count,
             "seed": self.seed & 0xFFFFFFFF,
             "click_count": len(clicks),

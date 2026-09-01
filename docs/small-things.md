@@ -275,6 +275,37 @@ ever rules the fans too loud, the mechanism is a soft luminance threshold
 on what the ghost tracks, and it is deliberately not built until eyes ask
 for it.
 
+### What the felt pass changed (round 4)
+
+The final gate did exactly what the governance built it for: motion,
+breath density and a real screen caught what stills at review scales
+structurally could not — bodies embedded in dense breath read
+milky-pastel while a Thing on virgin dark read full candy, because the
+compositor *added* the grey breath under the living and neutral light
+added to candy is desaturation. The ruling is a law now, phrase and all:
+**the ghost may not tint the living.** The founding file's source-over
+order (fade first, discs after) guaranteed the living always sat on top
+of their own history, and shadows existed only where no body currently
+stood; the fix restates that order for an additive canvas — the breath is
+occluded by living light, with knees set by trail arithmetic (full
+jurisdiction over ground older than ~two seconds, nothing at any body
+core), so a Thing over thick cloud and a Thing on virgin dark are
+identical by construction. Verified by `test_the_ghost_does_not_tint_the_living`
+(twin Things, one over a painted full-strength cloud, indistinguishable
+in Oklab L and C) and by a twin pair on a real aged world (ΔL 0.000,
+ΔC 0.003), with the breath confirmed standing where no body is.
+
+The verification instrument then caught a second founding truth the port
+had missed: **the click outranks the cap.** In the founding file the
+200-cap only ever gated *reproduction* — the click handler pushed
+unconditionally past it — but the port's structural capacity silently ate
+clicks once a world filled, and every long-lived world is full. The
+population buffer now carries a click reserve beyond the cap
+(`CLICK_RESERVE`): the lottery stops at the cap, budgeted by rank so one
+tick cannot overshoot it (the founding checked per push, synchronously),
+and click-born Things spend the reserve — a full village still answers
+the finger. `test_the_click_outranks_the_cap` holds it.
+
 ### The round-3 verdict
 
 PASS — the direction seat's review is complete. The fans were ratified as

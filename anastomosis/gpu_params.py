@@ -371,6 +371,11 @@ THINGS_FIELDS: list[Field] = [
     ("dims_x", "u32"),
     ("dims_y", "u32"),
     ("capacity", "u32"),
+    # The lottery's ceiling (§18.1 soul 4). The buffer is larger by the
+    # click reserve, because in the founding file the cap only ever gated
+    # reproduction -- the click handler pushed unconditionally. The click
+    # outranks the cap (soul 9); a full village still answers the finger.
+    ("soft_cap", "u32"),
     ("tick", "u32"),
     ("seed", "u32"),
     # Click-to-add (§18.1 soul 9): up to four clicks consumed per tick, in

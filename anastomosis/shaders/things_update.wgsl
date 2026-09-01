@@ -108,10 +108,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // An empty slot. Its rank among empty slots (previous state, so every
     // invocation agrees) decides whether it claims a pending click; the
-    // rest run the spawn lottery. Either way it writes only itself.
+    // rest run the spawn lottery. Either way it writes only itself. The
+    // same scan counts the living, because the lottery respects the cap
+    // and the click does not (souls 4 and 9: in the founding file the cap
+    // only gated reproduction; the click handler pushed past it).
     var rank = 0u;
-    for (var j = 0u; j < i; j = j + 1u) {
-        if (!thing_alive(things_in[j])) {
+    var alive_total = 0u;
+    for (var j = 0u; j < params.capacity; j = j + 1u) {
+        if (thing_alive(things_in[j])) {
+            alive_total = alive_total + 1u;
+        } else if (j < i) {
             rank = rank + 1u;
         }
     }
@@ -133,9 +139,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // match the founding `mature * 0.005` per frame (see ThingsParams);
     // near the cap the rate eases as empty slots grow scarce -- the cap
     // arriving as a softness rather than a wall.
+    // Lottery births are budgeted by rank so one tick cannot overshoot
+    // the cap however many empty slots roll well: the founding file
+    // checked `things.length < 200` per push, synchronously, and this is
+    // that check restated for parallel slots.
+    let budget = params.soft_cap - min(alive_total, params.soft_cap);
     let cand = pcg3(i, params.tick, params.seed ^ 0x51A17u) % params.capacity;
     let parent = things_in[cand];
-    if (thing_alive(parent)
+    if (rank < click_births + budget
+        && thing_alive(parent)
         && f32(parent.age) > params.mature_ticks
         && rnd(&seed) < params.spawn_prob) {
         let off = vec2<f32>(rnd_signed(&seed), rnd_signed(&seed))

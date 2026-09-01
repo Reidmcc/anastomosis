@@ -30,6 +30,7 @@ import reference as R
 from anastomosis import checkpoint, config
 from anastomosis.backend import aspect_correction
 from anastomosis.things import (
+    CLICK_RESERVE,
     NO_FRIEND,
     THING_ALIVE,
     THING_DTYPE,
@@ -109,7 +110,9 @@ def test_geometry_derives_and_bounds_itself():
     params = _resolve()
     geometry = ThingsGeometry.derive(WIDTH, HEIGHT, params)
     assert geometry.width % 32 == 0
-    assert geometry.capacity == params.things.capacity
+    # The buffer holds the cap plus the click reserve: the click outranks
+    # the cap (§18.1 souls 4 and 9).
+    assert geometry.capacity == params.things.capacity + CLICK_RESERVE
     assert geometry.problems() == []
     assert "Thing slots" in geometry.describe()
 
@@ -154,9 +157,33 @@ def test_the_village_is_capped_softly(gpu_device):
     for _ in range(200):
         engine.tick(params)
         count = int(_alive(_population(engine)).sum())
-        assert count <= 24
+        assert count <= 24, (
+            "the lottery overshot the cap; the founding checked per push"
+        )
     assert int(_alive(_population(engine)).sum()) == 24, (
         "an eager village should have filled its cap"
+    )
+
+
+def test_the_click_outranks_the_cap(gpu_device):
+    """Souls 4 and 9 together: in the founding file the cap only ever
+    gated reproduction -- the click handler pushed unconditionally. A
+    full village must still answer the finger, from the reserve."""
+    params = _resolve(overrides={
+        "things.capacity": 16,
+        "things.spawn_rate": 60.0,
+        "things.mature_seconds": 0.0,
+    })
+    engine = _engine(gpu_device, params, seed=73)
+    for _ in range(120):
+        engine.tick(params)
+    assert int(_alive(_population(engine)).sum()) == 16, "world never filled"
+
+    engine.queue_click(0.5, 0.5)
+    engine.tick(params)
+    count = int(_alive(_population(engine)).sum())
+    assert count == 16 + params.things.per_click, (
+        "a full world ignored the click; the verb is sacred"
     )
 
 
@@ -390,6 +417,94 @@ def test_the_breath_outlives_the_trail(gpu_device):
         "minutes"
     )
     assert ghost_now <= ghost_then + 1e-3, "an abandoned breath brightened"
+
+
+def test_the_ghost_does_not_tint_the_living(gpu_device, offscreen_target):
+    """The round-4 law, from the felt pass: a Thing must be the same candy
+    at home in its village as on fresh ground. One Thing sits on a
+    hand-painted full-strength breath cloud, an identical twin on virgin
+    dark; at converged exposure their brightest pixels must agree in both
+    lightness and chroma -- and the cloud itself must still show where no
+    body stands, because only the breath's jurisdiction changed."""
+    params = _resolve(overrides={"things.spawn_rate": 0.0,
+                                 "things.sparkle_rate": 0.0,
+                                 "things.friend_rate": 0.0})
+    engine = _engine(gpu_device, params, seed=71)
+    g = engine.geometry
+
+    # Twins: same traits, one over the cloud, one far away on the dark.
+    pop = _blank_population(g.capacity)
+    for i, x in enumerate((g.width * 0.25, g.width * 0.75)):
+        pop["x"][i] = x
+        pop["y"][i] = g.height * 0.5
+        # Oversized in world units on purpose: the tiny test field makes
+        # an ordinary citizen sub-texel, and this is a colour test -- the
+        # twins need real core pixels to compare.
+        pop["size"][i] = 20.0
+        pop["speed"][i] = 0.0     # hold still: this is a colour test
+        pop["hue"][i] = 140.0
+        pop["shyness"][i] = 1.0
+        pop["flags"][i] = THING_ALIVE
+    _write_population(engine, pop)
+
+    # A full-strength breath cloud around the first twin only.
+    cloud = np.zeros((g.height, g.width, 4), dtype=np.float16)
+    cloud[:, : g.width // 2, 3] = 1.0
+    for texture in engine.canvas.textures:
+        checkpoint._write_texture(engine.device, texture, cloud)
+
+    target, fmt = offscreen_target(WIDTH, HEIGHT)
+    for _ in range(150):
+        engine.tick(params)
+        engine.render(params, frac=1.0, target_view=target, target_format=fmt)
+
+    frame = engine.read_final_rgba()[..., :3]
+
+    def peak_patch(fx):
+        px = int(fx / g.width * WIDTH)
+        py = int(0.5 * HEIGHT)
+        patch = frame[py - 8:py + 8, px - 8:px + 8]
+        lum = R.lightness(patch)
+        yx = np.unravel_index(int(np.argmax(lum)), lum.shape)
+        return patch[yx[0], yx[1]]
+
+    clouded = peak_patch(g.width * 0.25)
+    virgin = peak_patch(g.width * 0.75)
+    # Compare in Oklab: the register lives in lightness and chroma.
+    def oklab_of(rgb):
+        r, g_, b = (float(v) for v in rgb)
+        # linear sRGB -> Oklab, matching common.wgsl.
+        l = 0.4122214708 * r + 0.5363325363 * g_ + 0.0514459929 * b
+        m = 0.2119034982 * r + 0.6806995451 * g_ + 0.1073969566 * b
+        s = 0.0883024619 * r + 0.2817188376 * g_ + 0.6299787005 * b
+        l_, m_, s_ = (abs(v) ** (1 / 3) * (1 if v >= 0 else -1)
+                      for v in (l, m, s))
+        L = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_
+        a = 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_
+        bb = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_
+        return L, (a * a + bb * bb) ** 0.5
+
+    l_cloud, c_cloud = oklab_of(clouded)
+    l_virgin, c_virgin = oklab_of(virgin)
+    assert abs(l_cloud - l_virgin) < 0.02, (
+        f"lightness differs over cloud vs virgin ground: "
+        f"{l_cloud:.3f} vs {l_virgin:.3f}"
+    )
+    assert abs(c_cloud - c_virgin) < 0.02, (
+        f"chroma differs over cloud vs virgin ground (milk): "
+        f"{c_cloud:.3f} vs {c_virgin:.3f}"
+    )
+
+    # And the cloud still shows where no body stands: a body-free clouded
+    # pixel is brighter than a body-free virgin pixel.
+    empty_cloud = R.lightness(
+        frame[HEIGHT // 8, WIDTH // 8][None, None])[0, 0]
+    empty_virgin = R.lightness(
+        frame[HEIGHT // 8, WIDTH - WIDTH // 8][None, None])[0, 0]
+    assert empty_cloud > empty_virgin + 0.005, (
+        "the breath vanished everywhere; only its jurisdiction was to "
+        "change"
+    )
 
 
 # ---------------------------------------------------------------------------
