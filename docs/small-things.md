@@ -306,6 +306,32 @@ tick cannot overshoot it (the founding checked per push, synchronously),
 and click-born Things spend the reserve — a full village still answers
 the finger. `test_the_click_outranks_the_cap` holds it.
 
+### What the second felt pass changed (round 5)
+
+The first human viewer kept watching past their own verdict and found the
+milk again — subtler: pastel village centres with pulses of full candy
+around them. The ring was the diagnosis: the additive canvas has no
+painter's order, so in a crowd the overlapping bodies, skirts and trails
+*sum*; lightness pegs at its ceiling, chroma cannot follow, and the
+excess renders as white at exactly the crowded cores, while the annulus
+where luminance falls off — and any lone Thing — keeps full saturation.
+The ghost was only the first tinter: **the living may not tint each other
+either.**
+
+The founding file never had this because it composited source-over —
+every disc painted 0.7 over everything beneath it, so a body's core was
+always mostly its own colour whatever the crowd did. Restored: each tick
+the bodies claim a per-texel ownership layer (`atomicMax`, later index
+wins — the founding draw order exactly), and the compositor paints the
+owner's own colour source-over trail, breath and neighbours at the
+founding 0.7, at the trail's own steady-state level so the ratified
+brightness holds. The 30% that shows through is the founding's own
+translucency: history and neighbours keep exactly the vote they always
+had. Ownership is derived state, wiped and rebuilt every tick, never
+checkpointed. `test_the_living_do_not_tint_each_other` holds it: a Thing
+mobbed by eight different-hued overlapping neighbours and its lone twin
+match at the core.
+
 ### The round-3 verdict
 
 PASS — the direction seat's review is complete. The fans were ratified as

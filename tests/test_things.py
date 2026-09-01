@@ -22,6 +22,8 @@ it is the founding file's.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 import wgpu
@@ -504,6 +506,81 @@ def test_the_ghost_does_not_tint_the_living(gpu_device, offscreen_target):
     assert empty_cloud > empty_virgin + 0.005, (
         "the breath vanished everywhere; only its jurisdiction was to "
         "change"
+    )
+
+
+def _oklab_of(rgb):
+    """linear sRGB -> (L, chroma), matching common.wgsl."""
+    r, g_, b = (float(v) for v in rgb)
+    l = 0.4122214708 * r + 0.5363325363 * g_ + 0.0514459929 * b
+    m = 0.2119034982 * r + 0.6806995451 * g_ + 0.1073969566 * b
+    s = 0.0883024619 * r + 0.2817188376 * g_ + 0.6299787005 * b
+    l_, m_, s_ = (abs(v) ** (1 / 3) * (1 if v >= 0 else -1)
+                  for v in (l, m, s))
+    L = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_
+    a = 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_
+    bb = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_
+    return L, (a * a + bb * bb) ** 0.5
+
+
+def test_the_living_do_not_tint_each_other(gpu_device, offscreen_target):
+    """The round-5 law, from the felt pass's second look: village cores
+    were whitening to pastel because the additive canvas summed
+    overlapping neighbours where the founding source-over painted each
+    disc 0.7 over everything beneath. With the painter's order restored,
+    a Thing mobbed by different-hued neighbours and its lone twin must
+    match at the core -- the crowd keeps only the founding's 30% vote."""
+    params = _resolve(overrides={"things.spawn_rate": 0.0,
+                                 "things.sparkle_rate": 0.0,
+                                 "things.friend_rate": 0.0})
+    engine = _engine(gpu_device, params, seed=79)
+    g = engine.geometry
+
+    pop = _blank_population(g.capacity)
+    ring_x, ring_y = g.width * 0.3, g.height * 0.5
+    # Eight overlapping neighbours in a tight ring, assorted hues.
+    for k in range(8):
+        ang = k * math.tau / 8.0
+        pop["x"][k] = ring_x + 3.0 * np.cos(ang)
+        pop["y"][k] = ring_y + 3.0 * np.sin(ang)
+        pop["size"][k] = 20.0
+        pop["hue"][k] = (k * 47.0) % 360.0
+        pop["shyness"][k] = 1.0
+        pop["flags"][k] = THING_ALIVE
+    # The subject sits on top of the mob -- highest index, so the
+    # painter's order gives it the brush, as the founding draw order
+    # would -- and its twin stands alone.
+    for slot, x in ((8, ring_x), (9, g.width * 0.75)):
+        pop["x"][slot] = x
+        pop["y"][slot] = ring_y
+        pop["size"][slot] = 20.0
+        pop["hue"][slot] = 140.0
+        pop["shyness"][slot] = 1.0
+        pop["flags"][slot] = THING_ALIVE
+    _write_population(engine, pop)
+
+    target, fmt = offscreen_target(WIDTH, HEIGHT)
+    for _ in range(150):
+        engine.tick(params)
+        engine.render(params, frac=1.0, target_view=target, target_format=fmt)
+
+    frame = engine.read_final_rgba()[..., :3]
+
+    def core_pixel(fx):
+        px, py = int(fx / g.width * WIDTH), int(0.5 * HEIGHT)
+        patch = frame[py - 3:py + 3, px - 3:px + 3]
+        lum = R.lightness(patch)
+        yx = np.unravel_index(int(np.argmax(lum)), lum.shape)
+        return patch[yx[0], yx[1]]
+
+    l_mob, c_mob = _oklab_of(core_pixel(ring_x))
+    l_lone, c_lone = _oklab_of(core_pixel(g.width * 0.75))
+    assert abs(l_mob - l_lone) < 0.06, (
+        f"lightness differs in a crowd vs alone: {l_mob:.3f} vs {l_lone:.3f}"
+    )
+    assert c_mob > c_lone * 0.8, (
+        f"the crowd washed the core to pastel: chroma {c_mob:.3f} vs "
+        f"lone {c_lone:.3f}"
     )
 
 

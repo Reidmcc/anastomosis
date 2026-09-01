@@ -189,6 +189,18 @@ class ThingsEngine(Backend):
             size=g.width * g.height * 16,
             usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
             label="things_deposit")
+        # The painter's order (§18 round 5): one word per texel naming the
+        # topmost body standing there this tick (index + 1; zero is
+        # nobody). atomicMax gives later slots the brush, which is exactly
+        # the founding file's draw order; the compositor paints the
+        # owner's own colour source-over everything beneath, so a Thing's
+        # core belongs to that Thing whatever the crowd is doing.
+        # Rebuilt every tick, so it is derived state and never
+        # checkpointed.
+        self.owner_buf = device.create_buffer(
+            size=g.width * g.height * 4,
+            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+            label="things_owner")
 
         self.things_buf = device.create_buffer(
             size=gpu_params.THINGS_DTYPE.itemsize,
@@ -228,6 +240,7 @@ class ThingsEngine(Backend):
 
     def _build_pipelines(self) -> None:
         self.p_update = self._compute("things_update.wgsl")
+        self.p_clear_owner = self._compute("things_clear.wgsl")
         self.p_bodies = self._compute("things_deposit.wgsl", "bodies")
         self.p_bonds = self._compute("things_deposit.wgsl", "bonds")
         self.p_canvas = self._compute("things_canvas.wgsl")
@@ -363,6 +376,10 @@ class ThingsEngine(Backend):
             "pulse_amp": things.pulse_amp * scale,
             "x_scale": sx, "y_scale": sy,
             "out_gain": things.out_gain,
+            # The owned core's display level: the trail's own steady
+            # state, so painter's-order bodies keep the ratified
+            # brightness (§18 round 5).
+            "body_level": things.body_emit / max(things.fade_rate, 1e-3),
         }
         for index in range(MAX_CLICKS_PER_TICK):
             x, y = clicks[index] if index < len(clicks) else (0.0, 0.0)
@@ -403,6 +420,15 @@ class ThingsEngine(Backend):
         encoder = self.device.create_command_encoder(label="things_tick")
         cpass = encoder.begin_compute_pass()
 
+        # 0. Yesterday's painter's order is wiped; this tick's bodies
+        #    claim their own ground below.
+        cpass.set_pipeline(self.p_clear_owner)
+        cpass.set_bind_group(0, self._bind(self.p_clear_owner, [
+            self._buffer_binding(self.things_buf),
+            self._buffer_binding(self.owner_buf),
+        ]))
+        cpass.dispatch_workgroups(math.ceil(g.width * g.height / 64), 1, 1)
+
         # 1. The lives: age, wander, befriend, be born.
         cpass.set_pipeline(self.p_update)
         cpass.set_bind_group(0, self._bind(self.p_update, [
@@ -420,6 +446,7 @@ class ThingsEngine(Backend):
             self._buffer_binding(self.things_buf),
             self._buffer_binding(self.things.cur),
             self._buffer_binding(self.deposit_buf),
+            self._buffer_binding(self.owner_buf),
         ]))
         cpass.dispatch_workgroups(math.ceil(g.capacity / 64), 1, 1)
 
@@ -468,6 +495,8 @@ class ThingsEngine(Backend):
             self.canvas.cur,
             self.hdr_view,
             self.sampler,
+            self._buffer_binding(self.owner_buf),
+            self._buffer_binding(self.things.cur),
         ]))
         cpass.dispatch_workgroups(*self._groups(self.width, self.height))
         return self.zero_vel_view

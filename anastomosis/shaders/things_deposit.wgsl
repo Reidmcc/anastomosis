@@ -22,6 +22,14 @@
 @group(0) @binding(0) var<storage, read> params: ThingsParams;
 @group(0) @binding(1) var<storage, read> things: array<Thing>;
 @group(0) @binding(2) var<storage, read_write> deposit: array<atomic<u32>>;
+// The painter's order (§18 round 5): the topmost body standing on each
+// texel this tick, index + 1, zero for nobody. atomicMax gives later
+// slots the brush -- the founding file's draw order exactly -- and the
+// compositor paints the owner source-over everything beneath, so a
+// Thing's core belongs to that Thing whatever the crowd is doing.
+// Bodies-only: bonds and sparkles never owned ground in the founding
+// file either.
+@group(0) @binding(3) var<storage, read_write> owner: array<atomic<u32>>;
 
 fn stamp(texel: vec2<i32>, rgb: vec3<f32>) {
     let dims = vec2<i32>(i32(params.dims_x), i32(params.dims_y));
@@ -66,6 +74,7 @@ fn bodies(@builtin(global_invocation_id) gid: vec3<u32>) {
         0.5);
     let colour = hsl_to_linear(t.hue, 0.6, 0.5) * alpha * params.body_emit;
 
+    let dims = vec2<i32>(i32(params.dims_x), i32(params.dims_y));
     let r_glow = radius * max(params.glow_mult, 1.0);
     let reach = i32(ceil(r_glow)) + 1;
     for (var dy = -reach; dy <= reach; dy = dy + 1) {
@@ -81,6 +90,15 @@ fn bodies(@builtin(global_invocation_id) gid: vec3<u32>) {
             let w = core + skirt * skirt * params.glow_gain;
             if (w > 1e-3) {
                 stamp(texel, colour * w);
+            }
+            // Claim the drawn footprint (§18 round 5): wherever this
+            // disc paints, the latest slot standing there owns the
+            // texel -- the founding painter's order, restated as
+            // atomicMax.
+            if (d <= radius + 0.5) {
+                let p = wrap_texel(texel, dims);
+                let idx = u32(p.y) * params.dims_x + u32(p.x);
+                atomicMax(&owner[idx], i + 1u);
             }
         }
     }

@@ -17,6 +17,10 @@
 @group(0) @binding(2) var canvas_tex: texture_2d<f32>;
 @group(0) @binding(3) var hdr_out: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(4) var samp: sampler;
+// The painter's order (§18 round 5): which body owns each field texel
+// this tick, and the population to look the owner up in.
+@group(0) @binding(5) var<storage, read> owner: array<u32>;
+@group(0) @binding(6) var<storage, read> things: array<Thing>;
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -63,7 +67,50 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let breath = vec3<f32>(0.85, 0.92, 1.0)
         * (ghost * params.ghost_luma * (1.0 - occlusion));
 
-    let rgb = fog + breath + lit * params.out_gain;
+    var rgb = fog + breath + lit * params.out_gain;
+
+    // THE LIVING MAY NOT TINT EACH OTHER (§18 round 5). The additive
+    // canvas has no painter's order, so in a crowded village the
+    // overlapping bodies, skirts and trails sum: lightness pegs at its
+    // ceiling, chroma cannot follow, and village cores whiten to pastel
+    // while lone Things stay candy -- the felt pass's "dots behind the
+    // trails", second verse. The founding file composited source-over:
+    // every disc painted 0.7 over everything beneath it, so a body's
+    // core was always mostly its own colour whatever the crowd did.
+    // Restored here: the tick's ownership layer names the topmost body
+    // on each texel (later index wins, the founding draw order), and the
+    // compositor paints the owner's own colour at the founding 0.7 --
+    // over trail, breath and neighbours alike -- at the trail's own
+    // steady-state level so the ratified brightness holds. The 30% that
+    // shows through is the founding's own translucency: history and
+    // neighbours keep exactly the vote they always had.
+    let texel = min(
+        vec2<i32>(suv * vec2<f32>(f32(params.dims_x), f32(params.dims_y))),
+        vec2<i32>(i32(params.dims_x) - 1, i32(params.dims_y) - 1));
+    let own = owner[u32(texel.y) * params.dims_x + u32(texel.x)];
+    if (own > 0u && own <= params.capacity) {
+        let t = things[own - 1u];
+        // The owner's disc, evaluated exactly as the deposit pass drew
+        // it -- same pulse, same crisp half-texel edge -- with the
+        // distance taken around the torus so an edge-straddling body
+        // owns both of its halves.
+        let field = suv * vec2<f32>(f32(params.dims_x), f32(params.dims_y));
+        var delta = field - thing_pos(t);
+        let span = vec2<f32>(f32(params.dims_x), f32(params.dims_y));
+        delta = delta - round(delta / span) * span;
+        let radius = max(
+            t.size * params.world_scale
+                + sin(params.pulse_phase + t.x * params.pulse_x)
+                    * params.pulse_amp,
+            0.5);
+        let cov = 1.0 - smoothstep(radius - 0.5, radius + 0.5, length(delta));
+        let fade_in = min(1.0, f32(t.age) / max(params.fadein_ticks, 1.0));
+        let alpha = 0.7 * fade_in * cov;
+        if (alpha > 1e-3) {
+            let body = hsl_to_linear(t.hue, 0.6, 0.5) * params.body_level;
+            rgb = mix(rgb, body, alpha);
+        }
+    }
 
     // Perceptual bounds, applied to the target as everywhere else.
     var lab = linear_srgb_to_oklab(rgb);

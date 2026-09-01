@@ -458,6 +458,12 @@ THINGS_FIELDS: list[Field] = [
     ("x_scale", "f32"),
     ("y_scale", "f32"),
     ("out_gain", "f32"),
+    # The painter's order, restored (§18 round 5): the display-linear
+    # level a body's own colour is drawn at when the compositor paints
+    # the owned core source-over the canvas -- emit/fade, the same
+    # steady-state level the trail holds, so the look the review ratified
+    # keeps its brightness while neighbours lose their vote in it.
+    ("body_level", "f32"),
 ]
 
 # --------------------------------------------------------------------------
