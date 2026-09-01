@@ -1127,14 +1127,47 @@ class ThingsParams:
     # Light (§18.2). Sustained emitters are per-second, so steady-state
     # canvas level is emit/fade_rate at any tick rate; the sparkle is an
     # event and its amplitude is absolute.
-    body_emit: float = 2.2
+    #
+    # The round-2 register ruling (porch review, 2026-09-01): the Things
+    # are not reverent -- their register is construction-paper candy, and
+    # the moodiness belongs to the black field, never to the inhabitants.
+    # body_emit slightly over fade_rate gives cores the founding disc's
+    # opaque confidence; the lifts below give them back their saturation.
+    body_emit: float = 3.6
     bond_emit: float = 2.2
-    bond_width: float = 1.2       # texels, the soft half-width
+    bond_width: float = 1.2       # texels: the LONG lines' earned width
+    # Intra-village bonds are background hum (round-2 ruling): near the
+    # formation scale they approach the founding hairline; the ramp to
+    # full presence runs out to a few friend_radii.
+    bond_near_width: float = 0.6
+    bond_near_gain: float = 0.3   # fraction of bond_emit at village scale
     sparkle_amp: float = 0.35
     sparkle_rate: float = 1.2     # per second (2% per 60fps frame)
     sparkle_offset: float = 5.0   # texels, the founding ±5 scatter
-    glow_mult: float = 3.0        # glow-skirt radius over body radius
+    glow_mult: float = 2.4        # glow-skirt radius over body radius
     glow_gain: float = 0.12       # skirt amplitude relative to the core
+
+    # The breath layer (soul 7, incarnated properly). The founding
+    # wander-shadows turn out to be an 8-bit canvas quantisation floor --
+    # the fade stalled below ~10/255 and every village stood permanently
+    # on the ghost of everywhere it had been. The port makes the rounding
+    # error a mechanism: the canvas alpha channel max-accumulates
+    # deposited light times ghost_gain and decays at ghost_fade_rate --
+    # minutes, not seconds: breath on glass with a memory -- and the
+    # compositor renders it at ghost_luma as a faint cool-grey shadow.
+    # The gain scales the *canvas* value the ghost tracks (rate-invariant
+    # by construction), not the raw per-tick deposit.
+    ghost_gain: float = 1.5
+    ghost_fade_rate: float = 0.0006   # per second; ~20 min half-life
+    ghost_luma: float = 0.04
+
+    # The candy lifts (§18.4's colour half): regulation's resolved l_max
+    # and c_max are tuned for the fungal field's restraint, and the
+    # founding hsl(h, 60%, 50%) discs live above them in both axes.
+    # Applied in resolve like the rhizotron's exposure_lift -- factors on
+    # the resolved values, before overrides, inside the safety ceilings.
+    luma_lift: float = 1.25
+    chroma_lift: float = 1.45
 
     # The breath: the founding sin(time*0.05 + x*0.01)*0.5 at 60 fps.
     pulse_rate: float = 3.0       # rad/s (0.05 * 60)
@@ -2192,8 +2225,16 @@ class Config:
         # blaze and then dim every village for the crime of growing; with
         # amplification pinned off, the mode's brightness is its census and
         # the governor stays only as a guard against over-bright configs.
+        # And the candy lifts: the founding discs live above regulation's
+        # resolved lightness and chroma ceilings, so this backend lifts
+        # both -- applied like a macro, before the overrides, inside the
+        # hard ceilings `validate` holds everyone to.
         if normalise_backend(self.backend) == "things":
             params.safety.exposure_max = 1.0
+            params.render.l_max = min(
+                params.render.l_max * params.things.luma_lift, 0.85)
+            params.render.c_max = min(
+                params.render.c_max * params.things.chroma_lift, 0.215)
 
         # The named slab size, which is a choice rather than a curve. Applied
         # after the macros and before the overrides, so that it beats nothing
@@ -2479,6 +2520,16 @@ def validate(params: Params) -> Params:
     things.body_emit = min(max(float(things.body_emit), 0.0), 20.0)
     things.bond_emit = min(max(float(things.bond_emit), 0.0), 20.0)
     things.bond_width = min(max(float(things.bond_width), 0.5), 8.0)
+    things.bond_near_width = min(max(float(things.bond_near_width), 0.3), 8.0)
+    things.bond_near_gain = min(max(float(things.bond_near_gain), 0.0), 1.0)
+    things.ghost_gain = min(max(float(things.ghost_gain), 0.0), 64.0)
+    things.ghost_fade_rate = min(
+        max(float(things.ghost_fade_rate), 0.0), 1.0)
+    # Luminance-relevant, bounded the way every luminance actor is: the
+    # breath must stay breath.
+    things.ghost_luma = min(max(float(things.ghost_luma), 0.0), 0.20)
+    things.luma_lift = min(max(float(things.luma_lift), 0.5), 2.0)
+    things.chroma_lift = min(max(float(things.chroma_lift), 0.5), 2.0)
     things.sparkle_amp = min(max(float(things.sparkle_amp), 0.0), 1.0)
     things.sparkle_rate = min(max(float(things.sparkle_rate), 0.0), 30.0)
     things.sparkle_offset = min(max(float(things.sparkle_offset), 0.0), 64.0)

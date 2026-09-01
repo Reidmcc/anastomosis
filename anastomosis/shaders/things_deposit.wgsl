@@ -69,7 +69,10 @@ fn bodies(@builtin(global_invocation_id) gid: vec3<u32>) {
             let texel = vec2<i32>(floor(pos)) + vec2<i32>(dx, dy);
             let centre = vec2<f32>(texel) + 0.5;
             let d = distance(centre, pos);
-            let core = 1.0 - smoothstep(radius - 0.7, radius + 0.7, d);
+            // A crisp half-texel edge: the founding disc is confident,
+            // opaque candy, not a soft light (the round-2 register
+            // ruling -- moodiness belongs to the field, never to them).
+            let core = 1.0 - smoothstep(radius - 0.5, radius + 0.5, d);
             let skirt = 1.0 - smoothstep(0.0, r_glow, d);
             let w = core + skirt * skirt * params.glow_gain;
             if (w > 1e-3) {
@@ -136,12 +139,22 @@ fn bonds(
     let a = thing_pos(t);
     let b = thing_pos(f);
     let len = distance(a, b);
+
+    // Span differentiation (the round-2 ruling): intra-village bonds are
+    // background hum -- near the formation scale they approach the
+    // founding hairline -- while the long emigrant lines keep their
+    // earned width and full presence. The ramp runs from the friendship
+    // radius out to three of them: past that, a bond has left home.
+    let span = smoothstep(
+        params.friend_radius, params.friend_radius * 3.0, len);
     let colour = hsl_to_linear((t.hue + f.hue) * 0.5, 0.5, 0.4)
-        * 0.2 * params.bond_emit;
+        * 0.2 * params.bond_emit
+        * mix(params.bond_near_gain, 1.0, span);
 
     let steps = max(u32(len / 0.7), 1u);
     let step_len = len / f32(steps);
-    let width = max(params.bond_width, 0.5);
+    let width = max(
+        mix(params.bond_near_width, params.bond_width, span), 0.3);
     for (var k = lid.x; k < steps; k = k + 64u) {
         let p = mix(a, b, (f32(k) + 0.5) / f32(steps));
         let reach = i32(ceil(width)) + 1;

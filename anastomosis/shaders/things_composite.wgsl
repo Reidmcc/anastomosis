@@ -31,11 +31,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let suv = wrap_uv((uv - 0.5) * vec2<f32>(params.x_scale, params.y_scale)
                       + 0.5);
 
-    let lit = max(
-        finite_or4(textureSampleLevel(canvas_tex, samp, suv, 0.0), 0.0).rgb,
-        vec3<f32>(0.0));
+    let canvas = finite_or4(
+        textureSampleLevel(canvas_tex, samp, suv, 0.0), 0.0);
+    let lit = max(canvas.rgb, vec3<f32>(0.0));
     let fog = vec3<f32>(render.fog_r, render.fog_g, render.fog_b);
-    let rgb = fog + lit * params.out_gain;
+
+    // The breath under the villages (§18.3): the ghost channel, rendered
+    // as a faint cool-grey wander-shadow -- present at converged
+    // exposure, always quieter than any body. The moodiness of this
+    // image lives in the field; the shadows are how the field remembers.
+    let ghost = clamp(canvas.a, 0.0, 1.0);
+    let breath = vec3<f32>(0.85, 0.92, 1.0) * (ghost * params.ghost_luma);
+
+    let rgb = fog + breath + lit * params.out_gain;
 
     // Perceptual bounds, applied to the target as everywhere else.
     var lab = linear_srgb_to_oklab(rgb);

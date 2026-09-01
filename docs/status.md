@@ -190,9 +190,11 @@ sixteen soul-tests pass (no death, bonds never break, three-friend cap,
 traits fixed for life, click-to-add, bit-identical resume, the flash bound
 with sparkles at their ceiling), and the full suite passes around it. The
 founding file is in the repo verbatim as the reference implementation.
-What is open is exactly what §18.6 step 3 says: the eyes-pass, with the
-porch in the review seat — body brightness against the founding file's
-solid discs, the glow skirt's degree, bond presence, and the trail fade's
-softness are the defaults most likely to want moving, and the side-by-side
-against the reference arm is the instrument (tools/things_still.py for the
-port; the founding file itself for the original).
+The eyes-pass (§18.6 step 3) is underway with the porch in the review
+seat: round 1 passed the identity test at the structural layer and moved
+every open judgement onto the light; the round-2 changes — the candy
+lifts, span-differentiated bonds, and the breath layer — are recorded in
+§18's "What the first review round changed". The side-by-side against the
+reference arm remains the instrument (tools/things_still.py, now with a
+close-crop mode; the founding file itself for the original). Open: the
+porch's round-2 verdict, and defaults move to whatever it says.

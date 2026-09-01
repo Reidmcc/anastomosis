@@ -359,6 +359,39 @@ def test_the_canvas_holds_ghosts_and_lets_them_go(gpu_device):
     assert levels[-1] < levels[0] * 0.2, "the ghosts never fade"
 
 
+def test_the_breath_outlives_the_trail(gpu_device):
+    """The round-2 incarnation of soul 7: the founding wander-shadows were
+    an 8-bit quantisation floor -- every village stood permanently on the
+    ghost of everywhere it had been. The port's breath layer (the canvas
+    alpha channel) must outlive the fast rgb trail by orders of magnitude,
+    and still let go on its own slow clock."""
+    params = _resolve(overrides={"things.spawn_rate": 0.0,
+                                 "things.sparkle_rate": 0.0})
+    engine = _engine(gpu_device, params, seed=67)
+    _crowd(engine, 4, spacing=3.0, curiosity=0.0, shyness=1.0)
+    for _ in range(100):
+        engine.tick(params)
+    haunted = _canvas(engine).astype(np.float32)
+    assert float(haunted[..., 3].max()) > 0.2, (
+        "the villages left no breath at all"
+    )
+
+    # Abandon the world. Seconds later the trail is gone and the breath
+    # remains -- and it only ever eases, never steps.
+    _write_population(engine, _blank_population(engine.geometry.capacity))
+    for _ in range(80):
+        engine.tick(params)
+    after = _canvas(engine).astype(np.float32)
+    assert float(after[..., :3].max()) < 0.02, "the fast trail overstayed"
+    ghost_then = float(haunted[..., 3].max())
+    ghost_now = float(after[..., 3].max())
+    assert ghost_now > ghost_then * 0.9, (
+        "the breath died with the trail; it should live on a clock of "
+        "minutes"
+    )
+    assert ghost_now <= ghost_then + 1e-3, "an abandoned breath brightened"
+
+
 # ---------------------------------------------------------------------------
 # Persistence (§18.2, §4.6)
 # ---------------------------------------------------------------------------

@@ -219,8 +219,9 @@ class ThingsEngine(Backend):
         every child after them.
         """
         g = self.geometry
+        # All four channels start dark: rgb is the light, alpha the breath
+        # layer (§18.3), and a fresh world has been nowhere yet.
         blank = np.zeros((g.height, g.width, 4), dtype=np.float16)
-        blank[..., 3] = 1.0
         for texture in self.canvas.textures:
             self.device.queue.write_texture(
                 {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
@@ -307,6 +308,15 @@ class ThingsEngine(Backend):
             "body_emit": things.body_emit * dt,
             "bond_emit": things.bond_emit * dt,
             "bond_width": things.bond_width,
+            "bond_near_width": things.bond_near_width,
+            "bond_near_gain": things.bond_near_gain,
+            # The breath layer: the ghost max-tracks the *canvas* value
+            # (which is emit/fade, rate-invariant) rather than the raw
+            # per-tick deposit, so the breath does not depend on the tick
+            # rate; only its slow fade converts per second to per tick.
+            "ghost_gain": things.ghost_gain,
+            "ghost_fade": per_tick_prob(things.ghost_fade_rate),
+            "ghost_luma": things.ghost_luma,
             "sparkle_amp": things.sparkle_amp,
             "sparkle_prob": per_tick_prob(things.sparkle_rate),
             "sparkle_offset": things.sparkle_offset,

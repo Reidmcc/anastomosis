@@ -42,6 +42,15 @@ def main() -> int:
         "--override", action="append", default=[],
         help="config override, path=value (e.g. things.sparkle_rate=2.4)",
     )
+    parser.add_argument(
+        "--crop", type=float, nargs=4, default=None,
+        metavar=("CX", "CY", "W", "H"),
+        help=(
+            "also save a close-crop of each still, centred at the "
+            "window-fraction point (CX, CY) with the given pixel size -- "
+            "body-vs-bond balance is easiest to judge at village scale"
+        ),
+    )
     args = parser.parse_args()
 
     from anastomosis import config, device as device_module
@@ -89,6 +98,17 @@ def main() -> int:
             print(f"kept existing {path}")
             continue
         _write_png(path, rows)
+        if args.crop is not None:
+            cx, cy, cw, ch = args.crop
+            half_w, half_h = int(cw) // 2, int(ch) // 2
+            px = min(max(int(cx * args.width), half_w), args.width - half_w)
+            py = min(max(int(cy * args.height), half_h), args.height - half_h)
+            crop = rows[py - half_h:py + half_h, px - half_w:px + half_w]
+            crop_path = args.out / (
+                f"things-seed{args.seed:08x}-tick{engine.tick_count}"
+                f"-crop.png")
+            _write_png(crop_path, np.ascontiguousarray(crop))
+            print(f"saved {crop_path}")
         alive = "?"
         try:
             from anastomosis.things import THING_ALIVE, THING_DTYPE

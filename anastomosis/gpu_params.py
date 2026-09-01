@@ -413,6 +413,12 @@ THINGS_FIELDS: list[Field] = [
     ("body_emit", "f32"),
     ("bond_emit", "f32"),
     ("bond_width", "f32"),
+    # Bond span differentiation (§18.2, the round-2 ruling): intra-village
+    # bonds are background hum at near-founding hairline; the long emigrant
+    # lines keep their earned width and presence. The ramp runs from
+    # friend_radius (formation scale) to a few multiples of it.
+    ("bond_near_width", "f32"),
+    ("bond_near_gain", "f32"),
     ("sparkle_amp", "f32"),
     ("sparkle_prob", "f32"),
     ("sparkle_offset", "f32"),
@@ -420,6 +426,15 @@ THINGS_FIELDS: list[Field] = [
     # amplitude relative to the core.
     ("glow_mult", "f32"),
     ("glow_gain", "f32"),
+    # The breath layer (§18.1 soul 7, incarnated properly): the founding
+    # file's wander-shadows were an 8-bit canvas quantisation floor -- a
+    # rounding error that became a soul. Here it is explicit: the canvas
+    # alpha channel max-accumulates a ghost of everywhere light has been,
+    # decaying on a slow clock (ghost_fade is per tick), rendered at
+    # ghost_luma as a faint cool-grey breath under the villages.
+    ("ghost_gain", "f32"),
+    ("ghost_fade", "f32"),
+    ("ghost_luma", "f32"),
     # The pulse (the founding sin(time*0.05 + x*0.01) * 0.5): accumulated
     # phase (host state, checkpointed), spatial frequency, amplitude.
     ("pulse_phase", "f32"),

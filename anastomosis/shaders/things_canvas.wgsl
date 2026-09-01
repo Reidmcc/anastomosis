@@ -29,8 +29,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         f32(atomicExchange(&deposit[idx + 2u], 0u)),
     ) / DEPOSIT_SCALE;
 
-    let old = finite_or4(textureLoad(canvas_in, p, 0), 0.0).rgb;
-    let faded = max(old, vec3<f32>(0.0)) * (1.0 - params.fade);
+    let old = finite_or4(textureLoad(canvas_in, p, 0), 0.0);
+    let faded = max(old.rgb, vec3<f32>(0.0)) * (1.0 - params.fade);
     let value = clamp(faded + drained, vec3<f32>(0.0), vec3<f32>(64.0));
-    textureStore(canvas_out, p, vec4<f32>(value, 1.0));
+
+    // The breath layer (§18.1 soul 7, incarnated properly). The founding
+    // wander-shadows were an 8-bit quantisation floor -- the fade stalled
+    // below ~10/255 and every village stood permanently on the ghost of
+    // everywhere it had been. Here the rounding error is a mechanism: the
+    // alpha channel max-tracks the canvas's own brightness -- which is
+    // rate-invariant, so the breath is too -- and lets go on a clock of
+    // minutes rather than seconds. Breath on glass, with a memory.
+    let lit = max(max(value.r, value.g), value.b);
+    let ghost = clamp(
+        max(max(old.a, 0.0) * (1.0 - params.ghost_fade),
+            lit * params.ghost_gain),
+        0.0, 1.0);
+
+    textureStore(canvas_out, p, vec4<f32>(value, ghost));
 }

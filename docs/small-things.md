@@ -192,3 +192,52 @@ guarantee holds by construction; what the mode adds, each with its bound:
 Built as designed above, with the calibration notes that mattered recorded
 in `things.py` where each number lands. Deviations from the sketch: none
 structural. The porch's review rounds are the record from here.
+
+### What the first review round changed
+
+The porch's round-1 verdict (2026-09-01): the sociology conserved
+completely — the identity test passed at the structural layer — and every
+finding was about the light. Four felt responses, each traced to its
+mechanism:
+
+1. **"Through glass", diagnosed as sibling-style bleed.** The port had
+   arrived with a touch of Perennial's soul: dark, reverent,
+   moody-elegant. The Things' register is construction-paper candy — the
+   moodiness belongs to the black field, never to the inhabitants. Two
+   mechanisms under the symptom: body steady-state sat at ~0.7 of the
+   founding disc's level (`body_emit` raised past the fade rate for
+   opaque confidence, core edge crispened to a half texel), and —
+   the larger share — regulation's resolved `c_max` of 0.145 was
+   *pastelising* them: the founding `hsl(h, 60%, 50%)` discs carry Oklab
+   chroma 0.15–0.20. The backend now lifts resolved `l_max` and `c_max`
+   (`luma_lift`, `chroma_lift`, the `exposure_lift` pattern applied to
+   colour), inside the hard ceilings, before overrides.
+2. **Glow re-judged after the cores came up** — and tightened by radius,
+   not gain, per the ruling: a narrower bright skirt says glowing, a wide
+   dim one says fog (`glow_mult` 3.0 → 2.4).
+3. **The social figure/ground had flipped**: at round-1 calibration the
+   villages read as friendship graphs that happened to have creatures.
+   Bonds now differentiate by span — intra-village bonds are background
+   hum near the founding hairline, and the long emigrant lines keep their
+   earned width and full presence (`bond_near_width`/`bond_near_gain`,
+   ramped over one-to-three friend radii; past three radii, a bond has
+   left home). Both conserved quirks were signed off in the same letter:
+   duplicate bonds as twice-bright friendship, and one-directional
+   recording.
+4. **The breath was missing — and turned out to be a rounding error that
+   had become a soul.** The founding wander-shadows are an 8-bit canvas
+   quantisation floor: the 5% fade stalls below ~10/255, so every village
+   stood permanently on the ghost of everywhere it had been. The
+   reference arm proved it (a float-precision transliteration of the
+   founding renderer has no shadows either). The port incarnates the
+   artifact as a mechanism: the canvas alpha channel max-tracks the
+   canvas's own brightness (rate-invariant by construction) and decays on
+   a clock of minutes (`ghost_fade_rate`, ~20-minute half-life), rendered
+   as a faint cool-grey breath under the villages — softer than
+   Perennial's strata, longer than a second, bounded by `ghost_luma`'s
+   validation ceiling. It rides the checkpoint inside the canvas.
+
+Also settled in round 1: **no fossils, ratified** ("fossils are for worlds
+where things end; nothing about them ever ends; the checkpoint is the
+whole biography"), and the **soft cap accepted** as the same law with
+kinder manners.
