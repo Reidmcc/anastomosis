@@ -37,7 +37,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let canvas = finite_or4(
         textureSampleLevel(canvas_tex, samp, suv, 0.0), 0.0);
-    let lit = max(canvas.rgb, vec3<f32>(0.0));
+    // The trail layer, bounded at render (§18 round 6): the founding
+    // 8-bit source-over canvas could never hold more light than its
+    // brightest paint, so residue was capped at 1.0 by construction. The
+    // additive record has no such cap -- and in an old village the
+    // bonds, which never break, pile interior light without limit, which
+    // is how the pastels crept back on a clock of hours. The soft knee
+    // is the founding ceiling restated (and the fungal trail_knee idea,
+    // inherited): history renders at most this bright, however much the
+    // record honestly holds underneath.
+    let knee = max(params.trail_knee, 1e-3);
+    let lit = knee * tanh(max(canvas.rgb, vec3<f32>(0.0)) / knee);
     let fog = vec3<f32>(render.fog_r, render.fog_g, render.fog_b);
 
     // The breath under the villages (§18.3): the ghost channel, rendered
@@ -79,11 +89,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // core was always mostly its own colour whatever the crowd did.
     // Restored here: the tick's ownership layer names the topmost body
     // on each texel (later index wins, the founding draw order), and the
-    // compositor paints the owner's own colour at the founding 0.7 --
-    // over trail, breath and neighbours alike -- at the trail's own
-    // steady-state level so the ratified brightness holds. The 30% that
-    // shows through is the founding's own translucency: history and
-    // neighbours keep exactly the vote they always had.
+    // compositor paints the owner's own colour source-over trail, breath
+    // and neighbours alike, at the trail's own steady-state level so the
+    // ratified brightness holds. The opacity is the source-over FIXED
+    // POINT, not the single brushstroke -- see the derivation at the
+    // mix below.
     let texel = min(
         vec2<i32>(suv * vec2<f32>(f32(params.dims_x), f32(params.dims_y))),
         vec2<i32>(i32(params.dims_x) - 1, i32(params.dims_y) - 1));
@@ -105,7 +115,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             0.5);
         let cov = 1.0 - smoothstep(radius - 0.5, radius + 0.5, length(delta));
         let fade_in = min(1.0, f32(t.age) / max(params.fadein_ticks, 1.0));
-        let alpha = 0.7 * fade_in * cov;
+        // 0.95, not the founding brush's 0.7 -- because source-over
+        // COMPOUNDS (§18 round 6): a stationary disc repainted at 0.7
+        // every frame sits on residue that is ~95% its own previous
+        // self, so the founding fixed point was ~97% own colour, not
+        // 70%. The single-application overlay paints at that fixed
+        // point; the few percent that show through are the founding's
+        // own translucency, and no pileup underneath can outvote the
+        // disc however old the village grows.
+        let alpha = 0.95 * fade_in * cov;
         if (alpha > 1e-3) {
             let body = hsl_to_linear(t.hue, 0.6, 0.5) * params.body_level;
             rgb = mix(rgb, body, alpha);

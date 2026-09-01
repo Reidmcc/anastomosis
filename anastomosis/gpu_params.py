@@ -458,6 +458,10 @@ THINGS_FIELDS: list[Field] = [
     ("x_scale", "f32"),
     ("y_scale", "f32"),
     ("out_gain", "f32"),
+    # The trail layer's rendered ceiling (§18 round 6): the founding
+    # 8-bit source-over bound, restated as a soft knee on the additive
+    # record.
+    ("trail_knee", "f32"),
     # The painter's order, restored (§18 round 5): the display-linear
     # level a body's own colour is drawn at when the compositor paints
     # the owned core source-over the canvas -- emit/fade, the same

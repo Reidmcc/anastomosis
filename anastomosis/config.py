@@ -1183,6 +1183,16 @@ class ThingsParams:
     # §7's stage are what actually bound the image.
     out_gain: float = 1.0
 
+    # The trail layer's rendered ceiling (§18 round 6), in canvas units
+    # -- a soft tanh knee, the fungal trail_knee idea applied to the
+    # port. The founding 8-bit source-over canvas could never hold more
+    # light than its brightest paint, so its residue was bounded at 1.0
+    # by construction; the additive record has no such bound, and in an
+    # old village the bonds -- which never break -- pile interior light
+    # without limit. The knee is that founding ceiling, restated: history
+    # renders at most this bright, however much the record holds.
+    trail_knee: float = 1.3
+
 
 @dataclass
 class RenderParams:
@@ -2542,6 +2552,7 @@ def validate(params: Params) -> Params:
     things.per_click = int(min(max(int(things.per_click), 1), 12))
     things.click_scatter = min(max(float(things.click_scatter), 0.0), 128.0)
     things.out_gain = min(max(float(things.out_gain), 0.0), 8.0)
+    things.trail_knee = min(max(float(things.trail_knee), 0.2), 8.0)
     return params
 
 

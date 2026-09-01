@@ -376,6 +376,7 @@ class ThingsEngine(Backend):
             "pulse_amp": things.pulse_amp * scale,
             "x_scale": sx, "y_scale": sy,
             "out_gain": things.out_gain,
+            "trail_knee": things.trail_knee,
             # The owned core's display level: the trail's own steady
             # state, so painter's-order bodies keep the ratified
             # brightness (§18 round 5).

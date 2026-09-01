@@ -588,6 +588,70 @@ def test_the_living_do_not_tint_each_other(gpu_device, offscreen_target):
     )
 
 
+def test_the_pileup_cannot_wash_the_living(gpu_device, offscreen_target):
+    """The round-6 law, from the felt pass's third look: pastels crept
+    back on a clock of hours because the bonds -- which never break --
+    pile village-interior light without limit, and even a 30% leak of an
+    unbounded sum eventually outvotes the disc. With the trail knee (the
+    founding 8-bit source-over bound, restated) and the overlay at the
+    source-over fixed point, a Thing standing on an absurdly overexposed
+    record must match its twin on virgin dark."""
+    params = _resolve(overrides={"things.spawn_rate": 0.0,
+                                 "things.sparkle_rate": 0.0,
+                                 "things.friend_rate": 0.0})
+    engine = _engine(gpu_device, params, seed=83)
+    g = engine.geometry
+
+    pop = _blank_population(g.capacity)
+    for slot, x in ((0, g.width * 0.25), (1, g.width * 0.75)):
+        pop["x"][slot] = x
+        pop["y"][slot] = g.height * 0.5
+        pop["size"][slot] = 20.0
+        pop["speed"][slot] = 0.0
+        pop["hue"][slot] = 140.0
+        pop["shyness"][slot] = 1.0
+        pop["flags"][slot] = THING_ALIVE
+    _write_population(engine, pop)
+
+    # An aged village's worth of piled light under the first twin -- far
+    # beyond anything a real record reaches -- plus full breath.
+    pile = np.zeros((g.height, g.width, 4), dtype=np.float16)
+    pile[:, : g.width // 2, :3] = 6.0
+    pile[:, : g.width // 2, 3] = 1.0
+    for texture in engine.canvas.textures:
+        checkpoint._write_texture(engine.device, texture, pile)
+
+    target, fmt = offscreen_target(WIDTH, HEIGHT)
+    for _ in range(150):
+        engine.tick(params)
+        engine.render(params, frac=1.0, target_view=target, target_format=fmt)
+
+    frame = engine.read_final_rgba()[..., :3]
+
+    def centre_pixel(fx):
+        return frame[int(0.5 * HEIGHT), int(fx / g.width * WIDTH)]
+
+    l_pile, c_pile = _oklab_of(centre_pixel(g.width * 0.25))
+    l_dark, c_dark = _oklab_of(centre_pixel(g.width * 0.75))
+    assert abs(l_pile - l_dark) < 0.06, (
+        f"the pileup brightened the living: L {l_pile:.3f} vs {l_dark:.3f}"
+    )
+    assert c_pile > c_dark * 0.8, (
+        f"the pileup washed the living to pastel: chroma {c_pile:.3f} vs "
+        f"{c_dark:.3f}"
+    )
+    # And the record still shows, bounded, where no body stands: brighter
+    # than virgin dark, far dimmer than a body.
+    empty_pile = R.lightness(
+        frame[HEIGHT // 8, WIDTH // 8][None, None])[0, 0]
+    empty_dark = R.lightness(
+        frame[HEIGHT // 8, WIDTH - WIDTH // 8][None, None])[0, 0]
+    assert empty_pile > empty_dark + 0.01, "the knee erased the record"
+    assert empty_pile < l_pile, (
+        "the record outshines the living; the knee is not holding"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Persistence (§18.2, §4.6)
 # ---------------------------------------------------------------------------

@@ -332,7 +332,37 @@ checkpointed. `test_the_living_do_not_tint_each_other` holds it: a Thing
 mobbed by eight different-hued overlapping neighbours and its lone twin
 match at the core.
 
-### The round-3 verdict
+### What the third felt look changed (round 6)
+
+The pastels crept back — slower. The clock was the diagnosis: the slow
+variable in an aging village is the *bond count*, and bonds never break,
+so village-interior light accumulates for hours; even a 30% leak of an
+unbounded sum eventually outvotes the disc. The viewer's suggestion —
+split the dots and trails into genuinely separate layers, as the fungal
+stack separates its sheets — turned out to be a description of what the
+founding file had been doing all along, in two halves the port had only
+half-honoured:
+
+1. **Source-over compounds.** A stationary disc repainted at 0.7 every
+   frame sits on residue that is ~95% its own previous self; the founding
+   fixed point was ~97% own colour, not 70%. The overlay now paints at
+   that fixed point (0.95), so no pileup underneath can outvote a disc
+   however old the village grows — the few percent showing through are
+   the founding's own translucency.
+2. **An 8-bit source-over canvas can never hold more light than its
+   brightest paint.** The founding trail was bounded at 1.0 by
+   construction; the additive record piles without limit. `trail_knee`
+   (the fungal knee idea, inherited) restates that ceiling at render: a
+   soft tanh bound on the trail layer's contribution, leaving single-body
+   levels essentially untouched and compressing an aged village's pile to
+   the founding's own magnitude. The record itself stays honest
+   underneath; only its rendering is bounded — retrieval tuned to the
+   signal, §17's lesson again.
+
+`test_the_pileup_cannot_wash_the_living` holds the whole law at an
+absurdity: a Thing standing on a record painted to six times any
+reachable level matches its twin on virgin dark, while the record still
+shows, bounded, where no body stands.
 
 PASS — the direction seat's review is complete. The fans were ratified as
 *founding phenotype*, verified against the primary source before ruling:
