@@ -1135,14 +1135,18 @@ class ThingsParams:
     # body_emit slightly over fade_rate gives cores the founding disc's
     # opaque confidence; the lifts below give them back their saturation.
     body_emit: float = 3.6
-    bond_emit: float = 2.2
+    # Raised with the round-7 layer split so the emigrant lines keep
+    # their ratified presence through the dimmed history layer: rendered
+    # bond level = 0.2 * (bond_emit/fade_rate) * out_gain, held at its
+    # round-3 value.
+    bond_emit: float = 5.0
     bond_width: float = 1.2       # texels: the LONG lines' earned width
     # Intra-village bonds are background hum (round-2 ruling): near the
     # formation scale they approach the founding hairline; the ramp to
     # full presence runs out to a few friend_radii.
     bond_near_width: float = 0.6
     bond_near_gain: float = 0.3   # fraction of bond_emit at village scale
-    sparkle_amp: float = 0.35
+    sparkle_amp: float = 0.8      # raised with the round-7 split, like bonds
     sparkle_rate: float = 1.2     # per second (2% per 60fps frame)
     sparkle_offset: float = 5.0   # texels, the founding ±5 scatter
     glow_mult: float = 2.4        # glow-skirt radius over body radius
@@ -1179,9 +1183,15 @@ class ThingsParams:
     per_click: int = 3
     click_scatter: float = 10.0
 
-    # Canvas-to-HDR gain at composite. Shaping only; the Oklab bounds and
-    # §7's stage are what actually bound the image.
-    out_gain: float = 1.0
+    # Canvas-to-HDR gain at composite — the history layer's whole
+    # brightness (§18 round 7): THE HISTORY IS QUIETER THAN THE LIFE.
+    # The first viewer's ruling after watching an aged world: the visible
+    # dot is its core plus its canvas halo, and when the history layer
+    # renders at the life's own level, small dots read as their washed
+    # halos. Considerably dimmer, still easily noticeable; bodies live in
+    # the overlay and keep full brightness, and bond/sparkle emit are
+    # re-normalised above so the living marks keep their presence.
+    out_gain: float = 0.4
 
     # The trail layer's rendered ceiling (§18 round 6), in canvas units
     # -- a soft tanh knee, the fungal trail_knee idea applied to the
@@ -1191,7 +1201,9 @@ class ThingsParams:
     # old village the bonds -- which never break -- pile interior light
     # without limit. The knee is that founding ceiling, restated: history
     # renders at most this bright, however much the record holds.
-    trail_knee: float = 1.3
+    # Tightened in round 7 alongside out_gain: an aged pile renders at
+    # most knee * out_gain = 0.4, a third of a body's own level.
+    trail_knee: float = 1.0
 
 
 @dataclass

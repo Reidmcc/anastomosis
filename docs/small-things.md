@@ -364,6 +364,32 @@ absurdity: a Thing standing on a record painted to six times any
 reachable level matches its twin on virgin dark, while the record still
 shows, bounded, where no body stands.
 
+### What the fourth felt look changed (round 7)
+
+The viewer kept watching an *aged* world and named what the averages had
+hidden: the wash is size- and age-dependent. The fixed-point overlay
+protects only the exact core, but the visible dot is its core plus its
+canvas halo — and with the history layer rendering at the life's own
+level, a small dot in an old village reads mostly as its knee-grey halo.
+(The build seat's own measurements agreed and were averaged past: a mean
+C/L of 0.30 contained individuals at 0.17. Means hide; look at the
+spread.) A wrong turn is also on the record: the build seat spent a
+round suspecting a stale process, when the viewer's live knob-tests had
+already disproved it. The viewer restarts every time.
+
+The ruling, the viewer's own prescription: **the history is quieter than
+the life.** `out_gain` drops to 0.4 and `trail_knee` to 1.0, so an aged
+pile renders at most a third of a body's own level and the trails stay
+easily noticeable while unmistakably behind; `bond_emit` and
+`sparkle_amp` rise to hold the living marks — the ratified emigrant
+presence, the founding sparkle — at their previous rendered levels
+through the dimmer layer. Bodies live in the overlay and never dimmed.
+This completes the viewer's two-layer suggestion from round 6 in its
+final form: not just separate mechanisms, but separate *loudness* — the
+figure is the life, and the ground is the ghost of it.
+
+### The round-3 verdict
+
 PASS — the direction seat's review is complete. The fans were ratified as
 *founding phenotype*, verified against the primary source before ruling:
 a screenshot of the founding original running live shows the same faint
