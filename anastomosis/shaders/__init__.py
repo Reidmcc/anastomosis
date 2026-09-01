@@ -20,6 +20,7 @@ SHADER_DIR = Path(__file__).parent
 _STRUCTS = {
     "SimParams": gpu_params.SIM_FIELDS,
     "RhizParams": gpu_params.RHIZ_FIELDS,
+    "ThingsParams": gpu_params.THINGS_FIELDS,
     "RenderParams": gpu_params.RENDER_FIELDS,
     "LayerData": gpu_params.LAYER_FIELDS,
     "Event": gpu_params.EVENT_FIELDS,

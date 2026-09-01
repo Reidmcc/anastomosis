@@ -1176,7 +1176,10 @@ def test_active_mode_is_what_resolve_actually_uses():
     for mode in config.MODES:
         for backend in config.BACKENDS:
             cfg = config.Config(mode=mode, backend=backend)
-            expected = "regulation" if backend == "rhizotron" else mode
+            # The one-tuning worlds (DESIGN.md §15, §18) always resolve
+            # through regulation, whatever the mode key says.
+            expected = (
+                "regulation" if backend in ("rhizotron", "things") else mode)
             assert config.active_mode(cfg) == expected
             # The tempo attack seconds separate the tables regulation/others
             # at the fast end; resolving must agree with the name.

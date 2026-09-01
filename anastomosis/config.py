@@ -1082,6 +1082,75 @@ class RhizotronParams:
 
 
 @dataclass
+class ThingsParams:
+    """The Small Strange Things port's own primitives -- DESIGN.md §18.
+
+    Only read when ``Config.backend`` is ``"things"``. Nothing here
+    duplicates a parameter the other backends have, because the Things
+    share no machinery with fungus or soil; what the backends share -- the
+    output chain -- the port reaches through the same ``render`` and
+    ``safety`` blocks as everyone else.
+
+    The defaults are the founding file's constants, converted from
+    per-60fps-frame to per-second where they were rates
+    (``docs/founding/small_strange_thing.html`` is the reference
+    implementation; §18.1 is the list of which of these are souls rather
+    than knobs). Distances are in canvas texels, which at the default
+    scale are close to the founding file's screen pixels.
+    """
+
+    # The village cap (§18.1 soul 4): the founding 200. Structural -- the
+    # population buffer is sized by it, so a saved world keeps the
+    # capacity it was lived in and a change takes effect on reset.
+    capacity: int = 200
+    # The founding file started with five.
+    seed_count: int = 5
+
+    # Friendship (soul 2). The founding scan fired at 1%/frame within 50
+    # pixels; the three-friend cap is a constant in the shader, not here.
+    friend_rate: float = 0.6      # per second (1% per 60fps frame)
+    friend_radius: float = 50.0   # texels
+
+    # Lineage (soul 4). The founding spawn rolled 0.5%/frame per mature
+    # Thing past age 100 frames, scattered ±25 pixels.
+    spawn_rate: float = 0.3       # per second, per empty slot's lottery
+    mature_seconds: float = 1.67  # the founding age > 100 frames
+    spawn_radius: float = 25.0    # texels, half-width of the scatter
+
+    # The birth fade-in: the founding alpha = min(1, age / 50 frames).
+    fadein_seconds: float = 0.83
+
+    # The canvas (soul 7): the founding 5%-per-frame fade, as a rate.
+    # Larger is shorter ghosts. 0.95^60 per second = e^-3.1.
+    fade_rate: float = 3.1        # per second
+
+    # Light (§18.2). Sustained emitters are per-second, so steady-state
+    # canvas level is emit/fade_rate at any tick rate; the sparkle is an
+    # event and its amplitude is absolute.
+    body_emit: float = 2.2
+    bond_emit: float = 2.2
+    bond_width: float = 1.2       # texels, the soft half-width
+    sparkle_amp: float = 0.35
+    sparkle_rate: float = 1.2     # per second (2% per 60fps frame)
+    sparkle_offset: float = 5.0   # texels, the founding ±5 scatter
+    glow_mult: float = 3.0        # glow-skirt radius over body radius
+    glow_gain: float = 0.12       # skirt amplitude relative to the core
+
+    # The breath: the founding sin(time*0.05 + x*0.01)*0.5 at 60 fps.
+    pulse_rate: float = 3.0       # rad/s (0.05 * 60)
+    pulse_x: float = 0.01         # rad per texel
+    pulse_amp: float = 0.5        # texels of radius
+
+    # Participation (soul 9): the founding click spawned three, ±10 px.
+    per_click: int = 3
+    click_scatter: float = 10.0
+
+    # Canvas-to-HDR gain at composite. Shaping only; the Oklab bounds and
+    # §7's stage are what actually bound the image.
+    out_gain: float = 1.0
+
+
+@dataclass
 class RenderParams:
     """Compositing, depth, and the Oklab colour mapping. DESIGN.md §5-6.
 
@@ -1236,6 +1305,7 @@ class Params:
     climate: ClimateParams = field(default_factory=ClimateParams)
     volume: VolumeParams = field(default_factory=VolumeParams)
     rhizotron: RhizotronParams = field(default_factory=RhizotronParams)
+    things: ThingsParams = field(default_factory=ThingsParams)
     homeostat: HomeostatParams = field(default_factory=HomeostatParams)
     events: EventParams = field(default_factory=EventParams)
     audio: AudioParams = field(default_factory=AudioParams)
@@ -1767,12 +1837,14 @@ def active_mode(config: "Config") -> str:
     §15: the rhizotron has one tuning, so under that backend the macros
     resolve through regulation whatever the mode key says -- the key keeps
     its value so switching backends away again restores the fungal tuning.
+    The Things (§18) have one tuning for the same reason and resolve the
+    same way -- and, like the rhizotron, cannot hear.
     Split out of :meth:`Config.resolve` because the application needs the
     same answer for a different question: the audio drive (§16) runs exactly
     when this returns ``"resonance"``, and a drive keyed off the raw mode
     string would keep listening under a backend that cannot hear.
     """
-    if normalise_backend(config.backend) == "rhizotron":
+    if normalise_backend(config.backend) in ("rhizotron", "things"):
         return "regulation"
     return normalise_mode(config.mode)
 
@@ -1932,7 +2004,7 @@ def curve_value(macro: str, path: str, value: float, mode: str = DEFAULT_MODE) -
 # --------------------------------------------------------------------------
 
 
-BACKENDS = ("layered", "volumetric", "rhizotron")
+BACKENDS = ("layered", "volumetric", "rhizotron", "things")
 DEFAULT_BACKEND = "layered"
 
 # The slab's lateral resolution, as three named sizes rather than a free
@@ -2113,6 +2185,14 @@ class Config:
             # Attenuation-only: the governor may dim a too-bright frame but
             # never amplifies, so the pane honestly darkens as the record
             # accumulates (see SafetyParams.exposure_max).
+            params.safety.exposure_max = 1.0
+
+        # The Things (§18.4): attenuation-only for the inverse arc. A
+        # mean-holding governor would brighten five founding Things into a
+        # blaze and then dim every village for the crime of growing; with
+        # amplification pinned off, the mode's brightness is its census and
+        # the governor stays only as a guard against over-bright configs.
+        if normalise_backend(self.backend) == "things":
             params.safety.exposure_max = 1.0
 
         # The named slab size, which is a choice rather than a curve. Applied
@@ -2379,6 +2459,37 @@ def validate(params: Params) -> Params:
     rhiz.wet_darken = min(max(float(rhiz.wet_darken), 0.0), 0.80)
     rhiz.wet_chroma = min(max(float(rhiz.wet_chroma), 0.0), 2.0)
     rhiz.wet_ema_tau = min(max(float(rhiz.wet_ema_tau), 0.1), 60.0)
+
+    # The Things (§18). The capacity ceiling is the "resolution up,
+    # population not" law with a margin, not an invitation: ten thousand
+    # Things would be a different sociology wearing their name. Emitters
+    # and events are bounded the way every luminance actor is; everything
+    # else is bounded against nonsense (a negative radius, an unpayable
+    # rate), not against taste.
+    things = params.things
+    things.capacity = int(min(max(int(things.capacity), 1), 2048))
+    things.seed_count = int(min(max(int(things.seed_count), 0), things.capacity))
+    things.friend_rate = min(max(float(things.friend_rate), 0.0), 60.0)
+    things.friend_radius = min(max(float(things.friend_radius), 1.0), 512.0)
+    things.spawn_rate = min(max(float(things.spawn_rate), 0.0), 60.0)
+    things.mature_seconds = min(max(float(things.mature_seconds), 0.0), 86400.0)
+    things.spawn_radius = min(max(float(things.spawn_radius), 0.0), 256.0)
+    things.fadein_seconds = min(max(float(things.fadein_seconds), 0.05), 600.0)
+    things.fade_rate = min(max(float(things.fade_rate), 0.01), 60.0)
+    things.body_emit = min(max(float(things.body_emit), 0.0), 20.0)
+    things.bond_emit = min(max(float(things.bond_emit), 0.0), 20.0)
+    things.bond_width = min(max(float(things.bond_width), 0.5), 8.0)
+    things.sparkle_amp = min(max(float(things.sparkle_amp), 0.0), 1.0)
+    things.sparkle_rate = min(max(float(things.sparkle_rate), 0.0), 30.0)
+    things.sparkle_offset = min(max(float(things.sparkle_offset), 0.0), 64.0)
+    things.glow_mult = min(max(float(things.glow_mult), 1.0), 8.0)
+    things.glow_gain = min(max(float(things.glow_gain), 0.0), 1.0)
+    things.pulse_rate = min(max(float(things.pulse_rate), 0.0), 30.0)
+    things.pulse_x = min(max(float(things.pulse_x), 0.0), 1.0)
+    things.pulse_amp = min(max(float(things.pulse_amp), 0.0), 4.0)
+    things.per_click = int(min(max(int(things.per_click), 1), 12))
+    things.click_scatter = min(max(float(things.click_scatter), 0.0), 128.0)
+    things.out_gain = min(max(float(things.out_gain), 0.0), 8.0)
     return params
 
 

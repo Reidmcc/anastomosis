@@ -53,6 +53,7 @@ from . import events as events_module
 from . import nice as nice_module
 from . import power as power_module
 from . import rhizotron as rhizotron_module
+from . import things as things_module
 from . import volume as volume_module
 from . import window as window_module
 
@@ -75,6 +76,7 @@ BACKEND_CLASSES = {
     "layered": (engine_module, "Engine", "Geometry"),
     "volumetric": (volume_module, "VolumeEngine", "VolumeGeometry"),
     "rhizotron": (rhizotron_module, "RhizotronEngine", "RhizotronGeometry"),
+    "things": (things_module, "ThingsEngine", "ThingsGeometry"),
 }
 
 
@@ -524,6 +526,15 @@ class Application:
         except Exception as exc:  # pragma: no cover - a canvas with no events
             log.debug("could not bind the fullscreen hotkey: %s", exc)
 
+        # The participation verb (DESIGN.md §18.1 soul 9). Bound whatever
+        # the backend, dispatched only to engines that expose it -- today
+        # that is the Things' click-to-add; the fungal and root worlds
+        # simply have no ``queue_click`` and a click means nothing to them.
+        try:
+            self.canvas.add_event_handler(self._on_pointer, "pointer_down")
+        except Exception as exc:  # pragma: no cover - a canvas with no events
+            log.debug("could not bind the pointer: %s", exc)
+
         if self.options.fullscreen:
             self.set_fullscreen(True)
 
@@ -536,6 +547,28 @@ class Application:
         """
         if event.get("key") == window_module.FULLSCREEN_KEY:
             self.toggle_fullscreen()
+
+    def _on_pointer(self, event) -> None:
+        """A click, handed to any engine that has a use for one.
+
+        Coordinates arrive in the canvas's logical pixels; they are
+        normalised here so the engine's mapping onto its own field is the
+        engine's business (the Things invert their compositor's aspect
+        correction, so a Thing appears exactly under the finger).
+        """
+        engine = self.engine
+        queue_click = getattr(engine, "queue_click", None)
+        if queue_click is None:
+            return
+        try:
+            width, height = self.canvas.get_logical_size()
+            x = float(event.get("x", 0.0))
+            y = float(event.get("y", 0.0))
+        except Exception:  # pragma: no cover - a canvas with no sizes
+            return
+        if width <= 0 or height <= 0:
+            return
+        queue_click(x / width, y / height)
 
     @property
     def fullscreen(self) -> bool:
@@ -1378,7 +1411,8 @@ class Application:
             return  # not built yet; __init__ syncs once it is
         want = (
             config_module.normalise_mode(self.config.mode) == "resonance"
-            and config_module.normalise_backend(self.backend) != "rhizotron"
+            and config_module.normalise_backend(self.backend)
+            not in ("rhizotron", "things")
         )
         if want and not self._audio_started:
             self._audio_started = True
