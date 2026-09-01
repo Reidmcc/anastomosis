@@ -68,6 +68,16 @@ NO_FRIEND = 0xFFFFFFFF
 # keep their tempo at any tick rate (§18.1 soul 10).
 FOUNDING_FPS = 60.0
 
+# The width, in texels, at which one world unit is one texel -- the
+# resolution the porch's review ratified the register at. Every length in
+# ThingsParams is a world unit; the engine multiplies by field_width /
+# WORLD_WIDTH when packing, so the Things are the same beings at every
+# resolution (the round-2 law: the founding file was pixel-native because
+# it only ever lived at one window; the port lives at every size). A
+# constant, not a knob: changing it would rescale the meaning of every
+# saved world.
+WORLD_WIDTH = 960.0
+
 # How many clicks one tick can consume; later clicks wait their turn in the
 # host-side queue rather than being dropped.
 MAX_CLICKS_PER_TICK = 4
@@ -282,6 +292,12 @@ class ThingsEngine(Backend):
         def per_tick_prob(rate_per_second: float) -> float:
             return 1.0 - math.exp(-max(rate_per_second, 0.0) * dt)
 
+        # The same-beings-at-every-resolution law: every length below is a
+        # world unit (one texel at WORLD_WIDTH), scaled here to this
+        # world's texels. Sociology, gait and presence are all fractions
+        # of the world, not of the pixel grid.
+        scale = g.width / WORLD_WIDTH
+
         sx, sy = aspect_correction(self.width, self.height, g.width, g.height)
         values = {
             "dims_x": g.width, "dims_y": g.height,
@@ -290,15 +306,17 @@ class ThingsEngine(Backend):
             "seed": self.seed & 0xFFFFFFFF,
             "click_count": len(clicks),
             "per_click": int(things.per_click),
-            "click_scatter": things.click_scatter,
+            "click_scatter": things.click_scatter * scale,
             # sqrt(60 * dt): the founding per-frame step, variance-matched
-            # per second at any tick rate.
-            "step_scale": math.sqrt(FOUNDING_FPS * dt),
+            # per second at any tick rate -- in world units, so the walk
+            # covers the same fraction of the world at any resolution.
+            "step_scale": math.sqrt(FOUNDING_FPS * dt) * scale,
+            "world_scale": scale,
             "friend_prob": per_tick_prob(things.friend_rate),
-            "friend_radius": things.friend_radius,
+            "friend_radius": things.friend_radius * scale,
             "spawn_prob": per_tick_prob(things.spawn_rate),
             "mature_ticks": things.mature_seconds * max(params.sim_hz, 1e-3),
-            "spawn_radius": things.spawn_radius,
+            "spawn_radius": things.spawn_radius * scale,
             "fadein_ticks": max(
                 things.fadein_seconds * max(params.sim_hz, 1e-3), 1.0),
             "fade": per_tick_prob(things.fade_rate),
@@ -307,8 +325,8 @@ class ThingsEngine(Backend):
             # event and its amplitude is absolute (§18.3).
             "body_emit": things.body_emit * dt,
             "bond_emit": things.bond_emit * dt,
-            "bond_width": things.bond_width,
-            "bond_near_width": things.bond_near_width,
+            "bond_width": things.bond_width * scale,
+            "bond_near_width": things.bond_near_width * scale,
             "bond_near_gain": things.bond_near_gain,
             # The breath layer: the ghost max-tracks the *canvas* value
             # (which is emit/fade, rate-invariant) rather than the raw
@@ -319,12 +337,14 @@ class ThingsEngine(Backend):
             "ghost_luma": things.ghost_luma,
             "sparkle_amp": things.sparkle_amp,
             "sparkle_prob": per_tick_prob(things.sparkle_rate),
-            "sparkle_offset": things.sparkle_offset,
+            "sparkle_offset": things.sparkle_offset * scale,
             "glow_mult": things.glow_mult,
             "glow_gain": things.glow_gain,
             "pulse_phase": self._pulse_phase,
-            "pulse_x": things.pulse_x,
-            "pulse_amp": things.pulse_amp,
+            # Radians per world unit: divided by the scale so the breath's
+            # spatial pattern rides the world, not the pixel grid.
+            "pulse_x": things.pulse_x / max(scale, 1e-6),
+            "pulse_amp": things.pulse_amp * scale,
             "x_scale": sx, "y_scale": sy,
             "out_gain": things.out_gain,
         }

@@ -390,8 +390,16 @@ THINGS_FIELDS: list[Field] = [
     # Wander: the per-tick scale on the trait speed. The founding file
     # stepped `(rand - 0.5) * speed` per 60 fps frame; this factor is
     # sqrt(60 * dt) so the realised diffusion per second matches at any
-    # tick rate.
+    # tick rate -- times the world scale below, so the diffusion covers
+    # the same *fraction* of the world at any resolution.
     ("step_scale", "f32"),
+    # The same-beings-at-every-resolution law (§18, round 2): every
+    # length in this block arrives pre-multiplied by field_width /
+    # WORLD_WIDTH, and this factor carries the scale for the lengths the
+    # shaders derive themselves (the trait size, the sparkle's stamp).
+    # The founding file was pixel-native because it only ever lived at
+    # one window; the port lives at every size.
+    ("world_scale", "f32"),
     # Friendship (soul 2). Probability per tick; radius in texels. The
     # three-friend cap is a law, not a knob -- it is a constant in the
     # shader.

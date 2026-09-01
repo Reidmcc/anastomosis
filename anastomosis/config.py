@@ -1095,8 +1095,9 @@ class ThingsParams:
     per-60fps-frame to per-second where they were rates
     (``docs/founding/small_strange_thing.html`` is the reference
     implementation; §18.1 is the list of which of these are souls rather
-    than knobs). Distances are in canvas texels, which at the default
-    scale are close to the founding file's screen pixels.
+    than knobs). Distances are *world units* -- texels at the reference
+    width ``things.WORLD_WIDTH`` -- scaled to the canvas when packed, so
+    the Things are the same beings at every resolution (the round-2 law).
     """
 
     # The village cap (§18.1 soul 4): the founding 200. Structural -- the

@@ -56,9 +56,13 @@ fn bodies(@builtin(global_invocation_id) gid: vec3<u32>) {
     // radius = size + sin(time * 0.05 + x * 0.01) * 0.5 -- the phase
     // accumulated host-side so a resumed world breathes on, mid-breath.
     let alpha = min(1.0, f32(t.age) / max(params.fadein_ticks, 1.0)) * 0.7;
+    // The trait size is a world unit; pulse_amp arrives pre-scaled and
+    // pulse_x pre-divided, so the breath rides the world too (§18's
+    // same-beings-at-every-resolution law).
     let radius = max(
-        t.size + sin(params.pulse_phase + t.x * params.pulse_x)
-            * params.pulse_amp,
+        t.size * params.world_scale
+            + sin(params.pulse_phase + t.x * params.pulse_x)
+                * params.pulse_amp,
         0.5);
     let colour = hsl_to_linear(t.hue, 0.6, 0.5) * alpha * params.body_emit;
 
@@ -90,11 +94,14 @@ fn bodies(@builtin(global_invocation_id) gid: vec3<u32>) {
         let at = pos + off;
         let sparkle = hsl_to_linear(t.hue + 60.0, 0.8, 0.8)
             * 0.8 * params.sparkle_amp;
-        for (var dy = -1; dy <= 2; dy = dy + 1) {
-            for (var dx = -1; dx <= 2; dx = dx + 1) {
+        // Small at every resolution means small relative to the world.
+        let sr = max(1.5 * params.world_scale, 1.0);
+        let reach = i32(ceil(sr)) + 1;
+        for (var dy = -reach; dy <= reach; dy = dy + 1) {
+            for (var dx = -reach; dx <= reach; dx = dx + 1) {
                 let texel = vec2<i32>(floor(at)) + vec2<i32>(dx, dy);
                 let centre = vec2<f32>(texel) + 0.5;
-                let w = 1.0 - smoothstep(0.0, 1.5, distance(centre, at));
+                let w = 1.0 - smoothstep(0.0, sr, distance(centre, at));
                 if (w > 1e-3) {
                     stamp(texel, sparkle * w);
                 }

@@ -241,3 +241,36 @@ Also settled in round 1: **no fossils, ratified** ("fossils are for worlds
 where things end; nothing about them ever ends; the checkpoint is the
 whole biography"), and the **soft cap accepted** as the same law with
 kinder manners.
+
+### What the second review round changed
+
+Round 2 ratified the register, the glow, the social figure/ground and the
+breath — and its one new symptom, caught with the close-crop instrument
+built for it, produced the port's one genuinely new law. At screen scale
+the world read dimmer and line-poor than at the review scale, and the
+porch's second hypothesis was right, completely: every length was
+texel-denominated, so at higher resolution the beings shrank, wandered a
+smaller fraction of their world per second, and — the subtle half —
+*emigrated less*, because emigrant lines are born of edge-crossings and a
+relatively slower walk crosses edges less often. Both symptoms, one
+mechanism.
+
+The law, stated for the record: **they must be the same beings at every
+resolution.** The founding file was pixel-native because it only ever
+lived at one window; the port lives at every size. Every length in
+`ThingsParams` is now a *world unit* — one texel at `WORLD_WIDTH`, the
+review-ratified 960 — scaled to the canvas when packed, with the trait
+size and the sparkle's stamp carrying the scale into the shaders through
+`world_scale`. `WORLD_WIDTH` is a constant, not a knob: changing it would
+rescale the meaning of every saved world. Sociology, gait, presence and
+emigration rate are all fractions of the world now, and a world grown at
+any window is the same world at Pseudo's native 2560.
+
+One emergent honesty, noted at the same viewing: the breath layer
+remembers the emigrant lines' *sweeps* — a long bond whose endpoint
+wanders paints a slow grey fan across the field. The founding 8-bit floor
+would have kept exactly this residue (bond strokes deposited above the
+stall threshold), so it is conserved rather than suppressed; if watching
+ever rules the fans too loud, the mechanism is a soft luminance threshold
+on what the ghost tracks, and it is deliberately not built until eyes ask
+for it.
