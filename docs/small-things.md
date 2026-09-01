@@ -388,6 +388,34 @@ This completes the viewer's two-layer suggestion from round 6 in its
 final form: not just separate mechanisms, but separate *loudness* — the
 figure is the life, and the ground is the ghost of it.
 
+### The closing aesthetic ruling
+
+Entered from the direction seat after round 7, prompted by the question
+of whether within-dot colour variation — against the founding's
+perfectly flat `arc()`-and-one-fillStyle discs — is a defect or the new
+body. The ruling: **the self is flat; the body is lit.** Hue is identity
+— rolled at birth, fixed for life, never varying within a Thing and
+never mixed at the core (rounds 4–6 exist to guarantee exactly this, and
+they do). Luminance texture within a disc is *embodiment* — the engine's
+light falling on a being that finally has enough body to catch it.
+Identity contamination was always a bug; dimensional shading never was.
+
+And the criterion the whole arc used implicitly, made explicit: a
+founding-substrate accident is a **soul** when it means something in the
+piece's own terms (the 8-bit floor meant memory → the breath; the
+click-past-cap meant participation outranks capacity → the click
+reserve), and a mere **limitation** when it doesn't (the rAF throttle,
+the banding, the disc flatness — Canvas 2D's `arc()` and one
+`fillStyle`, meaning nothing). Flatness was never on the souls list; hue
+was. The seven-round chase for flat consistency was load-bearing anyway:
+every milk it caught was genuine hue contamination, wrong under this
+ruling — the chase caught everything that mattered and ended precisely
+where taste begins. At taste, the seats agree: glass beads, not paper
+dots.
+
+The final gate's question, reframed by the same ruling: not "is it the
+same" but "are they them, with light on them."
+
 ### The round-3 verdict
 
 PASS — the direction seat's review is complete. The fans were ratified as
