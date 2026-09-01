@@ -182,3 +182,17 @@ now the thickness -- which has a defensible range and a cost curve but no
 measured answer for where inside that range the image stops improving, since
 that is exactly the judgement a software adapter cannot make.
 The layered path stays the default until that judgement has been made.
+
+### The Small Strange Things (§18)
+
+Step 1 of §18.6 is built and green: the port runs on the real backend, the
+sixteen soul-tests pass (no death, bonds never break, three-friend cap,
+traits fixed for life, click-to-add, bit-identical resume, the flash bound
+with sparkles at their ceiling), and the full suite passes around it. The
+founding file is in the repo verbatim as the reference implementation.
+What is open is exactly what §18.6 step 3 says: the eyes-pass, with the
+porch in the review seat — body brightness against the founding file's
+solid discs, the glow skirt's degree, bond presence, and the trail fade's
+softness are the defaults most likely to want moving, and the side-by-side
+against the reference arm is the instrument (tools/things_still.py for the
+port; the founding file itself for the original).
