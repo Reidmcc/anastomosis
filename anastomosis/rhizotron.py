@@ -94,6 +94,13 @@ FRONT_READ_TICKS = 60
 TIP_ALIVE = 8
 TIP_SPENT = 16
 
+# The strata atlas's resolution, as a divisor of the column's (§17.6). Two:
+# a buried season is a softer object than a living one, the atlas is the
+# one field that multiplies with the generation count, and the ceremony
+# pass box-samples the column so nothing a stroke laid is lost, only
+# spread. Mirrored in rhiz_strata.wgsl and rhiz_composite.wgsl.
+STRATA_SCALE = 2
+
 
 class BufferPair:
     """A pair of storage buffers with an alternating current/next index.
@@ -146,11 +153,33 @@ class RhizotronGeometry:
     max_axes: int = 6
     laterals_per_axis: int = 48
     fines_per_lateral: int = 6
+    # The strata atlas (§17.6): the countable generations plus the one
+    # bedrock layer. Sized from the config's strata_count when a pane is
+    # grown, and carried by the checkpoint after that -- the atlas is
+    # addressed by it, so a saved pane keeps the count it was buried with.
+    strata_layers: int = 5
 
     @property
     def tips_total(self) -> int:
         a, l, f = self.max_axes, self.laterals_per_axis, self.fines_per_lateral
         return a + a * l + a * l * f
+
+    # The atlas is half the column's resolution in each axis (STRATA_SCALE):
+    # a buried season is softer than a living one by design, and the atlas
+    # is the one field here that multiplies with the generation count. Two
+    # layers share a texel (xy and zw), so the tiles are half the layers,
+    # rounded up, stacked vertically.
+    @property
+    def strata_w(self) -> int:
+        return max(self.width // STRATA_SCALE, 1)
+
+    @property
+    def strata_h(self) -> int:
+        return max((self.height + STRATA_SCALE - 1) // STRATA_SCALE, 1)
+
+    @property
+    def strata_tiles(self) -> int:
+        return (self.strata_layers + 1) // 2
 
     @classmethod
     def derive(cls, width: int, height: int, params: Params) -> "RhizotronGeometry":
@@ -171,6 +200,7 @@ class RhizotronGeometry:
             max_axes=int(rhiz.max_axes),
             laterals_per_axis=int(rhiz.laterals_per_axis),
             fines_per_lateral=int(rhiz.fines_per_lateral),
+            strata_layers=int(rhiz.strata_count) + 1,
         )
 
     def problems(self) -> list[str]:
@@ -184,6 +214,10 @@ class RhizotronGeometry:
                 f"{self.height} rows for a {self.view_rows}-row view "
                 f"(expected {self.view_rows + 2 * MARGIN_ROWS})"
             )
+        # One countable generation at least, and `validate`'s ceiling plus
+        # the bedrock layer at most; the product sizes the atlas.
+        if not (2 <= self.strata_layers <= 9):
+            problems.append(f"{self.strata_layers} strata layers")
         # The pool bounds mirror `validate`'s; a file claiming a pool outside
         # them is nonsense, and the product decides a buffer allocation.
         if not (
@@ -208,6 +242,7 @@ class RhizotronGeometry:
                 (other.max_axes, other.laterals_per_axis,
                  other.fines_per_lateral),
             ),
+            ("strata layers", self.strata_layers, other.strata_layers),
         ):
             if mine != theirs:
                 differences.append(f"{label} {mine} != {theirs}")
@@ -216,7 +251,8 @@ class RhizotronGeometry:
     def describe(self) -> str:
         return (
             f"{self.width}x{self.view_rows} soil column "
-            f"(+{2 * MARGIN_ROWS} margin rows, {self.tips_total} tip slots)"
+            f"(+{2 * MARGIN_ROWS} margin rows, {self.tips_total} tip slots, "
+            f"{self.strata_layers - 1} countable strata)"
         )
 
 
@@ -247,10 +283,25 @@ class RhizotronEngine(Backend):
         # than decaying -- the descent is what retires it (§15.4).
         self.structure = PingPong(device, g.width, g.height, "structure")
         # The record layer (§17.6): lignin, biographical age, graft glow,
-        # ghost. The append-only half of the field -- nothing erases it while
-        # the season lives, and the interment (§17.6) is the only writer of
-        # its last channel.
+        # and the retired ghost channel (carried unread; the strata below
+        # took its job). The append-only half of the field -- nothing
+        # erases it while the season lives, and the interment (§17.6) is the
+        # only writer of its exit.
         self.record = PingPong(device, g.width, g.height, "record")
+        # The season's fan record (§17.6, the fossil rethink): a saturating
+        # integral of fine living presence, written every tick, read once at
+        # the fossil moment as the new stratum's halo, and started over on
+        # the same tick. Where the fans stood -- which the fossil itself
+        # cannot say, because the fines are gone by the time it is taken.
+        self.season = PingPong(device, g.width, g.height, "season")
+        # The strata atlas (§17.6): the buried seasons themselves. Layer 0 is
+        # the last fossil's silhouette and halo, layer g the one g burials
+        # before it, and the last layer the bedrock wash the countable ones
+        # merge into. Rewritten only by the ceremony pass (rhiz_strata.wgsl)
+        # on the fossil tick, so the previous slot holds the pre-ceremony
+        # atlas for as long as the reveal needs it.
+        self.strata = PingPong(
+            device, g.strata_w, g.strata_h * g.strata_tiles, "strata")
         # The tips, double-buffered for the deterministic birth mechanism
         # (rhiz_tips.wgsl), and their fixed-point deposit accumulator: two
         # words per texel, density and order-weight, drained every tick.
@@ -292,15 +343,20 @@ class RhizotronEngine(Backend):
         self._fossil_taken = False
         self._burial_mass = 0.0
         self.fossil_due = False
-        # The generational dim, armed at the fossil moment (§17.6): the
-        # standing ghost strata step one generation deeper, per burial, by
-        # exactly the configured fraction -- eased over GHOST_DIM_SECONDS
-        # of ticks so the recession is never a visible step (§17.10(5)),
-        # while the *total* stays the ceremony's, independent of the
-        # burial's own pace. Both words ride the checkpoint, so a session
-        # saved mid-recession still owes its ancestors the rest.
-        self._ghost_dim_ticks = 0
-        self._ghost_dim_step = 1.0
+        # The ceremony (§17.6): armed at the fossil moment, spent by the next
+        # tick's strata pass -- the new stratum laid, every standing one a
+        # generation deeper, the oldest merged into bedrock, the fan record
+        # started over, all in one dispatch. The flag rides the checkpoint,
+        # since the fossil moment is decided on a readback between ticks
+        # and a save can land in the gap. What eases is only the appearance:
+        # the reveal climbs from 0 to 1 over STRATA_REVEAL_SECONDS of ticks
+        # while the composite blends the previous atlas toward the new one
+        # (§17.10(5) admits no visible steps). A resume starts at rest, with
+        # both slots holding the saved atlas -- there is nothing to blend
+        # from, and the slew limiter's fade-in covers the launch anyway.
+        self._ceremony_pending = False
+        self._reveal_ticks = 0
+        self._reveal_total = 1
 
         # The uniform scroll velocity the safety stage reprojects through:
         # one row of texels, rewritten each frame from the descent's actual
@@ -344,6 +400,7 @@ class RhizotronEngine(Backend):
         self.p_moisture = self._compute("rhiz_moisture.wgsl")
         self.p_tips = self._compute("rhiz_tips.wgsl")
         self.p_structure = self._compute("rhiz_structure.wgsl")
+        self.p_strata = self._compute("rhiz_strata.wgsl")
         self.p_rhiz_composite = self._compute("rhiz_composite.wgsl")
 
     def _seed_state(self, params: Params) -> None:
@@ -379,6 +436,18 @@ class RhizotronEngine(Backend):
             upload(texture, bare)
         for texture in self.record.textures:
             upload(texture, bare)
+        for texture in self.season.textures:
+            upload(texture, bare)
+        atlas = np.zeros(
+            (g.strata_h * g.strata_tiles, g.strata_w, 4), dtype=np.float16)
+        for texture in self.strata.textures:
+            self.device.queue.write_texture(
+                {"texture": texture, "mip_level": 0, "origin": (0, 0, 0)},
+                np.ascontiguousarray(atlas),
+                {"offset": 0, "bytes_per_row": g.strata_w * 8,
+                 "rows_per_image": atlas.shape[0]},
+                (g.strata_w, atlas.shape[0], 1),
+            )
         self.device.queue.write_buffer(
             self.deposit_buf, 0,
             np.zeros(g.width * g.height * 2, dtype=np.uint32).tobytes())
@@ -454,20 +523,19 @@ class RhizotronEngine(Backend):
     MASS_SCALE = 256.0
 
     # The renewal knee (§17.6): the fraction of the committed mass still
-    # standing when a burial is considered finished. Shared between the
-    # season controller's renewal test and the ghost fade's calibration --
-    # ln(1/RENEWAL_FRACTION) is the interment integral one burial spends,
-    # which is what makes a per-burial fade fraction expressible as a
-    # multiple of the interment's own rate.
+    # standing when a burial is considered finished.
     RENEWAL_FRACTION = 0.22
 
-    # How long the generational dim takes to land, in simulated seconds: a
-    # ceremony in total (armed once, per burial, at the fossil moment) but
-    # eased in appearance -- §17.10(5) admits no visible steps, and a
-    # one-tick dim would brighten every ghost stroke in a single frame.
-    # Well inside any burial the config can reach, so the recession always
-    # completes under the interment's own cover.
-    GHOST_DIM_SECONDS = 8.0
+    # How long the ceremony takes to *appear*, in simulated seconds: the
+    # atlas changes on one tick (the new stratum laid, the ancestors a
+    # generation deeper, the oldest into bedrock), and the composite blends
+    # the previous atlas toward it over this many seconds of ticks --
+    # §17.10(5) admits no visible steps, and a one-tick change would step
+    # every buried stroke in a single frame. Well inside any burial the
+    # config can reach, so the reveal always completes under the
+    # interment's own cover, with the new stratum still under the wood it
+    # was taken from.
+    STRATA_REVEAL_SECONDS = 8.0
 
     def _commit_gate(self) -> float:
         """Smoothly opens the burial only past the fossil moment (§17.6)."""
@@ -543,15 +611,13 @@ class RhizotronEngine(Backend):
             self._fossil_taken = True
             self._burial_mass = max(self._wood_mass, 1e-6)
             self.fossil_due = True
-            # The ceremony's other half: as the burial commits, whatever
-            # already stands in the ground recedes one generation -- the
-            # total fixed by config, the appearance eased across the next
-            # few simulated seconds of ticks.
-            ticks = max(int(round(
-                self.GHOST_DIM_SECONDS * max(params.sim_hz, 1e-3))), 1)
-            self._ghost_dim_ticks = ticks
-            self._ghost_dim_step = (
-                max(1.0 - rhiz.ghost_fade, 0.05) ** (1.0 / ticks))
+            # The ceremony's other half, run by the next tick's strata
+            # pass: the completed skeleton becomes the nearest stratum,
+            # whatever already stands in the ground recedes one generation,
+            # and the oldest countable stratum merges into bedrock. The
+            # fossil is taken from the frame this same flag triggers, so
+            # the gallery and the ground agree on what the season was.
+            self._ceremony_pending = True
 
         # Renewal: the record has been emptied by a burial; the next season
         # begins. The drive is already decaying (completion collapsed with
@@ -751,20 +817,28 @@ class RhizotronEngine(Backend):
             "intern_rate": (
                 rate(rhiz.interment_rate) * self._intern
                 * self._commit_gate()),
-            "ghost_gain": rhiz.ghost_gain,
-            # The generational dim: as a burial commits, the ancestors
-            # step one generation deeper -- a per-ceremony total, eased
-            # over GHOST_DIM_SECONDS of ticks so nothing steps on screen.
-            # A ceremony, never a rate: the overnight watch found the
-            # per-second fade this replaces erasing each season's ghost
-            # while it was still being laid -- a real-pacing burial runs
-            # minutes (and, with stragglers recommitting wood through it,
-            # to no bounded rate-integral either), so every continuous
-            # fade the accelerated tests certified was an eraser at the
-            # pace the app actually runs. The strata passed every test
-            # and never once reached the screen.
-            "ghost_dim": (
-                self._ghost_dim_step if self._ghost_dim_ticks > 0 else 1.0),
+            # The strata (§17.6, the fossil rethink). Everything about a
+            # buried season is decided per ceremony, on the fossil tick,
+            # in rhiz_strata.wgsl; the composite only reads the atlas
+            # through the ladder below. The one continuous quantity is
+            # the reveal, and it eases appearance, never data: the
+            # overnight watch's keystone -- every continuous fade is an
+            # eraser at some tempo -- is why nothing here is a rate.
+            "strata_count": g.strata_layers - 1,
+            "strata_tiles": g.strata_tiles,
+            "strata_w": g.strata_w,
+            "strata_h": g.strata_h,
+            "strata_reveal": self._reveal(),
+            "strata_crisp": rhiz.strata_crisp,
+            "strata_soft": rhiz.strata_soft,
+            "strata_step": rhiz.strata_step,
+            "strata_knee": rhiz.strata_knee,
+            "strata_cool": rhiz.strata_cool,
+            "strata_bedrock": rhiz.strata_bedrock,
+            "fan_rate": per_tick(rhiz.fan_rate),
+            "season_keep": 0.0 if self._ceremony_pending else 1.0,
+            "bedrock_gain": rhiz.bedrock_gain,
+            "bedrock_fade": rhiz.bedrock_fade,
             "wood_avoid": rhiz.wood_avoid,
             "wood_edge": rhiz.wood_edge,
             "wood_age_scale": rhiz.wood_age_scale,
@@ -816,6 +890,29 @@ class RhizotronEngine(Backend):
         encoder = self.device.create_command_encoder(label="rhiz_tick")
         cpass = encoder.begin_compute_pass()
 
+        # 0. The ceremony (§17.6), on the one tick it is armed for: the
+        #    strata pass reads the season as the last tick left it -- the
+        #    completed record, the living remnant, the fan record -- and
+        #    writes the whole atlas anew. Before the tips, so that this
+        #    same tick's structure pass can start the fan record over
+        #    (`season_keep` is zero this tick) without the pass below
+        #    racing it, and so that the frame after this tick -- the one
+        #    the application takes the fossil from -- already stands on the
+        #    new ground. Atomic in commitment: one dispatch, one tick,
+        #    nothing partial for a save to land in.
+        if self._ceremony_pending:
+            cpass.set_pipeline(self.p_strata)
+            cpass.set_bind_group(0, self._bind(self.p_strata, [
+                self._buffer_binding(self.rhiz_buf),
+                self.structure.cur,
+                self.record.cur,
+                self.season.cur,
+                self.strata.cur,
+                self.strata.nxt,
+            ]))
+            cpass.dispatch_workgroups(
+                *self._groups(g.strata_w, g.strata_h * g.strata_tiles))
+
         # 1. Tips first, in the pre-shift frame the current textures are in:
         #    sense, steer, move, deposit, branch. They write their positions
         #    already shifted for the frame everything after them produces.
@@ -855,6 +952,8 @@ class RhizotronEngine(Backend):
             self.record.cur,
             self.record.nxt,
             self._buffer_binding(self.front_buf),
+            self.season.cur,
+            self.season.nxt,
         ]))
         cpass.dispatch_workgroups(*self._groups(g.width, g.height))
 
@@ -863,12 +962,21 @@ class RhizotronEngine(Backend):
         self.moisture.flip()
         self.structure.flip()
         self.record.flip()
+        self.season.flip()
+        if self._ceremony_pending:
+            # The atlas is the new one from here; the old slot keeps the
+            # pre-ceremony atlas for the reveal to blend from.
+            self.strata.flip()
+            self._ceremony_pending = False
+            self._reveal_total = max(int(round(
+                self.STRATA_REVEAL_SECONDS * max(params.sim_hz, 1e-3))), 1)
+            self._reveal_ticks = self._reveal_total
 
         self._submit_tick(encoder)
         self.tick_count += 1
-        # One more tick of the generational dim has been dispatched.
-        if self._ghost_dim_ticks > 0:
-            self._ghost_dim_ticks -= 1
+        # One more tick of the reveal has been dispatched.
+        if self._reveal_ticks > 0:
+            self._reveal_ticks -= 1
 
         # The front controller reads back on the tick counter -- deterministic
         # in the state, so a resumed session reproduces its corrections.
@@ -925,9 +1033,17 @@ class RhizotronEngine(Backend):
             self.hdr_view,
             self.sampler,
             self.record.cur,
+            self.strata.cur,
+            self.strata.nxt,
         ]))
         cpass.dispatch_workgroups(*self._groups(self.width, self.height))
         return self.scroll_vel_view
+
+    def _reveal(self) -> float:
+        """How far the last ceremony has appeared, in [0, 1] (§17.6)."""
+        if self._reveal_ticks <= 0:
+            return 1.0
+        return 1.0 - self._reveal_ticks / max(self._reveal_total, 1)
 
     # -- checkpointing --------------------------------------------------------
 
@@ -956,8 +1072,7 @@ class RhizotronEngine(Backend):
             "living_peak": float(self._living_peak),
             "fossil_taken": bool(self._fossil_taken),
             "burial_mass": float(self._burial_mass),
-            "ghost_dim_ticks": int(self._ghost_dim_ticks),
-            "ghost_dim_step": float(self._ghost_dim_step),
+            "ceremony_pending": bool(self._ceremony_pending),
         }
 
     def restore_season(self, saved: dict) -> None:
@@ -980,15 +1095,14 @@ class RhizotronEngine(Backend):
         self._living_peak = max(peak, 0.0)
         self._fossil_taken = taken
         self._burial_mass = max(burial, 0.0)
-        try:
-            dim_ticks = int(saved.get("ghost_dim_ticks", 0))
-            dim_step = float(saved.get("ghost_dim_step", 1.0))
-        except (TypeError, ValueError):
-            dim_ticks, dim_step = 0, 1.0
-        if not math.isfinite(dim_step):
-            dim_ticks, dim_step = 0, 1.0
-        self._ghost_dim_ticks = max(dim_ticks, 0)
-        self._ghost_dim_step = min(max(dim_step, 0.05), 1.0)
+        # A ceremony armed in the gap between the readback and the next tick
+        # is owed; the stratum it lays is the whole season's record. A file
+        # from before the strata (no key) owes nothing.
+        self._ceremony_pending = bool(saved.get("ceremony_pending", False))
+        # The reveal does not: both atlas slots hold the saved atlas, so a
+        # resume stands on finished ground and the launch fade-in is the
+        # only transition.
+        self._reveal_ticks = 0
         # A pending fossil does not survive the file: the application takes
         # the still at the moment the drive commits, or not at all.
         self.fossil_due = False

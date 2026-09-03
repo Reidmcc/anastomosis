@@ -331,14 +331,31 @@ RHIZ_FIELDS: list[Field] = [
     # Lignification per tick (relaxation form), the avoidance weight of wood,
     # and the wood shading's transfer and maturation.
     ("lignify_rate", "f32"),
-    # Seasons (§17.6): the interment's per-tick rate (zero outside one),
-    # the ghost's share of interred mass, and the generational dim -- 1.0
-    # on every ordinary tick, (1 - ghost_fade) for exactly the one tick
-    # of the fossil moment, when the standing strata step a generation
-    # deeper before the new burial lays its own.
+    # Seasons (§17.6): the interment's per-tick rate (zero outside one).
     ("intern_rate", "f32"),
-    ("ghost_gain", "f32"),
-    ("ghost_dim", "f32"),
+    # The strata (§17.6, the fossil rethink). The atlas holds strata_count
+    # countable generations plus one bedrock layer, two layers per texel
+    # (xy and zw), as strata_tiles tiles of strata_w x strata_h stacked
+    # vertically at half the column's resolution. strata_reveal eases the
+    # appearance of the last ceremony in over a few seconds: 1.0 at rest,
+    # and the composite blends the previous atlas toward the current one
+    # while it climbs. season_keep is 1.0 on every ordinary tick and 0.0
+    # on the ceremony tick, when the fan record starts over.
+    ("strata_count", "u32"),
+    ("strata_tiles", "u32"),
+    ("strata_w", "u32"),
+    ("strata_h", "u32"),
+    ("strata_reveal", "f32"),
+    ("strata_crisp", "f32"),
+    ("strata_soft", "f32"),
+    ("strata_step", "f32"),
+    ("strata_knee", "f32"),
+    ("strata_cool", "f32"),
+    ("strata_bedrock", "f32"),
+    ("fan_rate", "f32"),        # per tick
+    ("season_keep", "f32"),
+    ("bedrock_gain", "f32"),
+    ("bedrock_fade", "f32"),
     ("wood_avoid", "f32"),
     ("wood_edge", "f32"),
     ("wood_age_scale", "f32"),

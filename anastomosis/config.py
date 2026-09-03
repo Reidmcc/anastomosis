@@ -997,26 +997,65 @@ class RhizotronParams:
     # 40-minute default run (~0.010 and climbing linearly), so the default
     # is roughly an hour and a half of growth; presets own the pacing.
     wood_budget: float = 0.016
-    # The interment: how fast lignin leaves for the ghost once the drive is
+    # The interment: how fast lignin leaves the record once the drive is
     # full, per second -- a five-to-eight-minute burial at the default, the
-    # benign kind of luminance change (§17.10(2)) -- and what fraction of
-    # the interred mass the ghost keeps.
+    # benign kind of luminance change (§17.10(2)).
     interment_rate: float = 0.010
-    ghost_gain: float = 0.85
-    # How much of the *existing* ghost each burial takes with it: at the
-    # fossil moment, every stratum already standing steps this fraction
-    # deeper, once, and then the new burial lays its own ghost at full
-    # strength over them -- so the ground reads about two seasons deep,
-    # salience decays, and the gallery keeps the verbatim (§17.6). A
-    # per-burial fraction applied as a single ceremony, not a per-second
-    # rate: a slow burial and a brisk one leave the same strata behind
-    # (the overnight watch's finding -- a per-second fade erased the
-    # ghost while a real-pacing burial was still laying it, and every
-    # accelerated test was too quick to notice).
-    ghost_fade: float = 0.5
     # The interment drive's relaxation, seconds. Slow like every controller
     # here: completion is noticed, not triggered.
     intern_tau: float = 45.0
+
+    # --- The strata (§17.6, the fossil rethink) -----------------------------
+    # The buried seasons are the fossils themselves, not a diffused stain:
+    # at each fossil moment the completed skeleton's silhouette and the
+    # season's fan extent are laid as a new stratum, every standing stratum
+    # steps one generation deeper, and the oldest countable one merges into
+    # the bedrock wash. All of it is one ceremony on one tick; only the
+    # appearance eases (STRATA_REVEAL_SECONDS in rhizotron.py).
+    # How many generations stay countable before merging into bedrock.
+    # Structural: the atlas is sized from it, so a saved pane keeps the
+    # count it was grown with.
+    # Four, not more: a completed season is a whole-pane mesh, and the
+    # union of many meshes at legible contrast is a pane with no ground
+    # left (the first painted trials, six deep, were mud). The count the
+    # eye can actually make is a few distinct rungs and then "more".
+    strata_count: int = 4
+    # The nearest stratum's darkening, Oklab L below the soil: the crisp
+    # skeleton and the soft halo (fans, and the skeleton's own blur). The
+    # living wood sits ~0.18 under the soil; the first ghost must read as a
+    # plant at a glance and stay quieter than the one alive over it.
+    strata_crisp: float = 0.08
+    strata_soft: float = 0.025
+    # Each generation deeper keeps this fraction of the contrast above it,
+    # pulls a further step toward stone grey (below), and softens one more
+    # step (rhiz_strata.wgsl). The count test (§17.6) is a function of
+    # these and nothing else. Steep, so the last countable rung is already
+    # a shadow and the bedrock beyond it a wash.
+    strata_step: float = 0.5
+    # Mass at half coverage for the silhouette: the wood's own effective
+    # knee (root_knee at the committed half), so what the fossil keeps is
+    # exactly the skeleton the screen showed -- trunk lines and lateral
+    # shafts a few hundredths, the sub-hundredth wash of every path ever
+    # taken left as ground (the overnight watch's numbers; a lower knee
+    # turned the wash into a whole-pane silhouette on the first trial).
+    strata_knee: float = 0.04
+    # How far the nearest stratum's chroma is pulled from the soil's warm
+    # earth toward a cool stone grey; older strata pull further. Ghosts are
+    # stone, not wood: a buried trunk never competes with a living one for
+    # the same red-brown.
+    strata_cool: float = 0.55
+    # The fan record: how quickly fine living material writes itself into
+    # the season's halo, per second of presence at full density. Roughly a
+    # minute of fuzz saturates a texel, so the fan's interior -- where fines
+    # regrow again and again -- reads darker than its fringe.
+    fan_rate: float = 0.05
+    # Bedrock: the uncounted wash the strata merge into beyond the count.
+    # What fraction of the merging stratum it keeps, what fraction of
+    # itself each burial takes (a per-ceremony step, never a rate), and its
+    # darkening at full strength.
+    bedrock_gain: float = 1.0
+    bedrock_fade: float = 0.35
+    strata_bedrock: float = 0.03
 
     # --- The long-duration core (§15.11 step 4) ----------------------------
     # Senescence: fine structure fades once it is old, at a rate that scales
@@ -2486,9 +2525,17 @@ def validate(params: Params) -> Params:
     rhiz.lignify_rate = min(max(float(rhiz.lignify_rate), 0.0), 1.0)
     rhiz.wood_budget = min(max(float(rhiz.wood_budget), 0.001), 0.2)
     rhiz.interment_rate = min(max(float(rhiz.interment_rate), 0.0), 0.2)
-    rhiz.ghost_gain = min(max(float(rhiz.ghost_gain), 0.0), 2.0)
-    rhiz.ghost_fade = min(max(float(rhiz.ghost_fade), 0.0), 0.95)
     rhiz.intern_tau = min(max(float(rhiz.intern_tau), 4.0), 3600.0)
+    rhiz.strata_count = min(max(int(rhiz.strata_count), 1), 8)
+    rhiz.strata_crisp = min(max(float(rhiz.strata_crisp), -0.4), 0.4)
+    rhiz.strata_soft = min(max(float(rhiz.strata_soft), -0.4), 0.4)
+    rhiz.strata_step = min(max(float(rhiz.strata_step), 0.1), 1.0)
+    rhiz.strata_knee = min(max(float(rhiz.strata_knee), 0.001), 1.0)
+    rhiz.strata_cool = min(max(float(rhiz.strata_cool), 0.0), 1.0)
+    rhiz.fan_rate = min(max(float(rhiz.fan_rate), 0.0), 10.0)
+    rhiz.bedrock_gain = min(max(float(rhiz.bedrock_gain), 0.0), 2.0)
+    rhiz.bedrock_fade = min(max(float(rhiz.bedrock_fade), 0.0), 0.95)
+    rhiz.strata_bedrock = min(max(float(rhiz.strata_bedrock), -0.4), 0.4)
     rhiz.wood_avoid = min(max(float(rhiz.wood_avoid), 0.0), 4.0)
     rhiz.wood_edge = min(max(float(rhiz.wood_edge), 0.02), 0.5)
     rhiz.wood_age_scale = min(max(float(rhiz.wood_age_scale), 1.0), 36000.0)

@@ -86,7 +86,7 @@ from . import volume as volume_module
 
 log = logging.getLogger(__name__)
 
-FORMAT_VERSION = 6
+FORMAT_VERSION = 7
 # Version 1 recorded the *window* size where version 2 records the simulation's
 # own, which are the same number unless that session was resized after starting.
 # Version 3 adds the morphology climate pair and the feature-size walk, both of
@@ -102,8 +102,23 @@ FORMAT_VERSION = 6
 # 1.0 and now carries the withheld EMA. An older file's 1.0 washes out of the
 # EMA within a hundred ticks; the transient return it produces is bounded by
 # the clamp and slewed below anything visible.
+# Version 7 adds the rhizotron's strata atlas and season fan record (DESIGN.md
+# §17.6, the fossil rethink) and the atlas's layer count to its geometry. An
+# older column carries neither: it resumes with an empty fan record and an
+# atlas whose only content is its old diffused ghost channel, folded once into
+# the bedrock layer, so ten buried seasons arrive as the wash they were rather
+# than as nothing.
 # Reading them costs a few lines and saves anyone upgrading their mature field.
 OLDEST_READABLE_VERSION = 1
+
+# The rhizotron arrays younger than the format: the version each first
+# appeared in, on the same terms as FIELDS_SINCE.
+COLUMN_FIELDS_SINCE = {"season": 7, "strata": 7}
+
+# How an old file's diffused ghost channel is read as bedrock at restore: the
+# ghost was mass-scaled (trunk lines a few hundredths), the bedrock halo is
+# unit-scaled, and the wash should arrive faint -- it is the uncounted past.
+OLD_GHOST_TO_BEDROCK = 20.0
 
 # Fifteen minutes. It was five, on the reasoning that a crash should cost less
 # field maturity than it takes to notice one -- which is still the trade, just
@@ -758,6 +773,7 @@ class _RhizotronLayout(_Layout):
             "max_axes": int(geometry.max_axes),
             "laterals_per_axis": int(geometry.laterals_per_axis),
             "fines_per_lateral": int(geometry.fines_per_lateral),
+            "strata_layers": int(geometry.strata_layers),
         }
 
     def read_geometry(self, meta: dict[str, Any]):
@@ -772,6 +788,11 @@ class _RhizotronLayout(_Layout):
                 max_axes=int(block["max_axes"]),
                 laterals_per_axis=int(block["laterals_per_axis"]),
                 fines_per_lateral=int(block["fines_per_lateral"]),
+                # A file from before the strata names no layer count; it
+                # gets the default, and the empty atlas that goes with it.
+                strata_layers=int(block.get(
+                    "strata_layers",
+                    rhizotron_module.RhizotronGeometry.strata_layers)),
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
@@ -779,7 +800,7 @@ class _RhizotronLayout(_Layout):
     def expected_arrays(
         self, geometry, version: int = FORMAT_VERSION
     ) -> dict[str, tuple[int, ...]]:
-        return {
+        expected = {
             "column.moisture": (geometry.height, geometry.width, 4),
             "column.structure": (geometry.height, geometry.width, 4),
             "column.record": (geometry.height, geometry.width, 4),
@@ -787,10 +808,16 @@ class _RhizotronLayout(_Layout):
                 max(geometry.tips_total, 1) * rhizotron_module.TIP_STRIDE,
             ),
         }
+        if version >= COLUMN_FIELDS_SINCE["season"]:
+            expected["column.season"] = (geometry.height, geometry.width, 4)
+        if version >= COLUMN_FIELDS_SINCE["strata"]:
+            expected["column.strata"] = (
+                geometry.strata_h * geometry.strata_tiles, geometry.strata_w, 4)
+        return expected
 
     def capture(self, engine) -> dict[str, np.ndarray]:
         arrays: dict[str, np.ndarray] = {}
-        for name in ("moisture", "structure", "record"):
+        for name in ("moisture", "structure", "record", "season", "strata"):
             pair = getattr(engine, name)
             arrays[f"column.{name}"] = _read_texture(
                 engine.device, pair.textures[pair.index])
@@ -798,7 +825,7 @@ class _RhizotronLayout(_Layout):
         return arrays
 
     def restore_arrays(self, engine, arrays: dict[str, np.ndarray]) -> None:
-        for name in ("moisture", "structure", "record"):
+        for name in ("moisture", "structure", "record", "season", "strata"):
             data = arrays.get(f"column.{name}")
             if data is None:
                 continue
@@ -806,6 +833,16 @@ class _RhizotronLayout(_Layout):
             for texture in pair.textures:
                 _write_texture(engine.device, texture, data)
             pair.index = 0
+        if "column.strata" not in arrays and "column.record" in arrays:
+            # A column from before the strata (DESIGN.md §17.6): its past
+            # is the diffused ghost channel, and nothing is lost -- it
+            # becomes the bedrock wash, once, and the first ceremony from
+            # here lays the first countable stratum over it.
+            atlas = _bedrock_from_ghost(
+                engine.geometry, arrays["column.record"])
+            for texture in engine.strata.textures:
+                _write_texture(engine.device, texture, atlas)
+            engine.strata.index = 0
         tips = arrays.get("column.tips")
         if tips is not None:
             for buffer in engine.tips.buffers:
@@ -825,6 +862,34 @@ class _RhizotronLayout(_Layout):
         season = saved.get("season")
         if isinstance(season, dict):
             engine.restore_season(season)
+
+
+def _bedrock_from_ghost(geometry, record: np.ndarray) -> np.ndarray:
+    """An empty strata atlas whose bedrock layer is an old ghost channel.
+
+    The atlas is half the column's resolution (``STRATA_SCALE``) with two
+    layers to a texel; the bedrock is the last layer, so it lands in the
+    ``xy`` or ``zw`` pair of the last tile by the parity of the count. The
+    ghost is box-sampled the way the ceremony pass samples the column.
+    """
+    scale = rhizotron_module.STRATA_SCALE
+    ghost = np.nan_to_num(
+        np.asarray(record, dtype=np.float32)[..., 3], nan=0.0,
+        posinf=0.0, neginf=0.0)
+    ghost = np.clip(ghost, 0.0, None)
+    h, w = geometry.strata_h, geometry.strata_w
+    padded = np.zeros((h * scale, w * scale), dtype=np.float32)
+    rows = min(ghost.shape[0], h * scale)
+    cols = min(ghost.shape[1], w * scale)
+    padded[:rows, :cols] = ghost[:rows, :cols]
+    boxed = padded.reshape(h, scale, w, scale).mean(axis=(1, 3))
+    wash = np.clip(boxed * OLD_GHOST_TO_BEDROCK, 0.0, 4.0)
+    atlas = np.zeros((h * geometry.strata_tiles, w, 4), dtype=np.float16)
+    layer = geometry.strata_layers - 1
+    tile = layer // 2
+    channel = 1 if layer % 2 == 0 else 3
+    atlas[tile * h:(tile + 1) * h, :, channel] = wash.astype(np.float16)
+    return atlas
 
 
 class _ThingsLayout(_Layout):

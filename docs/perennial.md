@@ -185,17 +185,24 @@ touched by the application again. The gallery is the mode's deepest
 append-only layer: every finished season, verbatim, forever. A season that
 took a week of evenings to grow ends as an object the eye can keep.
 
-**Interment.** Then, over minutes, the record becomes ground: the wood
-field transfers into a persistent *ghost* field at an eased rate — the
-skeleton dims and settles into the soil's own register, keeping its shape
-as a darkened root-shadow stratum, the way real soil actually holds the
+**Interment.** Then, over minutes, the record becomes ground. As
+redesigned after the third long watch ("What the fossil rethink did",
+below): on the tick after the fossil is offered, the *ceremony* lays the
+completed skeleton's silhouette, with the halo its fans left, as the
+nearest of a small stack of *strata* held in an atlas — every stratum
+already standing steps one generation deeper, softens one step, and the
+oldest countable one merges into the *bedrock* wash — and only then does
+the burial take the wood down, at an eased rate, to reveal the stratum
+beneath it. The strata are the fossils themselves, standing in the ground
+under the living layer: the nearest crisp and darkest, each generation a
+fixed rung fainter, softer and greyer, the way real soil holds the
 channels and stains of the roots that died in it. Nutrient recycling pays
 out where the wood was (the economy §15 built already does this for
-senescence), so the ghost is also the fertile ground of the next season.
-Ghosts blend down by one eased step per interment: the last season is
-plainly visible in the ground, the one before it faint, the one before
-that almost gone. Salience decays on screen; the gallery keeps the
-verbatim.
+senescence), so the ground is also the fertile ground of the next season.
+Everything about a buried season is decided per ceremony; the one
+continuous quantity is the reveal, which eases the appearance of the
+ceremony in over a few seconds. Salience decays on screen; the gallery
+keeps the verbatim.
 
 **Renewal.** With the wood field empty, the soil re-seeds: the world
 origin jumps by a hashed stride (new strata, stones, hardpan, caches — the
@@ -588,3 +595,103 @@ are simulation dependencies; a once-per-season still is not worth an
 imaging library), the encode and write on a thread, an existing file
 never overwritten. The gallery inherits the checkpoint path's location,
 so tests and portable configs isolate it for free.
+
+### What the fossil rethink did
+
+The third long watch was a creative-direction ruling rather than a bug:
+with the second watch's fixes in, ten buried seasons reached the screen —
+as faint vertical stains where taproots had been, thinning trunks on
+their way out, near-invisible traces of the fans. Nobody could count the
+seasons from the still. Several tuning cycles on the diffused ghost
+channel had not fixed that, so the mechanism was reopened, against five
+criteria in order: a viewer can say roughly how many seasons lie buried;
+the nearest ghost reads as a plant-shaped darkening at a glance and never
+hides; the fines leave a fan; ghosts separate from living wood by hue as
+well as value; and the standing laws hold (no continuous fade, ceremonies
+atomic in commitment and eased in appearance, strata across the
+checkpoint, the living plant growing through them).
+
+**The strata atlas.** The ghost is now the fossil itself, not a stain
+diffused from it. The direction proposed compositing the gallery's PNGs
+back into the pane; the build takes the silhouette from the field
+instead, because a presented frame is soil and sky and its own ancestors
+as well as the plant, and un-painting those from a PNG is a segmentation
+problem the simulation never has to solve — it holds the skeleton as
+mass. On the tick after the interment drive commits (the same readback
+that offers the fossil arms it), a ceremony pass (`rhiz_strata.wgsl`)
+rewrites the whole atlas in one dispatch: layer 0 becomes the standing
+skeleton's *coverage* — lignin plus the living remnant through the wood's
+own transfer, at the wood's own knee, box-sampled to half the column's
+resolution — together with a halo of the trunk-class strokes' spread plus
+the season's *fan record*; every layer `g ≥ 1` becomes the layer above it
+softened one tent step; and the last layer, the bedrock, becomes what it
+held stepped down by the configured fraction plus the halo of the stratum
+that just aged out. Two layers share a texel (`xy`, `zw`) and the tiles
+stack vertically, so the atlas is one `rgba16float` texture sized from a
+config count that the geometry carries: `strata_count` countable
+generations plus bedrock. Nothing about a buried season is a rate.
+
+**The fan record.** The fossil cannot say where the fans were — by the
+time the season completes the fines have senesced — so the structure pass
+integrates fine living presence into a `season` field every tick
+(fineness squared, saturating, so the fan's interior where fuzz regrows
+again and again reads darker than its fringe), the ceremony reads it as
+the new stratum's halo, and the same tick's structure pass starts it
+over (`season_keep` is zero on the ceremony tick only).
+
+**The ladder.** The composite reads the atlas through one small ladder
+per generation: darkness `strata_crisp · step^g` for the silhouette and
+`strata_soft · step^g` for the halo, composed by *maximum* across
+generations so the nearest never hides and overlapping skeletons stack
+into a form rather than piling into black; chroma pulled a further step
+toward grey per generation (desaturation, not a cool tint — a blue tint
+at the ground's lightness is blue speckle in the grain); and a spread
+gain that gives a softened stroke most of its weight back, so a
+generation's recession in focus and its recession in salience are two
+ladders rather than one compounded collapse. Bedrock sits under all of
+them at its own fixed strength.
+
+**The reveal.** The atlas changes on one tick. The composite blends the
+previous atlas (the ping-pong pair's other slot, which the ceremony is
+the only writer of) toward the current one over `STRATA_REVEAL_SECONDS`
+of ticks, so nothing steps on screen (§17.10(5)). The new stratum is
+under the wood it was taken from when it is laid, so the burial's own
+eased recession is what mostly shows it. A resume starts at rest with
+both slots holding the saved atlas; the flag that arms a ceremony rides
+the checkpoint, since the fossil moment is decided between ticks.
+
+**What the trials found.** Six generations of whole-pane meshes at six
+darknesses are one tangle: a completed season *is* a whole-pane mesh, and
+the union of several at legible contrast leaves no ground. Spreading the
+raw mass made a halo of the entire wash (the record is a sub-hundredth
+wash over most of the pane); a knee below the wood's own turned the wash
+into a whole-pane silhouette; a wide softening kernel turned every
+generation but the nearest into a uniform wash by the second step. The
+shipped ladder is four countable generations at a steep rung, gentle
+softening, halos from trunk-class strokes only, and the count the eye
+can honestly make is the nearest ghost, the soft one under it, a band,
+a shadow, and then "more" — the bedrock. A pale-bone ladder (strata
+lighter than the soil) was tried for the hue criterion and rejected: the
+exposure governor is attenuation-only, so lightness added to the ground
+is paid for by the whole pane.
+
+**Migration.** A column saved before the strata carries its ten seasons
+in the retired ghost channel; at restore that channel is folded once into
+the bedrock layer (`_bedrock_from_ghost`), so the past arrives as the wash
+it was rather than as nothing. The record's fourth channel is carried
+unread from then on.
+
+**Instruments.** `tools/perennial_still.py` runs the real backend
+headless — fresh, or resumed from a saved column — renders often enough
+that the output chain is converged, writes a still at each fossil moment
+and at requested ticks, and with `--ab` writes each still a second time
+with the strata zeroed and reports the pixel difference between the pair.
+The suite gained `test_the_strata_are_the_same_at_any_burial_pace`
+(the second watch's keystone, kept: two burials five-fold apart in tempo
+leave bit-identical strata), `test_the_oldest_stratum_merges_into_bedrock`
+(a silhouette walks the whole ladder one rung per ceremony, integral
+kept, and the bedrock steps by the configured fraction), and
+`test_the_strata_reach_the_screen` (the argument-ender as CI: a stratum
+must change the converged image by more than an 8-bit step over the
+ground it covers, the generations a ladder, the ground it does not cover
+unchanged).
