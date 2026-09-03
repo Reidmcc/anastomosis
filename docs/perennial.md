@@ -666,11 +666,17 @@ the union of several at legible contrast leaves no ground. Spreading the
 raw mass made a halo of the entire wash (the record is a sub-hundredth
 wash over most of the pane); a knee below the wood's own turned the wash
 into a whole-pane silhouette; a wide softening kernel turned every
-generation but the nearest into a uniform wash by the second step. The
-shipped ladder is four countable generations at a steep rung, gentle
-softening, halos from trunk-class strokes only, and the count the eye
-can honestly make is the nearest ghost, the soft one under it, a band,
-a shadow, and then "more" — the bedrock. A pale-bone ladder (strata
+generation but the nearest into a uniform wash by the second step. And
+the first emergent burial at real pacing found the opposite failure from
+the painted ones: at the wood's exact knee the stratum kept only the
+trunks, and the burial's relics — the spared young wood, standing on the
+same lines — hid them, so the ghost was its lateral network at partial
+coverage, faint again. The strata's knee sits a shade under the wood's
+(the laterals are a few hundredths, right at it) and the ghost is the
+whole mesh. The shipped ladder is four countable generations at a steep
+rung, gentle softening, halos from trunk-class strokes only, and the
+count the eye can honestly make is the nearest ghost, the soft one under
+it, a band, a shadow, and then "more" — the bedrock. A pale-bone ladder (strata
 lighter than the soil) was tried for the hue criterion and rejected: the
 exposure governor is attenuation-only, so lightness added to the ground
 is paid for by the whole pane.

@@ -1024,21 +1024,23 @@ class RhizotronParams:
     # skeleton and the soft halo (fans, and the skeleton's own blur). The
     # living wood sits ~0.18 under the soil; the first ghost must read as a
     # plant at a glance and stay quieter than the one alive over it.
-    strata_crisp: float = 0.08
-    strata_soft: float = 0.025
+    strata_crisp: float = 0.10
+    strata_soft: float = 0.03
     # Each generation deeper keeps this fraction of the contrast above it,
     # pulls a further step toward stone grey (below), and softens one more
     # step (rhiz_strata.wgsl). The count test (§17.6) is a function of
     # these and nothing else. Steep, so the last countable rung is already
     # a shadow and the bedrock beyond it a wash.
     strata_step: float = 0.5
-    # Mass at half coverage for the silhouette: the wood's own effective
-    # knee (root_knee at the committed half), so what the fossil keeps is
-    # exactly the skeleton the screen showed -- trunk lines and lateral
-    # shafts a few hundredths, the sub-hundredth wash of every path ever
-    # taken left as ground (the overnight watch's numbers; a lower knee
-    # turned the wash into a whole-pane silhouette on the first trial).
-    strata_knee: float = 0.04
+    # Mass at half coverage for the silhouette: a shade under the wood's
+    # own effective knee (root_knee at the committed half), so what the
+    # fossil keeps is the skeleton the screen showed with its lateral
+    # shafts -- a few hundredths, and at real pacing right at the wood's
+    # knee, so the wood's exact knee kept only the trunks, which the
+    # burial's relics then hid -- while the sub-hundredth wash of every
+    # path ever taken stays ground (a knee of 0.012 turned that wash into
+    # a whole-pane silhouette on the first trial).
+    strata_knee: float = 0.03
     # How far the nearest stratum's chroma is pulled from the soil's warm
     # earth toward a cool stone grey; older strata pull further. Ghosts are
     # stone, not wood: a buried trunk never competes with a living one for
