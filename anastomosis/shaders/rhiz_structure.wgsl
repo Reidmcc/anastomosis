@@ -29,6 +29,11 @@
 // The controller words (rhizotron.py): this pass owes the season controller
 // the third and fourth -- living mass and wood mass, fixed point.
 @group(0) @binding(6) var<storage, read_write> front_buf: array<atomic<u32>>;
+// The season's fan record (§17.6, the fossil rethink): where fine living
+// material has stood this season, as a saturating integral. Read by the
+// ceremony pass as the new stratum's halo, and started over on that tick.
+@group(0) @binding(7) var season_src: texture_2d<f32>;
+@group(0) @binding(8) var season_dst: texture_storage_2d<rgba16float, write>;
 
 const DEPOSIT_SCALE: f32 = 1048576.0;
 const MASS_SCALE: f32 = 256.0;
@@ -172,14 +177,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let transfer = min(rp.lignify_rate * coarse * density, density);
     density = density - transfer;
     lignin = min(lignin + transfer, DENSITY_CAP);
-    var ghost = rec.w;
 
     // The interment (§17.6): the one licensed writer of wood's exit, zero
-    // outside a burial. Lignin leaves for the ghost at the drive's eased
-    // rate; the *existing* ghost steps a generation deeper at each fossil
-    // moment (the dim below), so the ground reads a couple of seasons
-    // deep and no deeper. The biographical clock clears with the wood it
-    // was counting for, slowly, wherever none is left to age.
+    // outside a burial. Lignin leaves the record at the drive's eased
+    // rate. Where it goes is no longer this pass's business: the season
+    // became ground on the ceremony tick, as a stratum taken from the
+    // standing skeleton before the first grain of it moved
+    // (rhiz_strata.wgsl); the burial only takes the wood down to reveal
+    // it. The biographical clock clears with the wood it was counting
+    // for, slowly, wherever none is left to age.
     // Young wood is spared most of the burial: the interment is of the
     // completed season's record, and a straggler plant still writing
     // through it keeps the skeleton it is laying down rather than having
@@ -187,16 +193,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let interred = lignin * rp.intern_rate
         * mix(0.15, 1.0, smoothstep(120.0, 480.0, bio_age));
     lignin = lignin - interred;
-    // The ancestors recede by ceremony, not by rate: `ghost_dim` is 1.0
-    // on every ordinary tick and (1 - ghost_fade) for exactly the one
-    // tick of the fossil moment, so each completed burial stands at full
-    // strength and every stratum beneath it steps a generation deeper,
-    // once, whatever pace the burial itself runs at. (A per-second fade
-    // here erased each season's ghost while it was being laid -- the
-    // overnight watch's finding.)
-    ghost = min(
-        ghost * rp.ghost_dim + interred * rp.ghost_gain,
-        DENSITY_CAP);
     let presence = smoothstep(0.004, 0.02, lignin);
     bio_age = bio_age * (1.0 - 0.03 * (1.0 - presence));
     // Biographical age: seconds since wood first held here. Advances only
@@ -259,9 +255,33 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(
         dst_tex, vec2<i32>(x, y),
         vec4<f32>(density, age, fineness, nutrient));
+    // The record's last channel was the diffused ghost before the strata;
+    // it is carried unchanged and read by nothing. An old file's ghost is
+    // folded into the bedrock once, at restore (checkpoint.py).
     textureStore(
         record_dst, vec2<i32>(x, y),
-        vec4<f32>(lignin, bio_age, rec.z, ghost));
+        vec4<f32>(lignin, bio_age, rec.z, rec.w));
+
+    // The fan record (§17.6): fine living presence, integrated. Fineness
+    // squared, so fuzz writes at full weight, a lateral at a quarter and a
+    // trunk barely -- the trunk is the fossil's own business. Saturates,
+    // so the fan's interior (where fines regrow again and again) reads
+    // darker than its fringe without any texel running away. Shifted with
+    // the column like every field, and `season_keep` -- zero on the
+    // ceremony tick only -- is what starts a season's fan over.
+    let fan_src = textureLoad(
+        season_src,
+        vec2<i32>((x + i32(rp.dims_x)) % i32(rp.dims_x),
+                  min(max(sy, 0), i32(rp.dims_y) - 1)),
+        0);
+    var fan = select(
+        clamp(finite_or(fan_src.x, 0.0), 0.0, 1.0), 0.0,
+        sy >= i32(rp.dims_y));
+    fan = min(
+        fan * rp.season_keep + rp.fan_rate * density * fineness * fineness,
+        1.0);
+    textureStore(
+        season_dst, vec2<i32>(x, y), vec4<f32>(fan, 0.0, 0.0, 0.0));
 
     // The season controller's masses, accumulated only where there is
     // something to count -- integer atomics, so the sum is deterministic

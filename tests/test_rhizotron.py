@@ -20,6 +20,7 @@ What step 1 has to prove, before any root grows:
 
 from __future__ import annotations
 
+import json
 import math
 
 import numpy as np
@@ -1149,17 +1150,64 @@ def _write_record(engine, data: np.ndarray) -> None:
         checkpoint._write_texture(engine.device, texture, data)
 
 
+def _strata(engine) -> np.ndarray:
+    pair = engine.strata
+    return checkpoint._read_texture(
+        engine.device, pair.textures[pair.index]).astype(np.float32)
+
+
+def _write_strata(engine, data: np.ndarray) -> None:
+    for texture in engine.strata.textures:
+        checkpoint._write_texture(engine.device, texture, data)
+
+
+def _layer(atlas: np.ndarray, geometry, layer: int) -> np.ndarray:
+    """One atlas layer's (crisp, soft) pair as an (h, w, 2) array."""
+    h = geometry.strata_h
+    tile = atlas[(layer // 2) * h:(layer // 2 + 1) * h]
+    return tile[..., 0:2] if layer % 2 == 0 else tile[..., 2:4]
+
+
+def _paint_completed_season(engine, params, previous: bool = True):
+    """A season at its end, painted: a record a fifth past its budget --
+    where the pressure valve and the commit gate actually operate -- no
+    living mass to speak of, and, if asked, a previous stratum standing
+    in the ground as one band across the nearest layer."""
+    g = engine.geometry
+    budget = params.rhizotron.wood_budget * g.width * g.view_rows
+    per_texel = 1.2 * budget / (g.width * g.height)
+    record = np.zeros((g.height, g.width, 4), dtype=np.float16)
+    # The mass as *strokes* -- every fourth row, four times as dense --
+    # rather than a uniform wash: the season controller only counts the
+    # total, but the strata keep what clears the wood's knee, and a
+    # skeleton is lines.
+    record[0::4, :, 0] = 4.0 * per_texel
+    record[..., 1] = 900.0              # mature wood
+    _write_record(engine, record)
+    _write_structure(engine, np.zeros((g.height, g.width, 4), dtype=np.float16))
+    if previous:
+        atlas = np.zeros(
+            (g.strata_h * g.strata_tiles, g.strata_w, 4), dtype=np.float16)
+        atlas[g.strata_h // 2, :, 0] = 0.2   # layer 0's silhouette, one band
+        atlas[g.strata_h // 2, :, 1] = 1.0   # and its halo
+        _write_strata(engine, atlas)
+    # A realistic seasonal peak: the quiet gate measures stragglers against
+    # the life the season actually held, so the one seeded axis that keeps
+    # growing through the test must read as the remnant it is.
+    engine._living_peak = 8000.0
+
+
 def test_a_completed_pane_is_interred_and_the_season_turns(gpu_device):
     """§17.6, the whole cycle on a painted pane: a record at its budget with
-    a quiet community raises the interment drive; lignin leaves for the
-    ghost while the old ghost fades; the fossil is offered exactly once;
-    and when the burial has emptied the record, the season turns and
-    germination eases back open."""
+    a quiet community raises the interment drive; the fossil is offered
+    exactly once, and on the same ceremony the standing skeleton becomes
+    the nearest stratum while the stratum that stood there steps one
+    generation deeper; lignin then leaves the record; and when the burial
+    has emptied it, the season turns and germination eases back open."""
     params = _resolve(overrides={
         # A brisk burial, so the whole arc fits in a test.
         "rhizotron.interment_rate": 0.10,
         "rhizotron.intern_tau": 6.0,
-        "rhizotron.ghost_fade": 0.5,
         # No newcomers while the cycle is measured.
         "rhizotron.germination_rate": 0.0,
         "rhizotron.germination_floor": 0.0,
@@ -1167,33 +1215,16 @@ def test_a_completed_pane_is_interred_and_the_season_turns(gpu_device):
     })
     engine = _engine(gpu_device, params, seed=47)
     g = engine.geometry
+    _paint_completed_season(engine, params)
+    band = g.strata_h // 2
 
-    # A season at its end, painted: a full record, a still-visible previous
-    # ghost, and no living mass to speak of.
-    budget = params.rhizotron.wood_budget * g.width * g.view_rows
-    # A *realistic* completion: a record a fifth past its budget, which is
-    # where the pressure valve and the commit gate actually operate. (An
-    # early draft painted four budgets of wood, and the relics a finished
-    # burial leaves -- a fixed fraction of the committed mass -- then held
-    # the pane in autumn forever: a painting artifact, not a mechanism.)
-    per_texel = 1.2 * budget / (g.width * g.height)
-    record = np.zeros((g.height, g.width, 4), dtype=np.float16)
-    record[..., 0] = per_texel
-    record[..., 1] = 900.0              # mature wood
-    record[g.height // 2, :, 3] = 1.0   # the previous season's ghost, one band
-    _write_record(engine, record)
-    _write_structure(engine, np.zeros((g.height, g.width, 4), dtype=np.float16))
-    # A realistic seasonal peak: the quiet gate measures stragglers against
-    # the life the season actually held, so the one seeded axis that keeps
-    # growing through the test must read as the remnant it is.
-    engine._living_peak = 8000.0
-
-    ghost_before = _record(engine).astype(np.float32)[g.height // 2, :, 3].sum()
     lignin_start = _record(engine).astype(np.float32)[..., 0].sum()
 
     fossil_offers = 0
     lignin_floor = lignin_start
-    for tick in range(2400):
+    # To the season's own completion, then a little way into the next.
+    settled = None
+    for tick in range(12000):
         engine.tick(params, [])
         if engine.fossil_due:
             fossil_offers += 1
@@ -1202,8 +1233,11 @@ def test_a_completed_pane_is_interred_and_the_season_turns(gpu_device):
             lignin_floor = min(
                 lignin_floor,
                 float(_record(engine).astype(np.float32)[..., 0].sum()))
+        if settled is None and engine._season >= 1:
+            settled = tick
+        if settled is not None and tick - settled > 400:
+            break
 
-    rec = _record(engine).astype(np.float32)
     assert engine._intern > 0.0, "the interment drive never rose"
     # The floor, not the end state: after the renewal the next season's
     # regrowth is already recommitting wood, which is the cycle working.
@@ -1213,13 +1247,41 @@ def test_a_completed_pane_is_interred_and_the_season_turns(gpu_device):
     assert lignin_floor < 0.4 * lignin_start, (
         f"the burial only reached {lignin_floor:.0f} of {lignin_start:.0f}"
     )
-    assert float(rec[..., 3].sum()) > 0.0, "no ghost was laid down"
-    ghost_after = float(rec[g.height // 2, :, 3].sum())
-    assert ghost_after < ghost_before, (
-        "the previous season's ghost did not fade under the burial"
-    )
     assert fossil_offers == 1, (
         f"the fossil was offered {fossil_offers} times, not once"
+    )
+    atlas = _strata(engine)
+    nearest = _layer(atlas, g, 0)
+    assert float(nearest[..., 0].sum()) > 0.0, "no stratum was laid down"
+    # The painted record was strokes every fourth column row, above the
+    # strata's knee, so the nearest stratum's silhouette is those strokes
+    # box-sampled -- every other atlas row about half covered, the rows
+    # between bare: it is the *record* that stood at the fossil moment,
+    # not a shadow of it.
+    silhouette = nearest[MARGIN_ROWS:-MARGIN_ROWS, :, 0]
+    struck = silhouette[0::2]
+    bare_rows = silhouette[1::2]
+    assert 0.3 < float(np.median(struck)) < 0.7, (
+        "the nearest stratum is not the skeleton that stood at the fossil moment"
+    )
+    assert float(np.median(bare_rows)) == 0.0, (
+        "the nearest stratum covers ground the skeleton did not"
+    )
+    # The band that was layer 0 now stands one generation deeper, in
+    # layer 1: its silhouette spread one softening step -- the integral
+    # kept, the peak eased -- and its halo likewise.
+    older = _layer(atlas, g, 1)
+    assert 0.05 < float(older[band, :, 0].mean()) < 0.15, (
+        "the previous stratum did not step a generation deeper"
+    )
+    assert abs(float(older[band - 4:band + 5, :, 0].sum(axis=0).mean()) - 0.2) < 0.02, (
+        "the softening step did not keep the silhouette's integral"
+    )
+    assert float(older[band, :, 1].mean()) < 1.0, (
+        "the previous stratum's halo did not soften a step"
+    )
+    assert float(older[band + 1, :, 1].mean()) > 0.0, (
+        "the softening step did not spread the halo"
     )
     assert engine._season == 1, "the season did not turn"
     assert engine._germ_ease > 0.5, (
@@ -1227,17 +1289,15 @@ def test_a_completed_pane_is_interred_and_the_season_turns(gpu_device):
     )
 
 
-def test_the_ghost_survives_a_burial_at_any_pace(gpu_device):
-    """§17.6, the overnight watch's finding: the ancestors recede by
-    ceremony, never by rate. A brisk burial and one five times slower
-    are the same ceremony at different tempos, so both must leave the
-    previous season's shadow standing at the configured fraction -- the
-    generational dim fires once, at the fossil moment, however long the
-    burial then takes. The per-second fade this replaces passed the
-    brisk form of every test and, at the pace the app actually runs
-    (minutes per burial, and no bounded rate-integral once stragglers
-    recommit wood through it), erased each season's ghost while it was
-    still being laid."""
+def test_the_strata_are_the_same_at_any_burial_pace(gpu_device):
+    """§17.6, the overnight watch's keystone kept: the buried seasons are
+    decided by ceremony, never by rate. A brisk burial and one five times
+    slower are the same ceremony at different tempos, so both must leave
+    the same strata -- the nearest one the skeleton that stood at the
+    fossil moment, the one before it stepped a generation deeper, bit for
+    bit -- however long the burial then takes. Every continuous fade the
+    accelerated tests once certified was an eraser at the pace the app
+    actually runs; the atlas gives a fade nowhere to live."""
     results = {}
     for rate in (0.10, 0.02):
         params = _resolve(overrides={
@@ -1248,19 +1308,7 @@ def test_the_ghost_survives_a_burial_at_any_pace(gpu_device):
             "rhizotron.axes_per_plant": 1,
         })
         engine = _engine(gpu_device, params, seed=47)
-        g = engine.geometry
-        band_row = g.height // 2
-
-        budget = params.rhizotron.wood_budget * g.width * g.view_rows
-        per_texel = 1.2 * budget / (g.width * g.height)
-        record = np.zeros((g.height, g.width, 4), dtype=np.float16)
-        record[..., 0] = per_texel
-        record[..., 1] = 900.0            # mature wood
-        record[band_row, :, 3] = 1.0      # the previous season's ghost
-        _write_record(engine, record)
-        _write_structure(
-            engine, np.zeros((g.height, g.width, 4), dtype=np.float16))
-        engine._living_peak = 8000.0
+        _paint_completed_season(engine, params)
 
         # Run each burial to its own completion, not for a fixed time.
         for _ in range(12000):
@@ -1269,45 +1317,32 @@ def test_the_ghost_survives_a_burial_at_any_pace(gpu_device):
             if engine._season >= 1:
                 break
         assert engine._season >= 1, f"the burial at {rate}/s never finished"
+        results[rate] = _strata(engine)
 
-        rec = _record(engine).astype(np.float32)
-        band = float(rec[band_row, :, 3].sum())
-        laid = float(rec[..., 3].sum()) - band
-        results[rate] = (laid, band)
-
-    laid_fast, band_fast = results[0.10]
-    laid_slow, band_slow = results[0.02]
-    assert laid_fast > 0.0 and laid_slow > 0.0, "a burial laid no ghost"
-    # The previous season's shadow after one burial: dimmed by the
-    # configured fraction, once -- not proportionally to how long the
-    # burial ran. The band starts at width * 1.0 and also gains its own
-    # row's laid ghost, so the floor is a survived-the-ceremony claim.
-    fade = _resolve().rhizotron.ghost_fade
-    for rate, (laid, band) in results.items():
-        floor = 0.8 * (1.0 - fade) * WIDTH
-        assert band > floor, (
-            f"the burial at {rate}/s erased the previous season's ghost "
-            f"({band:.1f} standing, floor {floor:.1f})"
-        )
-    assert 0.8 < band_slow / band_fast < 1.25, (
-        f"the previous ghost's fade depends on the burial's pace: "
-        f"{band_slow:.1f} slow vs {band_fast:.1f} fast"
+    g = engine.geometry
+    fast, slow = results[0.10], results[0.02]
+    assert float(_layer(fast, g, 0)[..., 0].sum()) > 0.0, "no stratum was laid"
+    # The previous stratum, one generation deeper, is identical under
+    # either pace: a per-ceremony step has no rate to integrate.
+    assert np.array_equal(_layer(fast, g, 1), _layer(slow, g, 1)), (
+        "the previous stratum's recession depends on the burial's pace"
     )
-    # The laid ghost keeps the gain's share of what was interred under
-    # either pace. The slower burial inters more straggler recommitment
-    # along the way, so this is a no-eraser band, not an equality.
-    assert 0.5 < laid_slow / laid_fast < 2.0, (
-        f"the laid ghost depends on the burial's pace: "
-        f"{laid_slow:.1f} slow vs {laid_fast:.1f} fast"
+    # The new stratum's silhouette is the same skeleton too: the fossil is
+    # taken before the first grain of wood moves, at either tempo. (The
+    # halo carries the fan record, which the living remnant keeps writing
+    # for as long as it lives -- the silhouette is the claim.)
+    a, b = _layer(fast, g, 0)[..., 0], _layer(slow, g, 0)[..., 0]
+    assert np.allclose(a, b, atol=1e-3), (
+        "the laid stratum depends on the burial's pace"
     )
 
 
 def test_a_season_turns_emergently(gpu_device):
     """The forced-vs-emergent gap, closed in the suite: no painted state,
     no forced drive -- a community grown from seeds must fill its budget,
-    fall quiet, take its fossil, bury its record into ghost, and turn the
-    season, all from its own dynamics at accelerated pacing. Four silent
-    hours on a live run were the price of not having this test."""
+    fall quiet, take its fossil, lay its stratum, and turn the season, all
+    from its own dynamics at accelerated pacing. Four silent hours on a
+    live run were the price of not having this test."""
     params = _resolve(overrides={
         "rhizotron.fine_life": 8.0,
         "rhizotron.lateral_life": 40.0,
@@ -1332,8 +1367,144 @@ def test_a_season_turns_emergently(gpu_device):
             break
     assert fossils >= 1, "no fossil was ever offered"
     assert engine._season >= 1, "no season ever turned"
-    ghost = float(_record(engine).astype(np.float32)[..., 3].sum())
-    assert ghost > 0.0, "the burial laid no ghost"
+    nearest = _layer(_strata(engine), engine.geometry, 0)
+    assert float(nearest[..., 0].sum()) > 0.0, "the ceremony laid no stratum"
+    # The halo reaches ground the silhouette does not cover: where the
+    # fans stood, and around the trunks.
+    beyond = (nearest[..., 1] > 0.05) & (nearest[..., 0] < 0.05)
+    assert float(beyond.mean()) > 0.01, (
+        "the stratum has no halo beyond its silhouette: the fans left nothing"
+    )
+
+
+def test_the_oldest_stratum_merges_into_bedrock(gpu_device):
+    """§17.6: beyond the countable generations the strata merge into the
+    bedrock wash -- what it held stepped down by the configured fraction,
+    plus the halo of the stratum that just aged out -- and a stratum's
+    silhouette walks the whole ladder one rung per ceremony. Forced
+    ceremonies, since the walk is the claim, not the season."""
+    params = _resolve()
+    engine = _engine(gpu_device, params, seed=61)
+    g = engine.geometry
+    count = g.strata_layers - 1
+    band = g.strata_h // 3
+    atlas = np.zeros(
+        (g.strata_h * g.strata_tiles, g.strata_w, 4), dtype=np.float16)
+    atlas[band, :, 0] = 0.3
+    atlas[band, :, 1] = 1.0
+    _write_strata(engine, atlas)
+    _write_structure(engine, np.zeros((g.height, g.width, 4), dtype=np.float16))
+    _write_record(engine, np.zeros((g.height, g.width, 4), dtype=np.float16))
+
+    for ceremony in range(1, count + 1):
+        engine._ceremony_pending = True
+        engine.tick(params, [])
+        now = _strata(engine)
+        if ceremony < count:
+            walked = _layer(now, g, ceremony)
+            # Softened once per generation: spread, integral kept.
+            integral = float(walked[max(band - 12, 0):band + 13, :, 0].sum(axis=0).mean())
+            assert abs(integral - 0.3) < 0.03, (
+                f"the silhouette did not reach layer {ceremony} whole "
+                f"({integral:.3f} of 0.3)"
+            )
+            assert float(walked[band, :, 0].mean()) < 0.3, (
+                f"layer {ceremony} did not soften"
+            )
+            assert float(_layer(now, g, count)[..., 1].sum()) == 0.0, (
+                "bedrock received a stratum still inside the count"
+            )
+        else:
+            bedrock = _layer(now, g, count)
+            assert float(bedrock[band, :, 1].mean()) > 0.0, (
+                "the oldest stratum did not merge into bedrock"
+            )
+            assert float(bedrock[..., 0].sum()) == 0.0, (
+                "bedrock carries a silhouette; it is a wash"
+            )
+    held = float(_layer(_strata(engine), g, count)[band, :, 1].mean())
+    engine._ceremony_pending = True
+    engine.tick(params, [])
+    after = float(_layer(_strata(engine), g, count)[band, :, 1].mean())
+    fade = params.rhizotron.bedrock_fade
+    assert abs(after - held * (1.0 - fade)) < 0.05 * held, (
+        f"bedrock stepped {held:.3f} -> {after:.3f}, not by the configured "
+        f"fraction {fade}"
+    )
+
+
+def test_the_strata_reach_the_screen(gpu_device, offscreen_target):
+    """The second long watch's argument-ender, kept as a test: a stratum
+    that is numerically present must change the rendered image by more
+    than an 8-bit step over the ground it covers, with the nearest one
+    darkest and each generation a legible rung fainter. Seven buried
+    seasons once rendered under one step of the converged image; this is
+    what would have caught it."""
+    params = _resolve(overrides={
+        **STILL_WATER,
+        "rhizotron.germination_rate": 0.0,
+        "rhizotron.germination_floor": 0.0,
+        # Lightness alone: the stone tint moves dark warm colours through
+        # the gamut clip, which is not what this measures.
+        "rhizotron.strata_cool": 0.0,
+    })
+    engine = _engine(gpu_device, params, seed=67)
+    g = engine.geometry
+    target, fmt = offscreen_target(WIDTH, HEIGHT)
+    _write_structure(engine, np.zeros((g.height, g.width, 4), dtype=np.float16))
+    _write_tips(engine, np.zeros(max(g.tips_total, 1), dtype=TIP_DTYPE))
+
+    # Three generations, each a band of silhouette at a different height.
+    rows = {0: g.strata_h // 4, 1: g.strata_h // 2, 2: 3 * g.strata_h // 4}
+    atlas = np.zeros(
+        (g.strata_h * g.strata_tiles, g.strata_w, 4), dtype=np.float16)
+    for layer, row in rows.items():
+        tile, pair = layer // 2, (0 if layer % 2 == 0 else 2)
+        atlas[tile * g.strata_h + row, :, pair] = 1.0
+        atlas[tile * g.strata_h + row, :, pair + 1] = 1.0
+    _write_strata(engine, atlas)
+
+    def converged_lightness() -> np.ndarray:
+        # Hundreds of frames, not thirty: the slew limiter and the exposure
+        # governor both have to settle before a still means anything.
+        frames = _capture(engine, params, target, fmt, 240)
+        return frames[-1]
+
+    with_strata = converged_lightness()
+    rhiz = params.rhizotron
+    rhiz.strata_crisp, rhiz.strata_soft, rhiz.strata_bedrock = 0.0, 0.0, 0.0
+    bare = converged_lightness()
+
+    # Output rows the atlas bands land on, in the presented image.
+    def band_rows(row: int) -> slice:
+        column_row = row * 2 - MARGIN_ROWS
+        out = int(round(column_row / g.view_rows * HEIGHT))
+        return slice(max(out - 1, 0), min(out + 2, HEIGHT))
+
+    # The exposure governor holds the *mean*, so the two captures differ by
+    # a uniform exposure scale as well as by the strata; the off-band
+    # median lightness gives that scale, and the dips are measured with it
+    # taken out.
+    off_band = np.ones(HEIGHT, dtype=bool)
+    for row in rows.values():
+        off_band[band_rows(row)] = False
+    scale = float(np.median(bare[off_band])) / max(
+        float(np.median(with_strata[off_band])), 1e-6)
+    delta = bare - with_strata * scale
+    dips = {}
+    for layer, row in rows.items():
+        dip = float(delta[band_rows(row)].mean())
+        dips[layer] = dip
+        assert dip * 255.0 > 2.0, (
+            f"stratum {layer} changes the image by {dip * 255.0:.2f} steps: "
+            f"it is texture, not record"
+        )
+    assert dips[0] > dips[1] > dips[2], (
+        f"the generations are not a ladder: {dips}"
+    )
+    assert float(np.abs(delta[off_band]).mean()) * 255.0 < 1.0, (
+        "the strata changed ground they do not cover"
+    )
 
 
 def test_season_state_rides_the_checkpoint(gpu_device):
@@ -1355,6 +1526,53 @@ def test_season_state_rides_the_checkpoint(gpu_device):
     assert checkpoint.restore(resumed, snapshot)
     assert resumed.season_state() == original.season_state()
     assert resumed.fossil_due is False
+
+
+def test_a_column_from_before_the_strata_keeps_its_past_as_bedrock(gpu_device):
+    """A version-6 column carries its buried seasons in the retired ghost
+    channel and no atlas at all. Nothing is lost: at restore the ghost is
+    folded once into the bedrock layer, the fan record starts empty, and
+    the first ceremony from there lays the first countable stratum over
+    the wash that was."""
+    params = _resolve()
+    original = _engine(gpu_device, params, seed=71)
+    g = original.geometry
+    record = np.zeros((g.height, g.width, 4), dtype=np.float16)
+    record[g.height // 2, :, 3] = 0.05     # an old ghost, one band
+    _write_record(original, record)
+    for _ in range(3):
+        original.tick(params, [])
+    snapshot = checkpoint.capture(original, sim_hz=params.sim_hz)
+    old = checkpoint.Checkpoint(
+        meta=json.loads(json.dumps(snapshot.meta)),
+        arrays={
+            name: array for name, array in snapshot.arrays.items()
+            if name not in ("column.strata", "column.season")
+        },
+    )
+    old.meta["version"] = 6
+    del old.meta["geometry"]["strata_layers"]
+
+    geometry = checkpoint.required_geometry(old, backend="rhizotron")
+    assert geometry is not None, "an old column must still be usable"
+    assert geometry.strata_layers == RhizotronGeometry.strata_layers
+    device, _ = gpu_device
+    resumed = RhizotronEngine(
+        device, WIDTH, HEIGHT, params, seed=1, geometry=geometry)
+    assert checkpoint.restore(resumed, old)
+    atlas = _strata(resumed)
+    count = geometry.strata_layers - 1
+    bedrock = _layer(atlas, geometry, count)
+    assert float(bedrock[..., 1].sum()) > 0.0, (
+        "the old ghost did not arrive as bedrock"
+    )
+    assert float(bedrock[g.strata_h // 2, :, 1].mean()) > 0.0, (
+        "the bedrock is not where the old ghost was"
+    )
+    for layer in range(count):
+        assert float(_layer(atlas, geometry, layer).sum()) == 0.0, (
+            f"an old column arrived with a countable stratum {layer}"
+        )
 
 
 # ---------------------------------------------------------------------------
